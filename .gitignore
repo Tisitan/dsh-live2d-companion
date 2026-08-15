@@ -1,0 +1,4 @@
+node_modules/
+public/model/
+public/vendor/live2dcubismcore.min.js
+*.log

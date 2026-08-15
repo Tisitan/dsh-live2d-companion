@@ -1,0 +1,11 @@
+{
+  "name": "dsh-live2d-companion",
+  "version": "1.0.0",
+  "description": "Live2D companion for DeepSeek Harness: web widget + desktop pet with AI state sync",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "license": "MIT"
+}

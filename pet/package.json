@@ -1,0 +1,14 @@
+{
+  "name": "dsh-live2d-companion-pet",
+  "version": "1.0.0",
+  "description": "Electron desktop pet shell for dsh-live2d-companion",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^43.4.0"
+  }
+}
