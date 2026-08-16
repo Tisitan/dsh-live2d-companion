@@ -14,6 +14,7 @@ import { initStage } from './src/stage.js'
 import { initState } from './src/state.js'
 import { initInteract } from './src/interact.js'
 import { initStream } from './src/stream.js'
+import { initPanel } from './src/panel.js'
 
 // 防重复注入（tapIndex 与手动加载可能并存）
 if (!window.__l2dCompanion) {
@@ -44,6 +45,7 @@ async function main() {
   initState(ctx)
   initInteract(ctx)
   initStream(ctx)
+  const panel = initPanel(ctx)
 
   // 时段问候：深夜（23-5）与早晨（5-11）有专属台词池
   const hour = new Date().getHours()
@@ -74,9 +76,19 @@ async function main() {
     registerState: (n, d) => ctx.registerState(n, d),
     registerLamp: (n, s) => ctx.registerLamp(n, s),
     quip,
+    setModel: (path) => ctx.switchModel(path),
+    ...(panel === null ? {} : {
+      refreshModels: panel.refreshModels,
+      openModelPanel: panel.openPanel,
+      closeModelPanel: panel.closePanel,
+      openModelViewer: panel.openViewer,
+      importModels: panel.importModels,
+      get modelList() { return panel.modelList },
+    }),
     get state() { return ctx.getState() },
     get binding() { return ctx.binding },
     get model() { return ctx.model },
+    get modelPath() { return ctx.modelPath },
     get app() { return ctx.app },
     get scale() { return ctx.scale },
     get targetScale() { return ctx.targetScale },
