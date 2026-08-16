@@ -40,6 +40,35 @@ dsh 宿主进程
 
 宿主只转发白名单原始事件（`turn/start`、`tool/call`、`approval/asked`……），状态判定全在前端——调行为不需要重启宿主。前端模块间不互相 import，经共享上下文 `ctx` 在运行期取用彼此能力，依赖方向即 `boot.js` 的初始化顺序。
 
+### 工作流程
+
+```mermaid
+flowchart TD
+    subgraph HOST["DSH 宿主进程"]
+        A["会话事件流<br/>turn/start · tool/call · approval/asked …"] --> B["index.js 宿主插件<br/>白名单过滤 + 聚合兜底"]
+        B --> C["SSE 推送<br/>/live2d/state-stream"]
+    end
+
+    subgraph FRONT["前端（挂件 / 桌宠共用）"]
+        E["stream.js<br/>raw 优先 · coarse 兜底"] --> F["state.js<br/>8 态状态机"]
+        F --> G["ui.js · 状态灯"]
+        F --> H["binding.js<br/>语义槽位查询"]
+        H --> I["stage.js<br/>表情 + 动作"]
+        F --> J["quips.json · 台词气泡"]
+        K["interact.js<br/>点击/摸头/拖拽/穿透"] --> F
+        M["extensions/ · 扩展"] -. "apply(api)" .-> F
+    end
+
+    subgraph PET["Electron 桌宠壳"]
+        N["main.js<br/>全局光标轮询 30Hz"] --> O["IPC 桥"]
+    end
+
+    C --> E
+    O --> K
+    K --> P["model.focus 视线追踪"] --> I
+    Q["profile.json / model3.json 嗅探"] --> H
+```
+
 ## 安装
 
 > 需要：已安装 DSH（`dsh web` 可用）、Node.js ≥ 18。
