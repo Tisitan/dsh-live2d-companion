@@ -64,6 +64,11 @@ app.whenReady().then(() => {
   ipcMain.on('l2d-ignore', (_e, ignore) => {
     if (win !== null && !win.isDestroyed()) win.setIgnoreMouseEvents(ignore, { forward: true })
   })
+  ipcMain.handle('l2d-cursor-get', () => {
+    if (win === null || win.isDestroyed()) return null
+    const p = screen.getCursorScreenPoint()
+    return { x: p.x, y: p.y, bounds: win.getBounds() }
+  })
   ipcMain.on('l2d-move', (_e, dx, dy) => {
     if (win === null || win.isDestroyed()) return
     const [x, y] = win.getPosition()

@@ -17,7 +17,7 @@ const MIME = {
   '.moc3': 'application/octet-stream',
 }
 
-const INDEX_TAG = '<script src="/live2d/boot.js" defer></script>'
+const INDEX_TAG = '<script src="/live2d/boot.js" type="module"></script>'
 const DONE_HOLD_MS = 6000
 const ERROR_HOLD_MS = 4500
 

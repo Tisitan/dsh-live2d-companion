@@ -27,11 +27,18 @@ dsh 宿主进程
          └─ spawn Electron 桌宠          → 随宿主启停（pet: false 可关）
 
 浏览器挂件 / Electron 桌宠
- └─ boot.js（前端状态机 + 交互 + 渲染）
-     └─ pixi.js + pixi-live2d-display + Live2D Cubism Core
+ └─ boot.js（ES Module 入口装配）+ src/ 职能模块：
+     ├─ config.js    → 环境常量 / localStorage / 台词库加载
+     ├─ binding.js   → 语义槽位绑定（profile 覆盖 + model3.json 嗅探）
+     ├─ ui.js        → 容器 / 气泡 / 状态灯
+     ├─ stage.js     → PIXI 渲染 / 模型加载 / 布局收身 / 缩放
+     ├─ state.js     → 8 态状态机（灯 + 表情 + 动作 + 台词轮播）
+     ├─ interact.js  → 点击/摸头/拖拽/缩放/穿透/全局视线
+     └─ stream.js    → SSE 客户端（raw 优先 / coarse 兜底 / 离线检测）
+         └─ pixi.js + pixi-live2d-display + Live2D Cubism Core
 ```
 
-宿主只转发白名单原始事件（`turn/start`、`tool/call`、`approval/asked`……），状态判定全在前端——调行为不需要重启宿主。
+宿主只转发白名单原始事件（`turn/start`、`tool/call`、`approval/asked`……），状态判定全在前端——调行为不需要重启宿主。前端模块间不互相 import，经共享上下文 `ctx` 在运行期取用彼此能力，依赖方向即 `boot.js` 的初始化顺序。
 
 ## 安装
 
@@ -162,6 +169,39 @@ npm.cmd install
 ```
 
 调试时可在控制台看解析结果：`window.__l2d.binding`。
+
+## 扩展开发（贡献者向）
+
+无需改核心代码即可拓展功能：`public/extensions/` 下放一个 ES Module，在 `index.json` 清单里登记文件名，启动时自动加载。
+
+```js
+// public/extensions/my-feature.js
+export default function apply(api) {
+  api.on('enter', (next, prev) => { /* 状态切换钩子 */ })
+  api.showBubble('咱的扩展上线啦', 3000)
+}
+```
+
+```json
+// public/extensions/index.json
+["hourly-chime.js", "my-feature.js"]
+```
+
+**公共 API（`api`，即控制台里的 `window.__l2d`）**：
+
+| 成员 | 说明 |
+|---|---|
+| `enter(state)` / `showBubble(text, ms)` | 切状态 / 冒气泡 |
+| `on(event, fn)` | 订阅事件，返回退订函数 |
+| `registerState(name, def)` | 注册/覆盖状态行为（expr/motion/pool/rotate/remotionMs/transientMs） |
+| `registerLamp(name, spec)` | 注册/覆盖状态灯（color/label/anim；自定义动画需自注入 @keyframes） |
+| `quip(pool)` | 从台词池抽一句 |
+| `state` / `binding` / `model` / `bounds` / `gaze` | 实时只读状态 |
+| `ctx` | 完整共享上下文（实验性，结构可能随版本调整） |
+
+**事件**：`enter`（状态切换，`(next, prev)`）、`raw`（宿主原始会话事件，`(ev)`）、`ready`（初始化完成，`(api)`）。
+
+**隔离保证**：单个扩展加载或钩子抛错只会打出一条 `console.error`，不影响本体与其他扩展。自带示例 `hourly-chime.js`（整点报时），从清单删名即停用。
 
 ## 状态 → 表现映射
 
