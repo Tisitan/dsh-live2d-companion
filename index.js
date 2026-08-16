@@ -14,6 +14,9 @@ const DEFAULT_MODEL = 'nori/ARGNori.model3.json'
 const MAX_SELECTION_BYTES = 64 * 1024
 const MAX_IMPORT_FILE_BYTES = 128 * 1024 * 1024
 
+/** 桌宠 spawn 节流：效果重挂载（如端口冲突重试）时 30 秒内不重复拉起，防 electron 生死循环。 */
+let lastPetSpawnAt = 0
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -421,6 +424,11 @@ export function apply(ctx, config) {
     const exe = join(petDir, 'node_modules', 'electron', 'dist', 'electron.exe')
     if (existsSync(exe)) {
       ctx.effect(() => {
+        // spawn 节流：cordis 效果若因宿主故障反复重挂载，30 秒内只拉一次桌宠。
+        // 桌宠自身有单实例锁兜底，但反复 spawn 进程本身就是 CPU 灾难。
+        const now = Date.now()
+        if (now - lastPetSpawnAt < 30000) return undefined
+        lastPetSpawnAt = now
         const petUrl = `http://127.0.0.1:${ctx.webServer.port}/live2d/pet.html`
         const child = spawn(exe, ['.'], {
           cwd: petDir,

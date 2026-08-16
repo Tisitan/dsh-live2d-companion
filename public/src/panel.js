@@ -8,7 +8,7 @@
 
 import { BASE, PREVIEW } from './config.js'
 
-/** 面板锚定宽度（px），positionModelPanel 用它做视口钳制。 */
+/** 面板宽度上限（px）；窄窗口（如桌宠）下由 CSS min() 收缩，钳制用实测宽度。 */
 const PANEL_WIDTH = 280
 
 /**
@@ -32,7 +32,7 @@ export function initPanel(ctx) {
 #l2d-model-toggle:hover { opacity: 1; background: #fff; }
 #l2d-model-toggle.l2d-hidden { opacity: 0; pointer-events: none; }
 #l2d-model-panel {
-  position: fixed; z-index: 100000; width: 280px; max-height: min(420px, calc(100vh - 16px));
+  position: fixed; z-index: 100000; width: min(280px, calc(100vw - 16px)); max-height: min(420px, calc(100vh - 16px));
   display: flex; flex-direction: column; box-sizing: border-box;
   background: rgba(255,255,255,.97); color: #334;
   border: 1px solid rgba(0,0,0,.12); border-radius: 12px;
@@ -199,8 +199,10 @@ export function initPanel(ctx) {
     if (!panelOpen) return
     const rect = toggle.getBoundingClientRect()
     const gap = 8
-    let left = rect.right - PANEL_WIDTH
-    left = Math.min(Math.max(left, 8), Math.max(8, window.innerWidth - PANEL_WIDTH - 8))
+    // 窄窗口下面板会被 CSS min() 收缩，钳制必须用实测宽度而非宽度上限
+    const w = panel.offsetWidth || PANEL_WIDTH
+    let left = rect.right - w
+    left = Math.min(Math.max(left, 8), Math.max(8, window.innerWidth - w - 8))
     let top = rect.bottom + gap
     if (top + panel.offsetHeight > window.innerHeight - 8) {
       top = Math.max(8, rect.top - panel.offsetHeight - gap)
