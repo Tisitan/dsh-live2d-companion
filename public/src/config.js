@@ -15,8 +15,13 @@ export const PET = window.__L2D_PET__ === true
 /** Electron preload 暴露的桌面桥；网页挂件环境下为 null。 */
 export const BRIDGE = window.__petBridge ?? null
 
+const URL_PARAMS = new URLSearchParams(location.search)
+
 /** URL ?model= 临时指定模型（优先级高于宿主 config 与默认）。 */
-export const MODEL_QUERY = new URLSearchParams(location.search).get('model')
+export const MODEL_QUERY = URL_PARAMS.get('model')
+
+/** URL ?preview=1：模型面板的预览 iframe 形态（隐藏面板入口本身）。 */
+export const PREVIEW = URL_PARAMS.get('preview') === '1'
 
 /** 网页挂件的固定画布尺寸（桌宠形态用窗口尺寸）。 */
 export const BASE_W = 300

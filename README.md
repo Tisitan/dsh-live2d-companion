@@ -12,6 +12,7 @@
 - ⚙️ **全配置化**：台词/节奏/行为阈值都在 `quips.json`，前端 30 秒热重载，改完即生效
 - 🐾 **桌面桌宠**：透明无边框置顶、鼠标穿透（不挡操作）、位置记忆、随 DSH 启停（心跳看门狗）
 - 🧩 **多模型**：任何 Cubism 4/5 模型丢进 `model/` 目录即可接入；语义槽位 + 自动嗅探 + profile.json 绑定层，情绪表现零配置自适应
+- 🖼️ **模型面板**：挂件旁静置自动隐藏的齿轮入口，扫描/切换/导入/预览模型，选择持久化，恢复默认无需改配置
 - 🔌 **零侵入**：对 DSH 本体零修改，纯用户级 cordis patch 层挂载，DSH 升级免疫
 
 ## 架构
@@ -23,6 +24,9 @@ dsh 宿主进程
          ├─ prefix 路由 /live2d/*        → 静态资源（前端/模型/vendor）
          ├─ SSE  /live2d/state-stream    → session/event 白名单转发 + 聚合状态兜底
          ├─ exact /live2d/state|config   → 状态快照 / 模型配置
+         ├─ exact /live2d/models         → 扫描 model/ 下全部模型（GET）
+         ├─ exact /live2d/model          → 切换/恢复模型并持久化（POST）
+         ├─ exact /live2d/import         → 上传模型文件（POST）
          ├─ tapIndex 注入 <script>       → 网页挂件（widget: false 可关）
          └─ spawn Electron 桌宠          → 随宿主启停（pet: false 可关）
 
@@ -34,7 +38,8 @@ dsh 宿主进程
      ├─ stage.js     → PIXI 渲染 / 模型加载 / 布局收身 / 缩放
      ├─ state.js     → 8 态状态机（灯 + 表情 + 动作 + 台词轮播）
      ├─ interact.js  → 点击/摸头/拖拽/缩放/穿透/全局视线
-     └─ stream.js    → SSE 客户端（raw 优先 / coarse 兜底 / 离线检测）
+     ├─ stream.js    → SSE 客户端（raw 优先 / coarse 兜底 / 离线检测）
+     └─ panel.js     → 模型面板（入口/列表/切换/查看/导入）
          └─ pixi.js + pixi-live2d-display + Live2D Cubism Core
 ```
 
@@ -170,6 +175,24 @@ npm.cmd install
 
 调试时可在控制台看解析结果：`window.__l2d.binding`。
 
+## 模型面板
+
+网页挂件右上角有一个悬浮齿轮按钮，鼠标不悬停时约 1.2 秒后自动隐藏；悬停模型区域或打开面板时重新出现：
+
+- 自动扫描 `public/model/` 下全部 `*.model3.json`
+- 点击列表项即时切换当前挂件模型，无需刷新页面
+- 每个模型右侧「查看」按钮，弹窗内嵌 Live2D 预览，不影响当前模型
+- 「导入模型」选择模型文件夹（Chrome/Edge 支持目录选择；其他浏览器可多选文件后输入模型名），按文件逐个上传并自动切到导入后的 `.model3.json`
+- 「恢复默认」清除面板选择，回到 `cordis.patch.yml` 里的 `model`
+- 面板选择保存在仓库根目录 `model-selection.json`（已 gitignore），下次启动 DSH 仍生效；该文件优先于 patch 默认值
+
+面板和选择接口：
+
+- `GET /live2d/models`：`{ current, defaultModel, models: [{ path, dir, file }] }`
+- `POST /live2d/model`：body `{ "model": "<相对 model/ 的 .model3.json 路径>" }`
+- `POST /live2d/model`：body `{ "reset": true }` 恢复 patch 默认模型
+- `POST /live2d/import?model=<文件夹名>&path=<相对文件路径>`：body 为原始文件字节，单文件上限 128 MiB；路径经过校验，无法写出 `model/` 目录
+
 ## 扩展开发（贡献者向）
 
 无需改核心代码即可拓展功能：`public/extensions/` 下放一个 ES Module，在 `index.json` 清单里登记文件名，启动时自动加载。
@@ -196,10 +219,13 @@ export default function apply(api) {
 | `registerState(name, def)` | 注册/覆盖状态行为（expr/motion/pool/rotate/remotionMs/transientMs） |
 | `registerLamp(name, spec)` | 注册/覆盖状态灯（color/label/anim；自定义动画需自注入 @keyframes） |
 | `quip(pool)` | 从台词池抽一句 |
-| `state` / `binding` / `model` / `bounds` / `gaze` | 实时只读状态 |
+| `setModel(path)` / `refreshModels()` | 热切换模型 / 重新扫描模型列表 |
+| `openModelPanel()` / `closeModelPanel()` | 打开 / 关闭模型面板 |
+| `openModelViewer(path)` / `importModels(files)` | 预览模型 / 导入文件列表 |
+| `state` / `binding` / `model` / `modelPath` / `modelList` / `bounds` / `gaze` | 实时只读状态 |
 | `ctx` | 完整共享上下文（实验性，结构可能随版本调整） |
 
-**事件**：`enter`（状态切换，`(next, prev)`）、`raw`（宿主原始会话事件，`(ev)`）、`ready`（初始化完成，`(api)`）。
+**事件**：`enter`（状态切换，`(next, prev)`）、`raw`（宿主原始会话事件，`(ev)`）、`model`（模型热切换，`(modelPath)`）、`ready`（初始化完成，`(api)`）。
 
 **隔离保证**：单个扩展加载或钩子抛错只会打出一条 `console.error`，不影响本体与其他扩展。自带示例 `hourly-chime.js`（整点报时），从清单删名即停用。
 

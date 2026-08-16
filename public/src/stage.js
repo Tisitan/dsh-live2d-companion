@@ -1,9 +1,9 @@
 /**
- * stage.js —— 渲染层：PIXI 应用、模型加载、布局收身、缩放动画、槽位播放。
+ * stage.js —— 渲染层：PIXI 应用、模型加载/热切换、布局收身、缩放动画、槽位播放。
  *
  * 初始化完成后 ctx 上可用：app / model / binding / setExpr / playMotion /
- * modelBounds / layout；缩放状态（scale/targetScale/petBaseW/petBaseH）
- * 也挂在 ctx 上与 interact 模块共享。
+ * modelBounds / layout / switchModel / getModelPath；缩放状态
+ * （scale/targetScale/petBaseW/petBaseH）也挂在 ctx 上与 interact 模块共享。
  */
 
 import { BASE, PET, BRIDGE, MODEL_QUERY, BASE_W, BASE_H, store, loadScript } from './config.js'
@@ -15,6 +15,9 @@ const PET_DEFAULT_H = 460
 
 /** 模型填充窗口的比例上限，保留的边距给动作挥臂留出余量。 */
 const FIT_RATIO = 0.92
+
+/** 内置默认模型（相对 public/model/）。 */
+const DEFAULT_MODEL = 'nori/ARGNori.model3.json'
 
 /**
  * 初始化渲染层。
@@ -45,20 +48,23 @@ export async function initStage(ctx) {
       modelPath = remote.model
     } catch { }
   }
-  if (!modelPath) modelPath = 'nori/ARGNori.model3.json'
+  if (!modelPath) modelPath = DEFAULT_MODEL
+  ctx.getModelPath = () => modelPath
+  Object.defineProperty(ctx, 'modelPath', { get: () => modelPath, enumerable: true })
+
   ctx.binding = await loadBinding(modelPath)
 
-  const model = await PIXI.live2d.Live2DModel.from(`${BASE}/model/${modelPath}`, { autoInteract: false })
+  let model = await PIXI.live2d.Live2DModel.from(`${BASE}/model/${modelPath}`, { autoInteract: false })
   app.stage.addChild(model)
   ctx.model = model
-  const naturalW = model.internalModel.originalWidth
-  const naturalH = model.internalModel.originalHeight
+  let naturalW = model.internalModel.originalWidth
+  let naturalH = model.internalModel.originalHeight
 
   ctx.scale = store.getScale()
   ctx.targetScale = ctx.scale
   ctx.petBaseW = PET_DEFAULT_W
   ctx.petBaseH = PET_DEFAULT_H
-  ctx.modelBounds = () => model.getBounds()
+  ctx.modelBounds = () => ctx.model.getBounds()
 
   /** 布局：挂件按固定画布，桌宠按窗口；桌宠底部锚定（站地上），挂件垂直居中。 */
   ctx.layout = () => {
@@ -66,22 +72,22 @@ export async function initStage(ctx) {
     const h = PET ? window.innerHeight : BASE_H
     app.renderer.resize(w, h)
     const s = Math.min(w / naturalW, h / naturalH) * FIT_RATIO * (BRIDGE ? 1 : ctx.scale)
-    model.scale.set(s)
-    model.x = (w - model.width) / 2
-    model.y = PET ? (h - model.height) : (h - model.height) / 2
+    ctx.model.scale.set(s)
+    ctx.model.x = (w - ctx.model.width) / 2
+    ctx.model.y = PET ? (h - ctx.model.height) : (h - ctx.model.height) / 2
   }
   ctx.layout()
 
   // 桌宠收身：量网格真实宽高比，窗口收成刚好包住模型（保持用户缩放比例）
-  if (BRIDGE) {
-    setTimeout(() => {
-      const b = model.getBounds()
-      if (b.width > 0 && b.height > 0) {
-        ctx.petBaseW = Math.min(1200, Math.max(160, Math.round(ctx.petBaseH * (b.width / b.height))))
-        BRIDGE.resizeTo(Math.round(ctx.petBaseW * ctx.scale), Math.round(ctx.petBaseH * ctx.scale))
-      }
-    }, 200)
+  function fitPetWindow() {
+    if (!BRIDGE) return
+    const b = ctx.model.getBounds()
+    if (b.width > 0 && b.height > 0) {
+      ctx.petBaseW = Math.min(1200, Math.max(160, Math.round(ctx.petBaseH * (b.width / b.height))))
+      BRIDGE.resizeTo(Math.round(ctx.petBaseW * ctx.scale), Math.round(ctx.petBaseH * ctx.scale))
+    }
   }
+  if (BRIDGE) setTimeout(fitPetWindow, 200)
 
   window.addEventListener('resize', () => {
     ctx.layout()
@@ -113,7 +119,7 @@ export async function initStage(ctx) {
   ctx.setExpr = (slot) => {
     const name = slot ? ctx.binding.expr[slot] : undefined
     if (!name) return
-    try { model.expression(name) } catch { }
+    try { ctx.model.expression(name) } catch { }
   }
 
   /**
@@ -123,6 +129,46 @@ export async function initStage(ctx) {
   ctx.playMotion = (slot) => {
     const m = slot ? ctx.binding.motion[slot] : undefined
     if (!m) return
-    model.motion(m[0], m[1]).catch(() => { })
+    ctx.model.motion(m[0], m[1]).catch(() => { })
+  }
+
+  // 模型热切换令牌：只允许最后一次请求生效，避免并发切换互相覆盖
+  let switchToken = 0
+
+  /**
+   * 热切换当前模型：加载新模型与其绑定，成功后替换舞台上的旧模型。
+   * 旧模型保留到新模型就绪，加载失败时当前模型不受影响。
+   * @param {string} nextPath 相对 model/ 的 .model3.json 路径
+   * @returns {Promise<boolean>} 是否完成切换（同路径返回 false）
+   */
+  ctx.switchModel = async (nextPath) => {
+    if (!nextPath || nextPath === modelPath) return false
+    const token = ++switchToken
+    const [nextModel, nextBinding] = await Promise.all([
+      PIXI.live2d.Live2DModel.from(`${BASE}/model/${nextPath}`, { autoInteract: false }),
+      loadBinding(nextPath),
+    ])
+    if (token !== switchToken) {
+      try { nextModel.destroy(true) } catch { }
+      return false
+    }
+
+    const previous = ctx.model
+    if (previous) {
+      app.stage.removeChild(previous)
+      try { previous.destroy(true) } catch { }
+    }
+    model = nextModel
+    ctx.model = nextModel
+    app.stage.addChild(nextModel)
+    ctx.binding = nextBinding
+    modelPath = nextPath
+    naturalW = nextModel.internalModel.originalWidth
+    naturalH = nextModel.internalModel.originalHeight
+    ctx.layout()
+    if (BRIDGE) setTimeout(fitPetWindow, 200)
+    ctx.setExpr(ctx.stateExpr?.() ?? 'default')
+    ctx.emit?.('model', nextPath)
+    return true
   }
 }
