@@ -1,0 +1,6 @@
+# dsh-live2d-companion — bundle patch: insert the companion plugin row.
+# Defaults come from the plugin code (widget on, pet off); override per
+# profile with a row targeting the same id in your profile cordis.patch.yml.
+- insert:
+    - id: live2d-companion
+      name: dsh-live2d-companion

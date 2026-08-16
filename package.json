@@ -1,11 +1,42 @@
 {
   "name": "dsh-live2d-companion",
-  "version": "1.0.0",
-  "description": "Live2D companion for DeepSeek Harness: web widget + desktop pet with AI state sync",
+  "version": "1.1.0",
+  "description": "Live2D companion for DeepSeek Harness: 8-state AI status lamp, web widget, and always-on-top desktop pet with expressions, motions and bubbles",
   "type": "module",
   "main": "index.js",
   "exports": {
-    ".": "./index.js"
+    ".": "./index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
   },
-  "license": "MIT"
+  "files": [
+    "index.js",
+    "public/boot.js",
+    "public/src",
+    "public/extensions",
+    "public/pet.html",
+    "public/quips.json",
+    "public/vendor/pixi.min.js",
+    "public/vendor/pixi-live2d-cubism4.min.js",
+    "pet",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "live2d",
+    "desktop-pet",
+    "widget",
+    "web-ui"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
 }

@@ -44,29 +44,30 @@ dsh 宿主进程
 
 > 需要：已安装 DSH（`dsh web` 可用）、Node.js ≥ 18。
 
-**1. 取得本仓库并链接进 DSH profile**
+**1. 一键安装（官方插件通道）**
 
 ```powershell
-# 仓库放任意位置，然后 junction 到 DSH_HOME 的 profile 下
-New-Item -ItemType Junction `
-  -Path "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-live2d-companion" `
-  -Target "C:\path\to\dsh-live2d-companion"
+dsh plugin --profile web add github:Tisitan/dsh-live2d-companion
 ```
 
-**2. 注册 patch 行**
+本插件声明了 `dsh.bundle` 清单，`dsh plugin add` 会自动登记为 profile 组合层，无需手动接线。
 
-编辑 `$env:USERPROFILE\.dsh\profiles\web\cordis.patch.yml`，追加：
+**2.（可选）调整开关**
+
+默认网页挂件开、桌宠关。要改就在 `$env:USERPROFILE\.dsh\profiles\web\cordis.patch.yml` 追加同 id 覆盖行：
 
 ```yaml
 - insert:
     - id: live2d-companion
       name: 'dsh-live2d-companion'
       config:
-        widget: true   # 网页挂件开关
-        pet: true      # 桌面桌宠开关（随 DSH 自启）
+        widget: false  # 关闭网页挂件
+        pet: true      # 桌面桌宠随 DSH 自启
 ```
 
-patch 文件热重载，保存即挂载。
+patch 文件热重载，保存即生效。
+
+**开发者路径**：`git clone` 后 junction 到 `<DSH_HOME>\profiles\web\node_modules\dsh-live2d-companion`，再按上方注册 patch 行。
 
 **3. 放入模型**
 
