@@ -321,6 +321,7 @@
       }
     }
 
+    let lastGaze = null
     window.addEventListener('pointermove', (e) => {
       lastPointer = { x: e.clientX, y: e.clientY }
       const r = app.view.getBoundingClientRect()
@@ -328,6 +329,12 @@
       evalIgnore()
       tryPat(e.clientX, e.clientY)
     })
+    if (BRIDGE && BRIDGE.onCursor) {
+      BRIDGE.onCursor((data) => {
+        lastGaze = { x: data.x - data.bounds.x, y: data.y - data.bounds.y }
+        model.focus(lastGaze.x, lastGaze.y)
+      })
+    }
 
     if (!PET) {
       let drag = null
@@ -470,6 +477,7 @@
       get scale() { return scale },
       get targetScale() { return targetScale },
       get bounds() { const b = model.getBounds(); return { x: b.x, y: b.y, w: b.width, h: b.height } },
+      get gaze() { return lastGaze },
     }
     console.log('[l2d] companion ready')
   }

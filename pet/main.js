@@ -86,6 +86,15 @@ app.whenReady().then(() => {
   win.on('moved', savePos)
   win.on('closed', () => { win = null })
 
+  let lastCursor = null
+  setInterval(() => {
+    if (win === null || win.isDestroyed()) return
+    const p = screen.getCursorScreenPoint()
+    if (lastCursor !== null && lastCursor.x === p.x && lastCursor.y === p.y) return
+    lastCursor = p
+    win.webContents.send('l2d-cursor', { x: p.x, y: p.y, bounds: win.getBounds() })
+  }, 33)
+
   const origin = new URL(TARGET).origin
   let failures = 0
   setInterval(async () => {
