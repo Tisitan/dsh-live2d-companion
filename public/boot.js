@@ -65,7 +65,19 @@
     return pool && pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : ''
   }
 
+  const STATE_LAMP = {
+    offline: { color: '#ef4444', label: '离线中', anim: '' },
+    idle: { color: '#4ade80', label: '闲置中', anim: '' },
+    thinking: { color: '#60a5fa', label: '思考中', anim: 'l2d-pulse 1.6s infinite' },
+    working: { color: '#fb923c', label: '工作中', anim: 'l2d-pulse 1.1s infinite' },
+    waiting: { color: '#facc15', label: '待确认!', anim: 'l2d-blink 0.9s infinite' },
+    error: { color: '#c084fc', label: '卡壳中…', anim: 'l2d-blink 0.5s infinite' },
+    done: { color: '#22d3ee', label: '完成啦~', anim: '' },
+    sleeping: { color: '#9ca3af', label: '打瞌睡…', anim: 'l2d-breathe 3.5s infinite' },
+  }
+
   const STATE_DEF = {
+    offline: { expr: '05_Dark' },
     thinking: { expr: '10_Doubt', motion: ['Poses', 1], pool: 'thinking', rotate: true },
     working: { expr: '01_KiraKira', motion: ['Reactions', 2], pool: 'working', rotate: true, remotionMs: 22000 },
     waiting: { expr: '10_Doubt', motion: ['Reactions', 1], pool: 'waiting', rotate: true, remotionMs: 16000 },
@@ -113,6 +125,33 @@
       boxShadow: '0 2px 12px rgba(0,0,0,.25)', zIndex: 2,
     })
     box.appendChild(bubble)
+
+    const lampStyle = document.createElement('style')
+    lampStyle.textContent = '@keyframes l2d-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.8)}}@keyframes l2d-blink{0%,100%{opacity:1}50%{opacity:.15}}@keyframes l2d-breathe{0%,100%{opacity:.85}50%{opacity:.3}}'
+    document.head.appendChild(lampStyle)
+    const lamp = document.createElement('div')
+    Object.assign(lamp.style, {
+      position: 'absolute', top: '6px', left: '8px', display: 'flex', alignItems: 'center',
+      gap: '5px', padding: '3px 8px', borderRadius: '8px', background: 'rgba(0,0,0,.35)',
+      pointerEvents: 'none', zIndex: 2,
+    })
+    const lampDot = document.createElement('span')
+    Object.assign(lampDot.style, { width: '7px', height: '7px', borderRadius: '50%', flexShrink: '0' })
+    const lampLabel = document.createElement('span')
+    lampLabel.id = 'l2d-state-label'
+    Object.assign(lampLabel.style, { font: '10px/1 sans-serif', color: '#fff', whiteSpace: 'nowrap' })
+    lamp.appendChild(lampDot)
+    lamp.appendChild(lampLabel)
+    box.appendChild(lamp)
+    function setLamp(s) {
+      const L = STATE_LAMP[s] ?? STATE_LAMP.idle
+      lampDot.style.background = L.color
+      lampDot.style.boxShadow = `0 0 6px ${L.color}`
+      lampDot.style.animation = L.anim
+      lampLabel.textContent = L.label
+    }
+    setLamp('idle')
+
     let bubbleTimer = 0
     let lastBubbleAt = 0
     function placeBubble(x, y) {
@@ -188,6 +227,17 @@
       model.y = PET ? (h - model.height) : (h - model.height) / 2
     }
     layout()
+    let petBaseW = 340
+    let petBaseH = 460
+    if (BRIDGE) {
+      setTimeout(() => {
+        const b = model.getBounds()
+        if (b.width > 0 && b.height > 0) {
+          petBaseW = Math.min(1200, Math.max(160, Math.round(petBaseH * (b.width / b.height))))
+          BRIDGE.resizeTo(Math.round(petBaseW * scale), Math.round(petBaseH * scale))
+        }
+      }, 200)
+    }
     window.addEventListener('resize', () => {
       layout()
       evalIgnore()
@@ -202,7 +252,7 @@
       if (Math.abs(targetScale - scale) > 0.001) {
         scale += (targetScale - scale) * Math.min(1, dt * 7)
         if (BRIDGE) {
-          BRIDGE.resizeTo(Math.round(340 * scale), Math.round(460 * scale))
+          BRIDGE.resizeTo(Math.round(petBaseW * scale), Math.round(petBaseH * scale))
           evalIgnore()
         } else {
           layout()
@@ -230,6 +280,7 @@
       const woke = state === 'sleeping' && next !== 'sleeping'
       state = next
       stateSince = Date.now()
+      setLamp(next)
       clearInterval(rotateTimer)
       rotateTimer = 0
       clearInterval(remotionTimer)
@@ -440,6 +491,7 @@
 
     try {
       const es = new EventSource(BASE + '/state-stream')
+      es.onerror = () => { lastRawAt = 0; enter('offline') }
       es.onmessage = (m) => {
         try {
           const data = JSON.parse(m.data)
