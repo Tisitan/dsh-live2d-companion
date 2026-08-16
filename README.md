@@ -11,7 +11,7 @@
 - 💬 **气泡台词**：15 个台词池 70+ 条，状态轮播、时段问候、加班焦虑、深夜关怀
 - ⚙️ **全配置化**：台词/节奏/行为阈值都在 `quips.json`，前端 30 秒热重载，改完即生效
 - 🐾 **桌面桌宠**：透明无边框置顶、鼠标穿透（不挡操作）、位置记忆、随 DSH 启停（心跳看门狗）
-- 🧩 **多模型**：任何 Cubism 4/5 模型丢进 `model/` 目录即可接入
+- 🧩 **多模型**：任何 Cubism 4/5 模型丢进 `model/` 目录即可接入；语义槽位 + 自动嗅探 + profile.json 绑定层，情绪表现零配置自适应
 - 🔌 **零侵入**：对 DSH 本体零修改，纯用户级 cordis patch 层挂载，DSH 升级免疫
 
 ## 架构
@@ -109,6 +109,59 @@ npm.cmd install
 | `pools` | 15 个台词池：`thinking`/`working`/`done`/`waiting`/`error`/`overtime`/`sleeping`/`click`/`pat`/`drag`/`greet`/`greet_morning`/`greet_night`/`idle`/`busy` |
 
 模型切换也可以不改配置：URL 加 `?model=<模型名>/xxx.model3.json` 临时指定。
+
+## 自带模型与绑定层
+
+本插件**与模型解耦**：状态机驱动的是「语义槽位」，模型素材通过两级机制绑定到槽位上——
+
+### 第一级：自动嗅探（零配置）
+
+启动时前端会拉取模型的 `.model3.json`，解析 `FileReferences` 里的表情/动作清单，按关键词模糊匹配槽位（如文件名含 `shy`/`害羞` → 害羞位，含 `nod` → 点头位）。任何命名规范的 Cubism 模型丢进来即可获得完整情绪表现；匹配不到的槽位**静默跳过**，不会报错。
+
+### 第二级：profile.json 精确覆盖（可选）
+
+在模型目录放 `profile.json`（`model/<模型名>/profile.json`，随模型一起走），逐槽位钉死映射；写了的槽位覆盖嗅探结果，没写的继续走嗅探。
+
+**表情槽位**（值为模型里的表情名）：
+
+| 槽位 | 用途 |
+|---|---|
+| `default` / `happy` / `excited` | 常态 / 完成 / 工作兴奋 |
+| `shy` | 摸头、被拖动 |
+| `doubt` | 思考、待确认 |
+| `troubled` / `serious` | 报错、加班焦虑 / 加班严肃 |
+| `surprised` | 睡醒惊醒 |
+| `dark` / `sleep` | 离线 / 打瞌睡 |
+
+**动作槽位**（值为 `[动作组名, 组内序号]`）：
+
+| 槽位 | 用途 |
+|---|---|
+| `think` / `excited` / `shake` | 思考姿势 / 工作动作 / 摇头求确认 |
+| `dizzy` / `nod` | 报错转圈 / 完成点头 |
+| `sleep` / `glitch` | 打瞌睡循环 / 报错特效 |
+| `clickPool` | 点击反应随机池，二维数组 |
+
+示例（Nori 模型的实际 profile）：
+
+```json
+{
+  "expressions": {
+    "default": "00_Default", "happy": "13_Happy", "excited": "01_KiraKira",
+    "shy": "04_Shy", "doubt": "10_Doubt", "troubled": "09_Troubled",
+    "serious": "12_Serious", "surprised": "14_Surprised",
+    "dark": "05_Dark", "sleep": "Sleep"
+  },
+  "motions": {
+    "think": ["Poses", 1], "excited": ["Reactions", 2], "shake": ["Reactions", 1],
+    "dizzy": ["Reactions", 5], "nod": ["Reactions", 0],
+    "sleep": ["Idle", 1], "glitch": ["Effects", 0],
+    "clickPool": [["Reactions", 0], ["Reactions", 1], ["Reactions", 2]]
+  }
+}
+```
+
+调试时可在控制台看解析结果：`window.__l2d.binding`。
 
 ## 状态 → 表现映射
 

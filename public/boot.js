@@ -65,6 +65,91 @@
     return pool && pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : ''
   }
 
+  // ── 语义槽位绑定层：profile.json 精确覆盖 → .model3.json 自动嗅探 → 缺槽静默跳过 ──
+  const SNIFF_EXPR = {
+    default: ['default', 'normal', '通常'],
+    happy: ['happy', 'smile', 'joy', '开心', '喜悦', '笑'],
+    excited: ['kirakira', 'excited', 'star'],
+    shy: ['shy', 'blush', '害羞'],
+    doubt: ['doubt', 'think', 'confuse', '疑'],
+    troubled: ['troubled', 'annoy', 'worry', '困扰', '为难'],
+    serious: ['serious', '严肃'],
+    surprised: ['surprise', '惊'],
+    dark: ['dark', 'gloom', '阴沉'],
+    sleep: ['sleep', '眠'],
+  }
+  const SNIFF_MOTION = {
+    think: ['think', 'pose'],
+    excited: ['wakuwaku', 'excited', 'joy'],
+    shake: ['shake'],
+    dizzy: ['dizzy'],
+    nod: ['nod'],
+    sleep: ['sleep'],
+    glitch: ['glitch', 'effect'],
+  }
+  let BINDING = { expr: {}, motion: {}, clickPool: [] }
+
+  function resolveBinding(modelJson, profile) {
+    const refs = modelJson?.FileReferences ?? {}
+    const exprAvail = (refs.Expressions ?? []).map((e) => e.Name).filter(Boolean)
+    const motionGroups = refs.Motions ?? {}
+    const out = { expr: {}, motion: {}, clickPool: [] }
+    for (const [slot, keys] of Object.entries(SNIFF_EXPR)) {
+      const fromProfile = profile?.expressions?.[slot]
+      if (typeof fromProfile === 'string' && exprAvail.includes(fromProfile)) {
+        out.expr[slot] = fromProfile
+        continue
+      }
+      const hit = exprAvail.find((n) => keys.some((k) => n.toLowerCase().includes(k)))
+      if (hit) out.expr[slot] = hit
+    }
+    if (!out.expr.default && exprAvail.length > 0) out.expr.default = exprAvail[0]
+    const motionAt = (g, i) => Array.isArray(motionGroups[g]) && motionGroups[g][i] ? true : false
+    for (const [slot, keys] of Object.entries(SNIFF_MOTION)) {
+      const fromProfile = profile?.motions?.[slot]
+      if (Array.isArray(fromProfile) && motionAt(fromProfile[0], fromProfile[1])) {
+        out.motion[slot] = [fromProfile[0], fromProfile[1]]
+        continue
+      }
+      outer:
+      for (const [g, arr] of Object.entries(motionGroups)) {
+        for (let i = 0; i < arr.length; i++) {
+          const f = String(arr[i].File ?? '').toLowerCase()
+          if (keys.some((k) => f.includes(k))) {
+            out.motion[slot] = [g, i]
+            break outer
+          }
+        }
+      }
+    }
+    if (!out.motion.think) {
+      const pg = Object.keys(motionGroups).find((g) => g.toLowerCase().includes('pose'))
+      if (pg) out.motion.think = [pg, 0]
+    }
+    const poolFromProfile = profile?.motions?.clickPool
+    if (Array.isArray(poolFromProfile) && poolFromProfile.length > 0) {
+      out.clickPool = poolFromProfile.filter((p) => Array.isArray(p) && motionAt(p[0], p[1])).map((p) => [p[0], p[1]])
+    } else {
+      const rg = Object.keys(motionGroups).find((g) => /reaction|tap/i.test(g))
+      if (rg) {
+        out.clickPool = motionGroups[rg]
+          .map((entry, i) => [rg, i, String(entry.File ?? '')])
+          .filter(([, , f]) => !/angry/i.test(f))
+          .map(([g, i]) => [g, i])
+      }
+    }
+    return out
+  }
+
+  async function loadBinding(modelPath) {
+    const dir = modelPath.split('/').slice(0, -1).join('/')
+    let modelJson = null
+    let profile = null
+    try { modelJson = await (await fetch(`${BASE}/model/${modelPath}`, { cache: 'no-store' })).json() } catch { }
+    try { profile = await (await fetch(`${BASE}/model/${dir}/profile.json`, { cache: 'no-store' })).json() } catch { }
+    return resolveBinding(modelJson, profile)
+  }
+
   const STATE_LAMP = {
     offline: { color: '#ef4444', label: '离线中', anim: '' },
     idle: { color: '#4ade80', label: '闲置中', anim: '' },
@@ -77,14 +162,14 @@
   }
 
   const STATE_DEF = {
-    offline: { expr: '05_Dark' },
-    thinking: { expr: '10_Doubt', motion: ['Poses', 1], pool: 'thinking', rotate: true },
-    working: { expr: '01_KiraKira', motion: ['Reactions', 2], pool: 'working', rotate: true, remotionMs: 22000 },
-    waiting: { expr: '10_Doubt', motion: ['Reactions', 1], pool: 'waiting', rotate: true, remotionMs: 16000 },
-    error: { expr: '09_Troubled', motion: ['Reactions', 5], pool: 'error', rotate: true, transientMs: 4500, then: 'thinking' },
-    done: { expr: '13_Happy', motion: ['Reactions', 0], pool: 'done', transientMs: 6000, then: 'idle' },
-    sleeping: { expr: 'Sleep', motion: ['Idle', 1], pool: 'sleeping', rotate: true },
-    idle: { expr: '00_Default' },
+    offline: { expr: 'dark' },
+    thinking: { expr: 'doubt', motion: 'think', pool: 'thinking', rotate: true },
+    working: { expr: 'excited', motion: 'excited', pool: 'working', rotate: true, remotionMs: 22000 },
+    waiting: { expr: 'doubt', motion: 'shake', pool: 'waiting', rotate: true, remotionMs: 16000 },
+    error: { expr: 'troubled', motion: 'dizzy', pool: 'error', rotate: true, transientMs: 4500, then: 'thinking' },
+    done: { expr: 'happy', motion: 'nod', pool: 'done', transientMs: 6000, then: 'idle' },
+    sleeping: { expr: 'sleep', motion: 'sleep', pool: 'sleeping', rotate: true },
+    idle: { expr: 'default' },
   }
 
   async function main() {
@@ -194,6 +279,7 @@
       } catch { }
     }
     if (!modelPath) modelPath = 'nori/ARGNori.model3.json'
+    BINDING = await loadBinding(modelPath)
     const model = await PIXI.live2d.Live2DModel.from(`${BASE}/model/${modelPath}`, { autoInteract: false })
     app.stage.addChild(model)
     const naturalW = model.internalModel.originalWidth
@@ -260,8 +346,16 @@
       }
     })
 
-    const setExpr = (name) => { try { model.expression(name) } catch { } }
-    const playMotion = (group, index) => { model.motion(group, index).catch(() => { }) }
+    const setExpr = (slot) => {
+      const name = slot ? BINDING.expr[slot] : undefined
+      if (!name) return
+      try { model.expression(name) } catch { }
+    }
+    const playMotion = (slot) => {
+      const m = slot ? BINDING.motion[slot] : undefined
+      if (!m) return
+      model.motion(m[0], m[1]).catch(() => { })
+    }
 
     // ── 状态机 ──────────────────────────────────────────────
     let state = 'idle'
@@ -273,7 +367,7 @@
     let transientTimer = 0
     let lastRawAt = 0
 
-    const stateExpr = () => STATE_DEF[state]?.expr ?? '00_Default'
+    const stateExpr = () => STATE_DEF[state]?.expr ?? 'default'
 
     function enter(next) {
       if (next === state) return
@@ -296,14 +390,14 @@
         return
       }
       if (woke) {
-        setExpr('14_Surprised')
+        setExpr('surprised')
         setTimeout(() => setExpr(stateExpr()), 1200)
       } else {
         setExpr(def.expr)
       }
       if (def.motion) {
-        if (next === 'error' && Math.random() < 0.4) playMotion('Effects', 0)
-        else playMotion(def.motion[0], def.motion[1])
+        if (next === 'error' && Math.random() < 0.4 && BINDING.motion.glitch) playMotion('glitch')
+        else playMotion(def.motion)
       }
       if (def.rotate) {
         showBubble(quip(def.pool), ROTATION.holdMs)
@@ -312,18 +406,18 @@
           if (next === 'working') {
             const elapsed = Date.now() - stateSince
             if (elapsed > BEHAVIOR.overtimeAfterMs) {
-              setExpr('09_Troubled')
+              setExpr('troubled')
               showBubble(quip('overtime'), ROTATION.holdMs)
               return
             }
-            if (elapsed > BEHAVIOR.seriousAfterMs) setExpr('12_Serious')
+            if (elapsed > BEHAVIOR.seriousAfterMs) setExpr('serious')
           }
           showBubble(quip(def.pool), ROTATION.holdMs)
         }, ROTATION.intervalMs)
       }
       if (def.remotionMs) {
         remotionTimer = setInterval(() => {
-          if (!document.hidden && def.motion) playMotion(def.motion[0], def.motion[1])
+          if (!document.hidden && def.motion) playMotion(def.motion)
         }, def.remotionMs)
       }
       if (def.transientMs && def.then) {
@@ -347,9 +441,11 @@
 
     function clickReact() {
       if (busy()) { busyBlock(); return }
-      const reactions = [[0, 'Reactions'], [1, 'Reactions'], [2, 'Reactions']]
-      const [index, group] = reactions[Math.floor(Math.random() * reactions.length)]
-      playMotion(group, index)
+      const pool = BINDING.clickPool
+      if (pool.length > 0) {
+        const [g, i] = pool[Math.floor(Math.random() * pool.length)]
+        model.motion(g, i).catch(() => { })
+      }
       if (Math.random() < 0.5) showBubble(quip('click'), 1500)
     }
 
@@ -365,7 +461,7 @@
       const now = performance.now()
       if (inHead && now - patAt > 2000) {
         patAt = now
-        setExpr('04_Shy')
+        setExpr('shy')
         showBubble(quip('pat'), 1800)
         clearTimeout(patRestore)
         patRestore = setTimeout(() => setExpr(stateExpr()), 1800)
@@ -400,7 +496,7 @@
         if (!drag.moved && Math.hypot(dx, dy) > 6) {
           drag.moved = true
           box.style.cursor = 'grabbing'
-          setExpr('04_Shy')
+          setExpr('shy')
           if (Math.random() < 0.5) showBubble(quip('drag'), 1500)
         }
         if (drag.moved) {
@@ -443,7 +539,7 @@
         const dy = e.screenY - drag.y
         if (!drag.moved && Math.hypot(dx, dy) > 4) {
           drag.moved = true
-          setExpr('04_Shy')
+          setExpr('shy')
           if (Math.random() < 0.5) showBubble(quip('drag'), 1500)
         }
         if (drag.moved) {
@@ -461,8 +557,8 @@
 
     box.addEventListener('dblclick', () => {
       if (busy()) { busyBlock(); return }
-      setExpr('01_KiraKira')
-      playMotion('Reactions', 2)
+      setExpr('excited')
+      playMotion('excited')
       showBubble(quip('click'), 1500)
       setTimeout(() => setExpr(stateExpr()), 2500)
     })
@@ -529,6 +625,7 @@
       get scale() { return scale },
       get targetScale() { return targetScale },
       get bounds() { const b = model.getBounds(); return { x: b.x, y: b.y, w: b.width, h: b.height } },
+      get binding() { return BINDING },
       get gaze() { return lastGaze },
     }
     console.log('[l2d] companion ready')
