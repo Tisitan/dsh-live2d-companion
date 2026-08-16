@@ -1,5 +1,5 @@
 const targets = await (await fetch('http://127.0.0.1:9222/json')).json()
-const page = targets.find(t => t.type === 'page' && t.url.includes('pet.html'))
+const page = targets.find(t => t.type === 'page' && t.url.includes('pet.html') && !t.url.includes('preview'))
 if (!page) { console.log('NO PAGE'); process.exit(1) }
 
 const ws = new WebSocket(page.webSocketDebuggerUrl)
@@ -20,13 +20,36 @@ const ev = async (expr, awaitPromise = false) => {
   return r.exceptionDetails ? 'EXC: ' + (r.exceptionDetails.exception?.description ?? r.exceptionDetails.text) : r.result?.value
 }
 
-console.log('maxFPS now:', await ev(`window.__l2d.app.ticker.maxFPS`))
-console.log('ticker started:', await ev(`window.__l2d.app.ticker.started`))
-// 真·渲染率：数 PIXI ticker 发射次数（maxFPS 的跳过就发生在这里）
-console.log('ticker emissions/s (2s):', await ev(`new Promise(res => { let n = 0; const f = () => n++; window.__l2d.app.ticker.add(f); setTimeout(() => { window.__l2d.app.ticker.remove(f); res((n / 2).toFixed(1)) }, 2000) })`, true))
-console.log('enter sleeping:', await ev(`window.__l2d.enter('sleeping'), window.__l2d.app.ticker.maxFPS`))
-console.log('ticker emissions/s sleeping (2s):', await ev(`new Promise(res => { let n = 0; const f = () => n++; window.__l2d.app.ticker.add(f); setTimeout(() => { window.__l2d.app.ticker.remove(f); res((n / 2).toFixed(1)) }, 2000) })`, true))
-console.log('back to idle:', await ev(`window.__l2d.enter('idle'), window.__l2d.app.ticker.maxFPS`))
+console.log('parent binding excited before:', await ev(`JSON.stringify(window.__l2d.ctx.binding.motion.excited)`))
+console.log('open viewer:', await ev(`window.__l2d.openModelViewer(window.__l2d.modelPath), 'ok'`))
+for (let i = 0; i < 15; i++) {
+  await new Promise(r => setTimeout(r, 2000))
+  if (await ev(`!!document.querySelector('#l2d-viewer iframe').contentWindow.__l2d`)) break
+}
+await ev(`document.querySelector('.l2d-binder-toggle').click()`)
+await new Promise(r => setTimeout(r, 1200))
 
+// 给「工作」换成 Angry（Reactions:3）
+await ev(`[...document.querySelectorAll('.l2d-state-btn')].find(b => b.dataset.state === 'working').click()`)
+await new Promise(r => setTimeout(r, 400))
+await ev(`[...document.querySelectorAll('.l2d-binder-moves .l2d-mat')].find(x => x.textContent.includes('Angry')).click()`)
+await new Promise(r => setTimeout(r, 400))
+
+// 保存
+await ev(`document.querySelector('.l2d-binder-save').click()`)
+await new Promise(r => setTimeout(r, 6000))  // 保存 + 主窗强制热重载（模型重新加载要几秒）
+console.log('save status:', await ev(`document.querySelector('.l2d-binder-status').textContent`))
+console.log('parent binding excited after save (expect ["Reactions",3]):', await ev(`JSON.stringify(window.__l2d.ctx.binding.motion.excited)`))
+console.log('parent modelPath still nori:', await ev(`window.__l2d.ctx.getModelPath()`))
+
+// 回滚：换回 WakuWaku（Reactions:2）再保存，恢复原状
+await ev(`[...document.querySelectorAll('.l2d-binder-moves .l2d-mat')].find(x => x.textContent.includes('WakuWaku')).click()`)
+await new Promise(r => setTimeout(r, 400))
+await ev(`document.querySelector('.l2d-binder-save').click()`)
+await new Promise(r => setTimeout(r, 6000))
+console.log('restore status:', await ev(`document.querySelector('.l2d-binder-status').textContent`))
+console.log('parent binding excited restored (expect ["Reactions",2]):', await ev(`JSON.stringify(window.__l2d.ctx.binding.motion.excited)`))
+
+await ev(`document.getElementById('l2d-viewer').classList.remove('open')`)
 ws.close()
 process.exit(0)

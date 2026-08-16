@@ -6,7 +6,7 @@
  * 动作重放与瞬态回落计时。状态只引用语义槽位，具体素材由 binding 层解析。
  */
 
-import { cfg, quip } from './config.js'
+import { cfg, quip, PREVIEW } from './config.js'
 
 /**
  * 状态行为定义。
@@ -81,16 +81,16 @@ export function initState(ctx) {
       ctx.setExpr(def.expr)
     }
     if (def.motion) {
-      // 报错态 40% 概率播放故障特效（槽位存在时）
-      if (next === 'error' && Math.random() < 0.4 && ctx.binding.motion.glitch) ctx.playMotion('glitch')
+      // 报错态 40% 概率播放故障特效（槽位存在时；预览模式求确定性，恒播主动作）
+      if (!PREVIEW && next === 'error' && Math.random() < 0.4 && ctx.binding.motion.glitch) ctx.playMotion('glitch')
       else ctx.playMotion(def.motion)
     }
     if (def.rotate) {
       ctx.showBubble(quip(def.pool), cfg.rotation.holdMs)
       rotateTimer = setInterval(() => {
         if (document.hidden) return
-        // 加班升级：工作时间越长表情越凝重，超时后切焦虑台词池
-        if (next === 'working') {
+        // 加班升级：工作时间越长表情越凝重，超时后切焦虑台词池（预览模式不升级，保持所选状态的原始表现）
+        if (!PREVIEW && next === 'working') {
           const elapsed = Date.now() - stateSince
           if (elapsed > cfg.behavior.overtimeAfterMs) {
             ctx.setExpr('troubled')
@@ -107,13 +107,16 @@ export function initState(ctx) {
         if (!document.hidden && def.motion) ctx.playMotion(def.motion)
       }, def.remotionMs)
     }
-    if (def.transientMs && def.then) {
+    // 瞬态自动回落（预览模式禁用：按钮选什么就定格什么）
+    if (!PREVIEW && def.transientMs && def.then) {
       transientTimer = setTimeout(() => ctx.enter(def.then), def.transientMs)
     }
   }
 
-  // 闲置睡眠检查：30 秒一探，超时未活动进入 sleeping
-  setInterval(() => {
-    if (state === 'idle' && Date.now() - idleSince > cfg.behavior.sleepAfterMs) ctx.enter('sleeping')
-  }, 30000)
+  // 闲置睡眠检查：30 秒一探，超时未活动进入 sleeping（预览模式禁用，避免劫持手动演示）
+  if (!PREVIEW) {
+    setInterval(() => {
+      if (state === 'idle' && Date.now() - idleSince > cfg.behavior.sleepAfterMs) ctx.enter('sleeping')
+    }, 30000)
+  }
 }

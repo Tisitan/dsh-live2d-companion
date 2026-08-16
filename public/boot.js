@@ -7,7 +7,7 @@
  * 模块间不互相 import，全部经由共享上下文 ctx 在运行期取用彼此的能力。
  */
 
-import { BASE, quip, loadQuips } from './src/config.js'
+import { BASE, PREVIEW, quip, loadQuips } from './src/config.js'
 import { emptyBinding } from './src/binding.js'
 import { initUI } from './src/ui.js'
 import { initStage } from './src/stage.js'
@@ -43,27 +43,33 @@ async function main() {
   initUI(ctx)
   await initStage(ctx)
   initState(ctx)
-  initInteract(ctx)
-  initStream(ctx)
+  // 预览模式（面板 iframe ?preview=1）：只保留 渲染+状态机，
+  // 不接 SSE、不装交互、不问候不碎碎念不加载扩展——由父页面按钮手动驱动状态。
+  if (!PREVIEW) {
+    initInteract(ctx)
+    initStream(ctx)
+  }
   const panel = initPanel(ctx)
 
-  // 时段问候：深夜（23-5）与早晨（5-11）有专属台词池
-  const hour = new Date().getHours()
-  const greetPool = hour >= 23 || hour < 5 ? 'greet_night' : hour >= 5 && hour < 11 ? 'greet_morning' : 'greet'
-  ctx.showBubble(quip(greetPool), 4000)
+  if (!PREVIEW) {
+    // 时段问候：深夜（23-5）与早晨（5-11）有专属台词池
+    const hour = new Date().getHours()
+    const greetPool = hour >= 23 || hour < 5 ? 'greet_night' : hour >= 5 && hour < 11 ? 'greet_morning' : 'greet'
+    ctx.showBubble(quip(greetPool), 4000)
 
-  // 闲置碎碎念：空闲时每 2 分钟掷一次骰（60 秒气泡静默期内不出声）
-  setInterval(() => {
-    if (ctx.getState() === 'idle'
-      && !document.hidden
-      && performance.now() - ctx.getLastBubbleAt() > 60000
-      && Math.random() < 0.5) {
-      ctx.showBubble(quip('idle'), 3000)
-    }
-  }, 120000)
+    // 闲置碎碎念：空闲时每 2 分钟掷一次骰（60 秒气泡静默期内不出声）
+    setInterval(() => {
+      if (ctx.getState() === 'idle'
+        && !document.hidden
+        && performance.now() - ctx.getLastBubbleAt() > 60000
+        && Math.random() < 0.5) {
+        ctx.showBubble(quip('idle'), 3000)
+      }
+    }, 120000)
 
-  // 台词库热重载：改 quips.json 存盘即生效（页面可见时）
-  setInterval(() => { if (!document.hidden) loadQuips() }, 30000)
+    // 台词库热重载：改 quips.json 存盘即生效（页面可见时）
+    setInterval(() => { if (!document.hidden) loadQuips() }, 30000)
+  }
 
   /**
    * 公共 API（window.__l2d）：控制台调试句柄 + 扩展的 apply(api) 入参。
@@ -77,6 +83,9 @@ async function main() {
     registerLamp: (n, s) => ctx.registerLamp(n, s),
     quip,
     setModel: (path) => ctx.switchModel(path),
+    // 原样试穿（绑定编辑器用）：按素材原名直接播放，不走槽位解析
+    rawExpr: (name) => { try { void ctx.model.expression(name) } catch { } },
+    rawMotion: (g, i) => { try { ctx.model.motion(g, i, 3).catch(() => { }) } catch { } },
     ...(panel === null ? {} : {
       refreshModels: panel.refreshModels,
       openModelPanel: panel.openPanel,
@@ -98,9 +107,9 @@ async function main() {
   }
   window.__l2d = api
 
-  await loadExtensions(api)
+  if (!PREVIEW) await loadExtensions(api)
   ctx.emit('ready', api)
-  console.log('[l2d] companion ready')
+  console.log('[l2d] companion ready' + (PREVIEW ? ' (preview)' : ''))
 }
 
 /**

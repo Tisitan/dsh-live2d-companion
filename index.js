@@ -69,6 +69,47 @@ function splitSafeRelPath(path) {
   return parts
 }
 
+/**
+ * 白名单清洗绑定档案：只保留合法形状，拒绝注入任意键值。
+ * 槽位键须为标识符；表情名为短字符串；动作引用为 [安全组名, 0-99 序号]。
+ * @returns 清洗后的档案对象，形状非法时返回 undefined。
+ */
+function sanitizeProfile(profile) {
+  if (profile === null || typeof profile !== 'object' || Array.isArray(profile)) return undefined
+  const SLOT_KEY = /^[a-zA-Z][\w-]{0,31}$/
+  const motionRef = (v) => Array.isArray(v) && v.length === 2
+    && typeof v[0] === 'string' && safePathSegment(v[0], 64)
+    && Number.isInteger(v[1]) && v[1] >= 0 && v[1] <= 99 ? [v[0], v[1]] : undefined
+  const clean = {}
+  if (profile.expressions !== undefined) {
+    if (profile.expressions === null || typeof profile.expressions !== 'object' || Array.isArray(profile.expressions)) return undefined
+    clean.expressions = {}
+    for (const [slot, name] of Object.entries(profile.expressions)) {
+      if (!SLOT_KEY.test(slot) || typeof name !== 'string' || name.length === 0 || name.length > 128 || /[/\\:\0]/.test(name)) return undefined
+      clean.expressions[slot] = name
+    }
+  }
+  if (profile.motions !== undefined) {
+    if (profile.motions === null || typeof profile.motions !== 'object' || Array.isArray(profile.motions)) return undefined
+    clean.motions = {}
+    for (const [slot, ref] of Object.entries(profile.motions)) {
+      if (!SLOT_KEY.test(slot)) return undefined
+      if (slot === 'clickPool') {
+        if (!Array.isArray(ref) || ref.length > 32) return undefined
+        const pool = ref.map(motionRef)
+        if (pool.some(p => p === undefined)) return undefined
+        clean.motions.clickPool = pool
+      } else {
+        const m = motionRef(ref)
+        if (m === undefined) return undefined
+        clean.motions[slot] = m
+      }
+    }
+  }
+  if (clean.expressions === undefined && clean.motions === undefined) return undefined
+  return clean
+}
+
 export function apply(ctx, config) {
   const configModel = normalizeModelRef(config?.model) ?? DEFAULT_MODEL
   let modelPath = configModel
@@ -375,6 +416,47 @@ export function apply(ctx, config) {
         sendJson(res, 200, { imported: { model: modelName, path: parts.join('/'), bytes: buffer.length } })
       }, error => {
         sendJson(res, error.message === 'file too large' ? 413 : 400, { error: error.message })
+      })
+    },
+  }))
+
+  // 绑定档案读写：可视化编辑器保存 profile.json / 恢复自动嗅探（删除档案）。
+  // profile 只收白名单形状：expressions {槽位: 表情名}、motions {槽位: [组, 序号]}、clickPool [[组, 序号]]。
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/live2d/profile',
+    handler(req, res) {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { allow: 'POST' })
+        res.end('method not allowed')
+        return
+      }
+      readJsonBody(req).then(async parsed => {
+        const dir = typeof parsed.dir === 'string' && safePathSegment(parsed.dir, 128) ? parsed.dir : undefined
+        if (dir === undefined) {
+          sendJson(res, 400, { error: 'dir is invalid' })
+          return
+        }
+        const file = join(MODEL_DIR, dir, 'profile.json')
+        if (parsed.reset === true) {
+          rmSync(file, { force: true })
+          sendJson(res, 200, { reset: true })
+          return
+        }
+        const clean = sanitizeProfile(parsed.profile)
+        if (clean === undefined) {
+          sendJson(res, 400, { error: 'profile shape is invalid' })
+          return
+        }
+        try {
+          await mkdir(dirname(file), { recursive: true })
+          await writeFile(file, JSON.stringify(clean, null, 2) + '\n')
+          sendJson(res, 200, { saved: `${dir}/profile.json` })
+        } catch (error) {
+          sendJson(res, 500, { error: `failed to write profile: ${String(error)}` })
+        }
+      }, error => {
+        sendJson(res, 400, { error: `invalid request body: ${String(error)}` })
       })
     },
   }))

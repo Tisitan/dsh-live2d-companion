@@ -27,6 +27,7 @@ dsh 宿主进程
          ├─ exact /live2d/models         → 扫描 model/ 下全部模型（GET）
          ├─ exact /live2d/model          → 切换/恢复模型并持久化（POST）
          ├─ exact /live2d/import         → 上传模型文件（POST）
+         ├─ exact /live2d/profile        → 绑定档案写/删（POST，白名单清洗）
          ├─ tapIndex 注入 <script>       → 网页挂件（widget: false 可关）
          └─ spawn Electron 桌宠          → 随宿主启停（pet: false 可关）
 
@@ -39,7 +40,7 @@ dsh 宿主进程
      ├─ state.js     → 8 态状态机（灯 + 表情 + 动作 + 台词轮播）
      ├─ interact.js  → 点击/摸头/拖拽/缩放/穿透/全局视线
      ├─ stream.js    → SSE 客户端（raw 优先 / coarse 兜底 / 离线检测）
-     └─ panel.js     → 模型面板（入口/列表/切换/查看/导入）
+     ├─ panel.js     → 模型面板（入口/列表/切换/查看/导入/绑定编辑器）
          └─ pixi.js + pixi-live2d-display + Live2D Cubism Core
 ```
 
@@ -160,6 +161,8 @@ npm.cmd install
 
 启动时前端会拉取模型的 `.model3.json`，解析 `FileReferences` 里的表情/动作清单，按关键词模糊匹配槽位（如文件名含 `shy`/`害羞` → 害羞位，含 `nod` → 点头位）。任何命名规范的 Cubism 模型丢进来即可获得完整情绪表现；匹配不到的槽位**静默跳过**，不会报错。
 
+> 🌐 **生态惯例兼容**：自动呼吸依赖官方示例框架的 `Idle` 组惯例（绝大多数模型遵守）；点击反应池优先取官方示例惯例的 `Tap*` / `Reaction` / `Touch` 组并自动剔除生气动作。Live2D 官方并不规定动作组/表情的语义命名，故无标配模型一律可用下方编辑器手动绑定。
+
 ### 第二级：profile.json 精确覆盖（可选）
 
 在模型目录放 `profile.json`（`model/<模型名>/profile.json`，随模型一起走），逐槽位钉死映射；写了的槽位覆盖嗅探结果，没写的继续走嗅探。
@@ -207,11 +210,12 @@ npm.cmd install
 
 ## 模型面板
 
-网页挂件右上角有一个悬浮齿轮按钮，鼠标不悬停时约 1.2 秒后自动隐藏；悬停模型区域或打开面板时重新出现：
+挂件/桌宠右上角有一个悬浮齿轮按钮，鼠标不悬停时约 1.2 秒后自动隐藏；悬停模型区域或打开面板时重新出现：
 
 - 自动扫描 `public/model/` 下全部 `*.model3.json`
 - 点击列表项即时切换当前挂件模型，无需刷新页面
-- 每个模型右侧「查看」按钮，弹窗内嵌 Live2D 预览，不影响当前模型
+- 每个模型右侧「查看」按钮，弹窗内嵌 Live2D 预览（隔离实例：不接 SSE/交互，状态由按钮手动驱动，8 态点哪个看哪个）
+- 预览弹窗顶部「绑定」打开**状态直通绑定编辑器**：点上方状态按钮选目标（工作/闲置…），下方列出全部表情/动作素材按钮——点素材即在预览里试穿并记入草稿（角标「→ 工作」标出素材服役状态），「保存绑定」才写入模型目录 `profile.json` 并热生效到主窗；「恢复自动嗅探」删除档案回退。闲置/离线无动作位、共享脸槽（思考/等待）等情况界面会明确提示
 - 「导入模型」选择模型文件夹（Chrome/Edge 支持目录选择；其他浏览器可多选文件后输入模型名），按文件逐个上传并自动切到导入后的 `.model3.json`
 - 「恢复默认」清除面板选择，回到 `cordis.patch.yml` 里的 `model`
 - 面板选择保存在仓库根目录 `model-selection.json`（已 gitignore），下次启动 DSH 仍生效；该文件优先于 patch 默认值
@@ -222,6 +226,7 @@ npm.cmd install
 - `POST /live2d/model`：body `{ "model": "<相对 model/ 的 .model3.json 路径>" }`
 - `POST /live2d/model`：body `{ "reset": true }` 恢复 patch 默认模型
 - `POST /live2d/import?model=<文件夹名>&path=<相对文件路径>`：body 为原始文件字节，单文件上限 128 MiB；路径经过校验，无法写出 `model/` 目录
+- `POST /live2d/profile`：body `{ "dir": "<模型文件夹>", "profile": {...} }` 写绑定档案；`{ "dir": "...", "reset": true }` 删除档案恢复自动嗅探。档案经白名单形状清洗，写入范围锁死在 `model/<dir>/profile.json`
 
 ## 扩展开发（贡献者向）
 

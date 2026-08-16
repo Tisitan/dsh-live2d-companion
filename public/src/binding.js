@@ -26,7 +26,7 @@ const SNIFF_EXPR = {
 
 /** 动作槽位 → 嗅探关键词（匹配动作文件名）。 */
 const SNIFF_MOTION = {
-  think: ['think', 'pose'],
+  think: ['think'],
   excited: ['wakuwaku', 'excited', 'joy'],
   shake: ['shake'],
   dizzy: ['dizzy'],
@@ -38,6 +38,23 @@ const SNIFF_MOTION = {
 /** @returns {{expr:Object, motion:Object, clickPool:Array}} 空绑定（全槽位缺失的安全态） */
 export function emptyBinding() {
   return { expr: {}, motion: {}, clickPool: [] }
+}
+
+/**
+ * 提取模型素材全量清单（绑定编辑器用）：全部表情名与全部动作 [组, 序号, 文件名]。
+ * @param {?Object} modelJson .model3.json 解析结果（可为 null）
+ */
+export function extractInventory(modelJson) {
+  const refs = modelJson?.FileReferences ?? {}
+  const expressions = (refs.Expressions ?? []).map((e) => e.Name).filter(Boolean)
+  const motions = []
+  for (const [group, arr] of Object.entries(refs.Motions ?? {})) {
+    if (!Array.isArray(arr)) continue
+    for (let index = 0; index < arr.length; index++) {
+      motions.push({ group, index, file: String(arr[index].File ?? '') })
+    }
+  }
+  return { expressions, motions }
 }
 
 /**
@@ -92,12 +109,12 @@ export function resolveBinding(modelJson, profile) {
     if (pg) out.motion.think = [pg, 0]
   }
 
-  // 点击反应池：profile 覆盖 → 取 reaction/tap 组并剔除生气动作
+  // 点击反应池：profile 覆盖 → 取官方示例惯例组（Tap/Reaction/Touch）并剔除生气动作
   const poolFromProfile = profile?.motions?.clickPool
   if (Array.isArray(poolFromProfile) && poolFromProfile.length > 0) {
     out.clickPool = poolFromProfile.filter((p) => Array.isArray(p) && motionAt(p[0], p[1])).map((p) => [p[0], p[1]])
   } else {
-    const rg = Object.keys(motionGroups).find((g) => /reaction|tap/i.test(g))
+    const rg = Object.keys(motionGroups).find((g) => /reaction|tap|touch/i.test(g))
     if (rg) {
       out.clickPool = motionGroups[rg]
         .map((entry, i) => [rg, i, String(entry.File ?? '')])

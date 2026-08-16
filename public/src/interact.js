@@ -21,7 +21,14 @@ export function initInteract(ctx) {
   let lastPointer = null
   let dragging = false
 
-  /** 指针穿透评估：指针在模型包围盒（含余量）内才接收事件，否则镂空让桌面。 */
+  /** UI 命中检测：面板/预览等控件无论是否贴模型都必须可点（大窗口时齿轮远离模型包围盒）。 */
+  function uiHit() {
+    if (lastPointer === null) return false
+    const el = document.elementFromPoint(lastPointer.x, lastPointer.y)
+    return !!(el && el.closest('#l2d-model-toggle, #l2d-model-panel, #l2d-viewer'))
+  }
+
+  /** 指针穿透评估：指针在模型包围盒（含余量）或面板控件上才接收事件，否则镂空让桌面。 */
   ctx.evalIgnore = () => {
     if (!BRIDGE || lastPointer === null || dragging) return
     const r = ctx.app.view.getBoundingClientRect()
@@ -30,7 +37,8 @@ export function initInteract(ctx) {
     const y = lastPointer.y - r.top
     const inside = x >= b.x - HOVER_MARGIN && x <= b.x + b.width + HOVER_MARGIN
       && y >= b.y - HOVER_MARGIN && y <= b.y + b.height + HOVER_MARGIN
-    BRIDGE.setIgnore(!inside)
+    ctx.lastIgnore = !(inside || uiHit())  // 暴露给调试探针
+    BRIDGE.setIgnore(ctx.lastIgnore)
   }
 
   // ── 忙碌拦截：8 秒冷却，避免刷屏 ──

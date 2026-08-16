@@ -6,7 +6,7 @@
  * （scale/targetScale/petBaseW/petBaseH）也挂在 ctx 上与 interact 模块共享。
  */
 
-import { BASE, PET, BRIDGE, MODEL_QUERY, BASE_W, BASE_H, store, loadScript } from './config.js'
+import { BASE, PET, BRIDGE, MODEL_QUERY, PREVIEW, BASE_W, BASE_H, store, loadScript } from './config.js'
 import { loadBinding } from './binding.js'
 
 /** 桌宠窗口默认尺寸（收身前）；收身后被实测网格宽高比取代。 */
@@ -79,21 +79,43 @@ export async function initStage(ctx) {
   ctx.petBaseH = PET_DEFAULT_H
   ctx.modelBounds = () => ctx.model.getBounds()
 
-  /** 布局：挂件按固定画布，桌宠按窗口；桌宠底部锚定（站地上），挂件垂直居中。 */
+  /** 布局：挂件按固定画布，桌宠按窗口；桌宠底部锚定（站地上），挂件垂直居中。
+   *  两遍制：先按标称尺寸缩放，再量真实渲染包围盒二次修正——标称与实测
+   *  不符的模型（帽檐/飘带溢出标称框）在任何窗口下都不会被裁切。 */
   ctx.layout = () => {
     const w = PET ? window.innerWidth : BASE_W
     const h = PET ? window.innerHeight : BASE_H
     app.renderer.resize(w, h)
-    const s = Math.min(w / naturalW, h / naturalH) * FIT_RATIO * (BRIDGE ? 1 : ctx.scale)
+    const zoom = (BRIDGE || PREVIEW) ? 1 : ctx.scale
+    let s = Math.min(w / naturalW, h / naturalH) * FIT_RATIO * zoom
     ctx.model.scale.set(s)
+    const b = ctx.model.getBounds()
+    if (b.width > 0 && b.height > 0) {
+      const k = Math.min(1, (w * FIT_RATIO * zoom) / b.width, (h * FIT_RATIO * zoom) / b.height)
+      if (k < 1) {
+        s *= k
+        ctx.model.scale.set(s)
+      }
+      const b2 = ctx.model.getBounds()
+      ctx.model.x += (w - b2.width) / 2 - b2.x
+      ctx.model.y += (PET ? (h - b2.height) : (h - b2.height) / 2) - b2.y
+      return
+    }
     ctx.model.x = (w - ctx.model.width) / 2
     ctx.model.y = PET ? (h - ctx.model.height) : (h - ctx.model.height) / 2
   }
   ctx.layout()
 
+  // 尺寸自愈：iframe/容器尺寸变化（预览弹窗开合、绑定栏展开等）不一定触发
+  // window resize，用 ResizeObserver 兜底重新布局，防止预览按旧尺寸裁切
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => ctx.layout()).observe(ctx.box)
+  }
+
   // 桌宠收身：量网格真实宽高比，窗口收成刚好包住模型（保持用户缩放比例）
+  // 预览 iframe 中禁用（iframe 里可能继承 preload 桥，绝不能让它 resize 真窗口）
   function fitPetWindow() {
-    if (!BRIDGE) return
+    if (!BRIDGE || PREVIEW) return
     const b = ctx.model.getBounds()
     if (b.width > 0 && b.height > 0) {
       ctx.petBaseW = Math.min(1200, Math.max(160, Math.round(ctx.petBaseH * (b.width / b.height))))
@@ -137,12 +159,15 @@ export async function initStage(ctx) {
 
   /**
    * 播放动作槽位；槽位未绑定时静默跳过。
+   * 强制抢占语义：先清残存动作队列再以最高优先级立即播放，
+   * 避免快速连切状态时旧动作排队滞留、几秒后错位播放。
    * @param {?string} slot 槽位名（见 binding.js）
    */
   ctx.playMotion = (slot) => {
     const m = slot ? ctx.binding.motion[slot] : undefined
     if (!m) return
-    ctx.model.motion(m[0], m[1]).catch(() => { })
+    try { ctx.model.internalModel.motionManager.stopAllMotions() } catch { }
+    ctx.model.motion(m[0], m[1], 3).catch(() => { }) // 3 = MotionPriority.FORCE
   }
 
   // 模型热切换令牌：只允许最后一次请求生效，避免并发切换互相覆盖
@@ -152,10 +177,11 @@ export async function initStage(ctx) {
    * 热切换当前模型：加载新模型与其绑定，成功后替换舞台上的旧模型。
    * 旧模型保留到新模型就绪，加载失败时当前模型不受影响。
    * @param {string} nextPath 相对 model/ 的 .model3.json 路径
-   * @returns {Promise<boolean>} 是否完成切换（同路径返回 false）
+   * @param {boolean} force 同路径也强制重载（绑定档案保存后刷新用）
+   * @returns {Promise<boolean>} 是否完成切换（同路径且未强制时返回 false）
    */
-  ctx.switchModel = async (nextPath) => {
-    if (!nextPath || nextPath === modelPath) return false
+  ctx.switchModel = async (nextPath, force = false) => {
+    if (!nextPath || (nextPath === modelPath && !force)) return false
     const token = ++switchToken
     const [nextModel, nextBinding] = await Promise.all([
       PIXI.live2d.Live2DModel.from(`${BASE}/model/${nextPath}`, { autoInteract: false }),
