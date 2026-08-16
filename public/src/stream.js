@@ -1,9 +1,10 @@
 /**
  * stream.js —— 状态流客户端。
  *
- * SSE 连接宿主的 /live2d/state-stream，帧格式二选一：
+ * SSE 连接宿主的 /live2d/state-stream，帧格式三选一：
  *   { ev: '事件名' }    —— 白名单原始会话事件（优先，驱动状态机）
  *   { state: '状态名' } —— 宿主聚合状态（兜底：raw 通道静默 10 秒以上才采信）
+ *   { model: '路径' }   —— 模型热切换广播（首帧快照同含；多窗口同步用）
  * 断线进入 offline 状态并清零 raw 时效，重连后的聚合快照可立即生效。
  */
 
@@ -42,10 +43,14 @@ export function initStream(ctx) {
     es.onmessage = (m) => {
       try {
         const data = JSON.parse(m.data)
-        if (typeof data.ev === 'string') {
-          onRawEvent(data.ev)
-        } else if (typeof data.state === 'string' && Date.now() - lastRawAt > RAW_FRESH_MS) {
-          if (data.state !== ctx.getState()) ctx.enter(data.state)
+        if (typeof data.ev === 'string') onRawEvent(data.ev)
+        // 他窗口发起的模型热切换广播（首帧快照同含）；switchModel 对同路径/并发幂等。
+        // 注意与 state 判定并列而非 else-if：首帧同时携带 model 与 state，两者都要处理。
+        if (typeof data.model === 'string' && data.model !== ctx.modelPath) {
+          void ctx.switchModel(data.model).catch(() => { })
+        }
+        if (typeof data.state === 'string' && Date.now() - lastRawAt > RAW_FRESH_MS && data.state !== ctx.getState()) {
+          ctx.enter(data.state)
         }
       } catch { }
     }
