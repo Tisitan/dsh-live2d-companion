@@ -285,7 +285,13 @@ export default function apply(api) {
 
 - 桌宠 DevTools：`L2D_DEBUG=1` 启动后 `--remote-debugging-port 9222`，配合 `pet/cdp-probe.mjs`（CDP 注入探针）
 - 页面控制台句柄：`window.__l2d`（model / 当前状态 / bounds / 手动 enter）
-- 桌宠环境变量：`L2D_URL`（目标页面）、`L2D_MODEL`（临时模型）
+- 桌宠环境变量：`L2D_URL`（目标页面）、`L2D_MODEL`（临时模型）、`L2D_SOFT=1`（软渲染模式：部分 GPU/驱动下透明窗移动闪烁的逃生门，代价是渲染吃 CPU）
+
+### 拖动闪烁排查顺序
+
+1. 看桌宠右上角有没有「?」按钮——没有就是旧包，`dsh plugin add` 重装后重启 DSH 与桌宠
+2. 复现后在 DevTools 控制台查 `localStorage.getItem('l2d-pet-scale')` 是否被拖动改写（应为 `1` 或你 Ctrl+滚轮设的值）
+3. 仍闪则打开面板勾选「CPU 渲染模式」（自动重启生效，渲染改走 CPU）——CPU 渲染下不闪 = 命中 Electron/Windows 透明窗已知问题，常驻该模式即可；`L2D_SOFT=1` 环境变量可做等效临时测试
 
 ## 许可
 

@@ -11,6 +11,15 @@ const WIN_H = 460
 if (process.env.L2D_DEBUG === '1') {
   app.commandLine.appendSwitch('remote-debugging-port', '9222')
 }
+// 软渲染逃生门：部分 GPU/驱动组合下透明无边框窗移动必闪（Electron/Windows 已知顽疾，
+// 与移动频率无关）。L2D_SOFT=1 临时测试；面板开关写盘 pet-config.json 持久化常驻。
+// 代价：渲染吃 CPU（默认小窗无感，大缩放窗口下线性上涨），笔记本略费电。
+const configFile = () => path.join(app.getPath('userData'), 'pet-config.json')
+let petConfig = {}
+try { petConfig = JSON.parse(fs.readFileSync(configFile(), 'utf8')) } catch { }
+if (process.env.L2D_SOFT === '1' || petConfig.soft === true) {
+  app.disableHardwareAcceleration()
+}
 
 let win = null
 const stateFile = () => path.join(app.getPath('userData'), 'window-pos.json')
@@ -65,6 +74,14 @@ app.whenReady().then(() => {
     if (win !== null && !win.isDestroyed()) win.setIgnoreMouseEvents(ignore, { forward: true })
   })
   ipcMain.on('l2d-quit', () => app.quit())
+  // 软渲染开关：disableHardwareAcceleration 只能在启动前生效 → 写盘后整体重启
+  ipcMain.handle('l2d-soft-get', () => petConfig.soft === true)
+  ipcMain.on('l2d-soft-set', (_e, on) => {
+    petConfig.soft = !!on
+    try { fs.writeFileSync(configFile(), JSON.stringify(petConfig)) } catch { }
+    app.relaunch()
+    app.exit(0)
+  })
   ipcMain.handle('l2d-cursor-get', () => {
     if (win === null || win.isDestroyed()) return null
     const p = screen.getCursorScreenPoint()

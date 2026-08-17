@@ -116,6 +116,8 @@ export function initPanel(ctx) {
   border: 1px solid rgba(0,0,0,.12); border-radius: 6px; padding: 3px 6px; background: #fff;
 }
 #l2d-model-panel .l2d-quit-row { padding: 0 12px 12px; }
+#l2d-model-panel .l2d-soft-row { padding: 0 12px 10px; }
+#l2d-model-panel .l2d-soft-label { display: flex; align-items: center; gap: 6px; color: #778; font-size: 12px; cursor: pointer; }
 #l2d-model-panel .l2d-quit-row button {
   width: 100%; padding: 6px 8px; border: 1px solid rgba(192,57,43,.35); border-radius: 8px;
   background: #fff; color: #c0392b; cursor: pointer; font: inherit; font-size: 12px;
@@ -287,6 +289,11 @@ export function initPanel(ctx) {
     <option value="saver">省电（15/8/4 fps）</option>
   </select>
 </div>
+<div class="l2d-soft-row" hidden>
+  <label class="l2d-soft-label" title="默认 GPU 渲染；拖动闪烁的机器开启后改走 CPU，切换后桌宠自动重启生效">
+    <input type="checkbox" class="l2d-soft"> CPU 渲染模式（拖动闪烁时开启，切换后自动重启生效）
+  </label>
+</div>
 <div class="l2d-quit-row" hidden>
   <button type="button" class="l2d-quit">退出桌宠</button>
 </div>`
@@ -351,6 +358,17 @@ export function initPanel(ctx) {
   // 退出桌宠：仅桌宠形态显示；双击确认防误触，道别后再退场
   const quitRow = panel.querySelector('.l2d-quit-row')
   const quitBtn = panel.querySelector('.l2d-quit')
+  // 软渲染开关：仅桌宠形态显示；勾选状态来自持久化配置，切换写盘后自动重启
+  const softRow = panel.querySelector('.l2d-soft-row')
+  const softCheck = panel.querySelector('.l2d-soft')
+  if (softRow && softCheck && BRIDGE?.getSoft) {
+    softRow.hidden = false
+    BRIDGE.getSoft().then((v) => { softCheck.checked = !!v }).catch(() => { })
+    softCheck.addEventListener('change', () => {
+      ctx.showBubble?.(softCheck.checked ? '切换 CPU 渲染，咱马上回来…' : '切回 GPU 渲染，咱马上回来…', 1500)
+      setTimeout(() => BRIDGE.setSoft(softCheck.checked), 800)
+    })
+  }
   if (quitRow && quitBtn && BRIDGE) {
     quitRow.hidden = false
     let armedAt = 0
