@@ -19,6 +19,7 @@
     "public/vendor/pixi.min.js",
     "public/vendor/pixi-live2d-cubism4.min.js",
     "pet",
+    "standalone",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"

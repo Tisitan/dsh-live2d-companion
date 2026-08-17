@@ -15,6 +15,7 @@ import { initState } from './src/state.js'
 import { initInteract } from './src/interact.js'
 import { initStream } from './src/stream.js'
 import { initPanel } from './src/panel.js'
+import { initChat } from './src/chat.js'
 
 // 防重复注入（tapIndex 与手动加载可能并存）
 if (!window.__l2dCompanion) {
@@ -47,6 +48,7 @@ async function main() {
   // 不接 SSE、不装交互、不问候不碎碎念不加载扩展——由父页面按钮手动驱动状态。
   if (!PREVIEW) {
     initInteract(ctx)
+    initChat(ctx)
     initStream(ctx)
   }
   const panel = initPanel(ctx)
@@ -83,6 +85,7 @@ async function main() {
     registerLamp: (n, s) => ctx.registerLamp(n, s),
     quip,
     setModel: (path) => ctx.switchModel(path),
+    openChat: () => ctx.openChat?.(),
     // 原样试穿（绑定编辑器用）：按素材原名直接播放，不走槽位解析
     rawExpr: (name) => { try { void ctx.model.expression(name) } catch { } },
     rawMotion: (g, i) => { try { ctx.model.motion(g, i, 3).catch(() => { }) } catch { } },
