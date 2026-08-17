@@ -127,4 +127,53 @@ export function initUI(ctx) {
    */
   ctx.registerLamp = (name, spec) => { STATE_LAMP[name] = { ...STATE_LAMP[name], ...spec } }
   ctx.setLamp('idle')
+
+  // ── 多任务指示灯：并行会话时每任务一枚小灯，列在主灯下方 ──
+  // ≤1 个会话时隐藏（主灯即会话灯，不重复占地）；超过 8 个折叠为 +N
+  const sessBox = document.createElement('div')
+  Object.assign(sessBox.style, {
+    position: 'absolute', top: '28px', left: '8px', display: 'flex', flexDirection: 'column',
+    gap: '3px', pointerEvents: 'none', zIndex: 2,
+  })
+  box.appendChild(sessBox)
+
+  /** 会话灯用的短状态文案（主灯文案偏卖萌，这里求紧凑）。 */
+  const STATE_SHORT = {
+    offline: '离线', idle: '闲置', thinking: '思考', working: '工作',
+    waiting: '待确认', error: '卡壳', done: '完成', sleeping: '睡眠',
+  }
+
+  /**
+   * 渲染每任务指示灯（宿主 sessions 帧驱动，stream 模块喂入）。
+   * @param {Array<{n:number, state:string}>} list 编号升序的会话状态
+   */
+  ctx.setSessions = (list) => {
+    sessBox.replaceChildren()
+    if (!Array.isArray(list) || list.length <= 1) return
+    const shown = list.slice(0, 8)
+    for (const s of shown) {
+      const L = STATE_LAMP[s.state] ?? STATE_LAMP.idle
+      const chip = document.createElement('div')
+      Object.assign(chip.style, {
+        display: 'flex', alignItems: 'center', gap: '4px', padding: '2px 7px',
+        borderRadius: '7px', background: 'rgba(0,0,0,.30)', width: 'fit-content',
+      })
+      const dot = document.createElement('span')
+      Object.assign(dot.style, {
+        width: '6px', height: '6px', borderRadius: '50%', flexShrink: '0',
+        background: L.color, boxShadow: `0 0 5px ${L.color}`,
+      })
+      const text = document.createElement('span')
+      Object.assign(text.style, { font: '9px/1 sans-serif', color: '#fff', whiteSpace: 'nowrap' })
+      text.textContent = `任务${s.n}·${STATE_SHORT[s.state] ?? s.state}`
+      chip.append(dot, text)
+      sessBox.appendChild(chip)
+    }
+    if (list.length > shown.length) {
+      const more = document.createElement('div')
+      Object.assign(more.style, { font: '9px/1 sans-serif', color: 'rgba(255,255,255,.75)', padding: '2px 7px' })
+      more.textContent = `+${list.length - shown.length} 个任务`
+      sessBox.appendChild(more)
+    }
+  }
 }

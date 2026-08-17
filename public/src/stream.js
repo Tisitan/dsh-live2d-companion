@@ -44,6 +44,8 @@ export function initStream(ctx) {
       try {
         const data = JSON.parse(m.data)
         if (typeof data.ev === 'string') onRawEvent(data.ev)
+        // 每会话状态快照（多任务指示灯）；与 state 判定并列：同帧可能同时携带
+        if (Array.isArray(data.sessions)) ctx.setSessions?.(data.sessions)
         // 他窗口发起的模型热切换广播（首帧快照同含）；switchModel 对同路径/并发幂等。
         // 注意与 state 判定并列而非 else-if：首帧同时携带 model 与 state，两者都要处理。
         if (typeof data.model === 'string' && data.model !== ctx.modelPath) {

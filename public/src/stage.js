@@ -41,12 +41,34 @@ export async function initStage(ctx) {
   ctx.box.appendChild(app.view)
   ctx.app = app
 
-  // ── 帧率分级：模型呼吸动画必须持续渲染，但无需 60fps 无差别烧电 ──
-  // 常态 30fps（视觉无损）/ 睡眠 12fps（缓慢呼吸）/ 离线 6fps（仅保活）。
-  app.ticker.maxFPS = 30
-  ctx.on('enter', (next) => {
-    app.ticker.maxFPS = next === 'sleeping' ? 12 : next === 'offline' ? 6 : 30
-  })
+  // ── 帧率分级：模型呼吸动画必须持续渲染，但无需无差别烧电 ──
+  // 三档预设（常态/睡眠/离线），面板可视化切换并持久化；窗口隐藏时完全停渲染。
+  const FPS_MODES = {
+    full: { active: 60, sleep: 30, offline: 12 },
+    balanced: { active: 30, sleep: 12, offline: 6 },
+    saver: { active: 15, sleep: 8, offline: 4 },
+  }
+  {
+    const saved = store.getFpsMode()
+    ctx.fpsMode = FPS_MODES[saved] ? saved : 'balanced'
+  }
+  // 放开 PIXI 默认 minFPS=10 的地板：否则 maxFPS 设 8/6/4 会被静默钳回 10
+  // （minFPS 同时是 deltaTime 尖峰钳制，4 档 = 单帧最多补 250ms，动画不会跳飞）
+  app.ticker.minFPS = 4
+  /** 按状态套用所选预设的分档帧率。 */
+  const applyTier = (next) => {
+    const t = FPS_MODES[ctx.fpsMode]
+    app.ticker.maxFPS = next === 'sleeping' ? t.sleep : next === 'offline' ? t.offline : t.active
+  }
+  /** 切换帧率预设（面板调用）：持久化 + 立即按当前状态生效。 */
+  ctx.setFpsMode = (mode) => {
+    if (!FPS_MODES[mode]) return
+    ctx.fpsMode = mode
+    store.setFpsMode(mode)
+    applyTier(ctx.getState?.() ?? 'idle')
+  }
+  applyTier('idle')
+  ctx.on('enter', (next) => applyTier(next))
   // 窗口最小化/隐藏时完全停渲染；恢复可见立即续跑
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) app.ticker.stop()

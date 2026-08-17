@@ -135,8 +135,30 @@ export function apply(ctx, config) {
   }
 
   const perSession = new Map()
+  const sessionLabels = new Map()   // 会话 id → 任务编号（任务一/任务二…指示灯用）
   const sseClients = new Set()
   let current = 'idle'
+  let lastPayload = ''
+
+  /** 分配任务编号：取最小空闲数字，会话销毁后编号回收复用。 */
+  function labelFor(id) {
+    let n = sessionLabels.get(id)
+    if (n === undefined) {
+      const used = new Set(sessionLabels.values())
+      n = 1
+      while (used.has(n)) n++
+      sessionLabels.set(id, n)
+    }
+    return n
+  }
+
+  /** 每会话状态快照（编号升序），多任务指示灯的数据源。 */
+  function sessionsSnapshot() {
+    const list = []
+    for (const [id, entry] of perSession) list.push({ n: labelFor(id), state: entry.state })
+    list.sort((a, b) => a.n - b.n)
+    return list
+  }
 
   const rank = { working: 5, waiting: 4, thinking: 3, error: 2, done: 1, idle: 0 }
 
@@ -151,8 +173,8 @@ export function apply(ctx, config) {
     try { res.write(frame) } catch { sseClients.delete(res) }
   }
 
-  function broadcastRaw(type) {
-    const frame = `data: ${JSON.stringify({ ev: type })}\n\n`
+  function broadcastRaw(type, id) {
+    const frame = `data: ${JSON.stringify({ ev: type, n: labelFor(id) })}\n\n`
     for (const res of sseClients) sseWrite(res, frame)
   }
 
@@ -166,9 +188,12 @@ export function apply(ctx, config) {
 
   function publish() {
     const next = aggregate()
-    if (next === current) return
+    // 帧内容判重而非仅聚合态判重：会话数/分工变化（聚合态不变）也要推给指示灯
+    const payload = JSON.stringify({ state: next, sessions: sessionsSnapshot() })
+    if (payload === lastPayload) return
+    lastPayload = payload
     current = next
-    const frame = `data: ${JSON.stringify({ state: current })}\n\n`
+    const frame = `data: ${payload}\n\n`
     for (const res of sseClients) sseWrite(res, frame)
   }
 
@@ -257,6 +282,23 @@ export function apply(ctx, config) {
     return models
   }
 
+  /**
+   * 闲置收割：会话转入 idle 后 5 分钟无活动即从看板除名（任务灯消失、编号回收）。
+   * 会话再来事件会重新注册领牌——这是除 session/disposed 外的第二条回收路径，
+   * 防「已完成任务灯变墓碑」与 perSession 无界增长。
+   */
+  const IDLE_REAP_MS = 5 * 60 * 1000
+  function armReap(id, entry) {
+    entry.timer = setTimeout(() => {
+      entry.timer = undefined
+      if (entry.state === 'idle') {
+        perSession.delete(id)
+        sessionLabels.delete(id)
+        publish()
+      }
+    }, IDLE_REAP_MS)
+  }
+
   function setState(id, state) {
     const entry = perSession.get(id) ?? { state: 'idle', timer: undefined }
     if (entry.timer !== undefined) {
@@ -270,6 +312,7 @@ export function apply(ctx, config) {
         if (entry.state === 'done') {
           entry.state = 'idle'
           publish()
+          armReap(id, entry)  // 完成→闲置后进入收割倒计时
         }
       }, DONE_HOLD_MS)
     } else if (state === 'error') {
@@ -286,7 +329,7 @@ export function apply(ctx, config) {
   }
 
   ctx.on('session/event', (session, event) => {
-    if (RAW_EVENTS.has(event.type)) broadcastRaw(event.type)
+    if (RAW_EVENTS.has(event.type)) broadcastRaw(event.type, session.id)
     switch (event.type) {
       case 'turn/start':
         setState(session.id, 'thinking')
@@ -318,6 +361,7 @@ export function apply(ctx, config) {
     const entry = perSession.get(session.id)
     if (entry?.timer !== undefined) clearTimeout(entry.timer)
     perSession.delete(session.id)
+    sessionLabels.delete(session.id)  // 编号回收，下个新会话复用
     publish()
   }, { global: true })
 
@@ -331,7 +375,7 @@ export function apply(ctx, config) {
         connection: 'keep-alive',
       })
       sseClients.add(res)
-      sseWrite(res, `data: ${JSON.stringify({ state: current, model: modelPath })}\n\n`)
+      sseWrite(res, `data: ${JSON.stringify({ state: current, model: modelPath, sessions: sessionsSnapshot() })}\n\n`)
       req.on('close', () => { sseClients.delete(res) })
     },
   }))

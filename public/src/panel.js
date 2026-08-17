@@ -6,7 +6,7 @@
  * 鼠标悬停模型区域时重新出现（面板打开时保持显示）。
  */
 
-import { BASE, PREVIEW } from './config.js'
+import { BASE, PREVIEW, BRIDGE } from './config.js'
 import { resolveBinding, extractInventory } from './binding.js'
 
 /** 面板宽度上限（px）；窄窗口（如桌宠）下由 CSS min() 收缩，钳制用实测宽度。 */
@@ -83,6 +83,21 @@ export function initPanel(ctx) {
 }
 #l2d-model-panel .l2d-panel-actions button:hover:not(:disabled) { background: #f0f4ff; border-color: #9db8ff; }
 #l2d-model-panel .l2d-panel-actions button:disabled { opacity: .45; cursor: default; }
+#l2d-model-panel .l2d-fps-row {
+  display: flex; align-items: center; gap: 8px; padding: 0 12px 12px;
+  color: #778; font-size: 12px;
+}
+#l2d-model-panel .l2d-fps-row select {
+  flex: 1; min-width: 0; font: inherit; color: #334;
+  border: 1px solid rgba(0,0,0,.12); border-radius: 6px; padding: 3px 6px; background: #fff;
+}
+#l2d-model-panel .l2d-quit-row { padding: 0 12px 12px; }
+#l2d-model-panel .l2d-quit-row button {
+  width: 100%; padding: 6px 8px; border: 1px solid rgba(192,57,43,.35); border-radius: 8px;
+  background: #fff; color: #c0392b; cursor: pointer; font: inherit; font-size: 12px;
+}
+#l2d-model-panel .l2d-quit-row button:hover { background: #fdf0ee; }
+#l2d-model-panel .l2d-quit-row button.arm { background: #c0392b; color: #fff; }
 #l2d-viewer {
   position: fixed; inset: 0; z-index: 100001; display: none; padding: 16px;
   align-items: center; justify-content: center; background: rgba(24,29,40,.55);
@@ -190,6 +205,17 @@ export function initPanel(ctx) {
   <button type="button" class="l2d-reset">恢复默认</button>
   <button type="button" class="l2d-refresh">刷新列表</button>
   <button type="button" class="l2d-import">导入模型</button>
+</div>
+<div class="l2d-fps-row">
+  <span>帧率</span>
+  <select class="l2d-fps-select" title="渲染帧率预设（常态/睡眠/离线三档联动）">
+    <option value="full">满血（60/30/12 fps）</option>
+    <option value="balanced">均衡（30/12/6 fps，默认）</option>
+    <option value="saver">省电（15/8/4 fps）</option>
+  </select>
+</div>
+<div class="l2d-quit-row" hidden>
+  <button type="button" class="l2d-quit">退出桌宠</button>
 </div>`
   document.body.appendChild(panel)
 
@@ -237,6 +263,43 @@ export function initPanel(ctx) {
   const resetBtn = panel.querySelector('.l2d-reset')
   const refreshBtn = panel.querySelector('.l2d-refresh')
   const importBtn = panel.querySelector('.l2d-import')
+  const fpsSelect = panel.querySelector('.l2d-fps-select')
+
+  // 帧率预设：初始化跟随持久化值，切换立即生效并给气泡反馈
+  if (fpsSelect && ctx.setFpsMode) {
+    fpsSelect.value = ctx.fpsMode ?? 'balanced'
+    fpsSelect.addEventListener('change', () => {
+      ctx.setFpsMode(fpsSelect.value)
+      const label = fpsSelect.selectedOptions[0]?.textContent ?? fpsSelect.value
+      ctx.showBubble?.(`帧率已切换：${label}`, 1800)
+    })
+  }
+
+  // 退出桌宠：仅桌宠形态显示；双击确认防误触，道别后再退场
+  const quitRow = panel.querySelector('.l2d-quit-row')
+  const quitBtn = panel.querySelector('.l2d-quit')
+  if (quitRow && quitBtn && BRIDGE) {
+    quitRow.hidden = false
+    let armedAt = 0
+    quitBtn.addEventListener('click', () => {
+      const now = Date.now()
+      if (armedAt !== 0 && now - armedAt < 3000) {
+        ctx.showBubble?.('晚安主人，咱先退下啦…', 1500)
+        setTimeout(() => BRIDGE.quit(), 900)
+        return
+      }
+      armedAt = now
+      quitBtn.classList.add('arm')
+      quitBtn.textContent = '再点一次确认退出'
+      setTimeout(() => {
+        if (armedAt === now) {
+          armedAt = 0
+          quitBtn.classList.remove('arm')
+          quitBtn.textContent = '退出桌宠'
+        }
+      }, 3000)
+    })
+  }
   const viewerTitle = viewer.querySelector('.l2d-viewer-title')
   const viewerFrame = viewer.querySelector('iframe')
   const viewerClose = viewer.querySelector('.l2d-viewer-close')

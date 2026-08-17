@@ -38,6 +38,9 @@ export const store = {
   /** @returns {number} 缩放倍率，默认 1 */
   getScale() { const v = parseFloat(localStorage.getItem(PET ? 'l2d-pet-scale' : 'l2d-scale')); return Number.isFinite(v) ? v : 1 },
   setScale(v) { try { localStorage.setItem(PET ? 'l2d-pet-scale' : 'l2d-scale', String(v)) } catch { } },
+  /** @returns {string} 帧率预设 full/balanced/saver，默认 balanced（双形态共享一档） */
+  getFpsMode() { try { return localStorage.getItem('l2d-fps-mode') ?? 'balanced' } catch { return 'balanced' } },
+  setFpsMode(v) { try { localStorage.setItem('l2d-fps-mode', v) } catch { } },
 }
 
 /** quips.json 拉取失败时的保底台词（每池一句）。 */

@@ -6,4 +6,5 @@ contextBridge.exposeInMainWorld('__petBridge', {
   resizeTo: (w, h) => ipcRenderer.send('l2d-resize', w, h),
   onCursor: (cb) => ipcRenderer.on('l2d-cursor', (_e, data) => cb(data)),
   getCursor: () => ipcRenderer.invoke('l2d-cursor-get'),
+  quit: () => ipcRenderer.send('l2d-quit'),
 })
