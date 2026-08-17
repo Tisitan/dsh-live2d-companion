@@ -53,7 +53,10 @@ export function initUI(ctx) {
   Object.assign(bubble.style, {
     position: 'absolute', padding: '6px 14px', borderRadius: '14px',
     background: 'rgba(255,255,255,.95)', color: '#334', font: '13px/1.5 sans-serif',
-    whiteSpace: 'nowrap', pointerEvents: 'none', opacity: '0',
+    whiteSpace: 'normal', width: 'max-content', maxWidth: 'min(300px, calc(100vw - 16px))',
+    minWidth: '56px', maxHeight: '180px', boxSizing: 'border-box', textAlign: 'center',
+    overflowWrap: 'anywhere', wordBreak: 'break-word', overflow: 'hidden',
+    pointerEvents: 'none', opacity: '0',
     transform: 'translate(-50%,-100%) scale(.8)', transformOrigin: '50% 100%',
     transition: 'opacity .25s ease, transform .25s ease',
     boxShadow: '0 2px 12px rgba(0,0,0,.25)', zIndex: 2,
@@ -67,8 +70,11 @@ export function initUI(ctx) {
   function placeBubble(x, y) {
     const w = PET ? window.innerWidth : BASE_W
     const h = PET ? window.innerHeight : BASE_H
-    bubble.style.left = Math.min(Math.max(x, 80), w - 80) + 'px'
-    bubble.style.top = Math.min(Math.max(y, 48), h - 16) + 'px'
+    const bw = Math.min(bubble.offsetWidth, Math.max(1, w - 16))
+    const bh = Math.min(bubble.offsetHeight, Math.max(1, h - 16))
+    const half = bw / 2 + 8
+    bubble.style.left = Math.min(Math.max(x, half), Math.max(half, w - half)) + 'px'
+    bubble.style.top = Math.min(Math.max(y, bh + 8), h - 8) + 'px'
   }
 
   /**
@@ -80,8 +86,9 @@ export function initUI(ctx) {
     if (!text || !ctx.model) return
     lastBubbleAt = performance.now()
     const b = ctx.model.getBounds()
+    const clean = String(text).replace(/\s+/g, ' ').trim()
+    bubble.textContent = clean.length > 180 ? clean.slice(0, 179) + '…' : clean
     placeBubble(b.x + b.width / 2, b.y + b.height * 0.08)
-    bubble.textContent = text
     bubble.style.opacity = '1'
     bubble.style.transform = 'translate(-50%,-100%) scale(1)'
     clearTimeout(bubbleTimer)

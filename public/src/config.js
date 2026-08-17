@@ -23,6 +23,9 @@ export const MODEL_QUERY = URL_PARAMS.get('model')
 /** URL ?preview=1：模型面板的预览 iframe 形态（隐藏面板入口本身）。 */
 export const PREVIEW = URL_PARAMS.get('preview') === '1'
 
+/** 独立桌宠本地服务形态；DSH 挂件/桌宠不启用独立聊天入口。 */
+export const STANDALONE = URL_PARAMS.get('standalone') === '1'
+
 /** 网页挂件的固定画布尺寸（桌宠形态用窗口尺寸）。 */
 export const BASE_W = 300
 export const BASE_H = 400

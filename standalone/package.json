@@ -1,0 +1,16 @@
+{
+  "name": "live2d-standalone-companion",
+  "version": "1.0.0",
+  "description": "Standalone desktop runtime for dsh-live2d-companion",
+  "private": true,
+  "type": "module",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test.cjs"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^43.4.0"
+  }
+}
