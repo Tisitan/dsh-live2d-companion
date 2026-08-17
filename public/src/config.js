@@ -47,6 +47,9 @@ export const store = {
   /** @returns {{cx:number,cy:number}|null} 桌宠模型中心的画布坐标（overlay 架构的"位置记忆"） */
   getPetPos() { try { return JSON.parse(localStorage.getItem('l2d-pet-pos')) } catch { return null } },
   setPetPos(v) { try { localStorage.setItem('l2d-pet-pos', JSON.stringify(v)) } catch { } },
+  /** @returns {boolean} 手动穿透：桌宠模型区域恒穿透（UI 控件保留可点），默认 false */
+  getPinned() { try { return localStorage.getItem('l2d-pet-pinned') === '1' } catch { return false } },
+  setPinned(v) { try { localStorage.setItem('l2d-pet-pinned', v ? '1' : '0') } catch { } },
 }
 
 /** quips.json 拉取失败时的保底台词（每池一句）。 */

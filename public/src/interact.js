@@ -25,20 +25,84 @@ export function initInteract(ctx) {
   function uiHit() {
     if (lastPointer === null) return false
     const el = document.elementFromPoint(lastPointer.x, lastPointer.y)
-    return !!(el && el.closest('#l2d-model-toggle, #l2d-pet-menu, #l2d-model-panel, #l2d-help-card, #l2d-viewer, #l2d-chat-toggle, #l2d-chat-panel, #l2d-quips-card'))
+    return !!(el && el.closest('#l2d-model-toggle, #l2d-pin-toggle, #l2d-help-toggle, #l2d-pet-menu, #l2d-model-panel, #l2d-help-card, #l2d-viewer, #l2d-chat-toggle, #l2d-chat-panel, #l2d-quips-card'))
   }
 
-  /** 指针穿透评估：指针在模型包围盒（含余量）或面板控件上才接收事件，否则镂空让桌面。 */
-  ctx.evalIgnore = () => {
-    if (!BRIDGE || lastPointer === null || dragging) return
+  // ── 穿透策略：自动（停留等待）+ 手动（穿透钮强制）──
+  // 全屏 overlay 窗口从「穿透」切到「交互」的瞬间会参与 DWM 合成，可能拆解
+  // 浏览器视频的硬件覆盖层（MPO）导致视频黑屏卡帧。等待逻辑：路过不算数，
+  // 在模型上停留 ≥600ms（位移<24px）才放行交互——看视频时鼠标扫过不再触发。
+  const DWELL_MS = 600
+  const DWELL_SLACK = 24
+  let dwellTimer = 0
+  let dwellFrom = null     // 停留计时的锚点 {x,y}
+  let interactive = false  // 当前是否已放行交互（滞回：离开包围盒+余量才回收）
+
+  /** 手动穿透：模型区恒穿透，仅 UI 可点（穿透钮自己得留着，否则关不回来）。 */
+  ctx.pinned = PET && store.getPinned()
+
+  /** 指针（画布坐标）是否落在模型包围盒+余量内。 */
+  function insideModel(x, y) {
     const r = ctx.app.view.getBoundingClientRect()
     const b = ctx.modelBounds()
-    const x = lastPointer.x - r.left
-    const y = lastPointer.y - r.top
-    const inside = x >= b.x - HOVER_MARGIN && x <= b.x + b.width + HOVER_MARGIN
-      && y >= b.y - HOVER_MARGIN && y <= b.y + b.height + HOVER_MARGIN
-    ctx.lastIgnore = !(inside || uiHit())  // 暴露给调试探针
-    BRIDGE.setIgnore(ctx.lastIgnore)
+    const px = x - r.left
+    const py = y - r.top
+    return px >= b.x - HOVER_MARGIN && px <= b.x + b.width + HOVER_MARGIN
+      && py >= b.y - HOVER_MARGIN && py <= b.y + b.height + HOVER_MARGIN
+  }
+  function cancelDwell() {
+    clearTimeout(dwellTimer)
+    dwellTimer = 0
+    dwellFrom = null
+  }
+  function setInteractive(v) {
+    if (interactive === v) return
+    interactive = v
+    ctx.lastIgnore = !v          // 暴露给调试探针
+    BRIDGE.setIgnore(!v)
+    ctx.syncPinBtn?.()           // 锁钮实时反映：绿底🔒=穿透中 / 白底🔓=已解锁
+  }
+  // 调试探针：穿透状态机内部快照
+  ctx.dwellDebug = () => ({ timing: dwellTimer !== 0, from: dwellFrom, interactive, lp: lastPointer })
+
+  /** 指针穿透评估：UI 即时可点；模型区自动模式需停留等待，手动模式恒穿透。 */
+  ctx.evalIgnore = () => {
+    if (!BRIDGE || lastPointer === null || dragging) return
+    if (ctx.pinned) {
+      cancelDwell()
+      setInteractive(uiHit())
+      return
+    }
+    if (uiHit()) {               // UI 控件不受等待限制
+      cancelDwell()
+      setInteractive(true)
+      return
+    }
+    const inside = insideModel(lastPointer.x, lastPointer.y)
+    if (interactive) {           // 已交互：出框即回收（滞回含余量，防边缘抖动）
+      if (!inside) setInteractive(false)
+      return
+    }
+    if (!inside) {               // 框外：保持穿透，取消计时
+      cancelDwell()
+      setInteractive(false)
+      return
+    }
+    // 框内未交互：停留计时。位移超过阈值视为路过，重新计时
+    if (dwellFrom !== null && Math.hypot(lastPointer.x - dwellFrom.x, lastPointer.y - dwellFrom.y) > DWELL_SLACK) {
+      cancelDwell()
+    }
+    if (dwellTimer === 0) {
+      dwellFrom = { x: lastPointer.x, y: lastPointer.y }
+      dwellTimer = setTimeout(() => {
+        dwellTimer = 0
+        dwellFrom = null
+        // 放行前复核：指针此刻仍在框内才转交互（静止时无事件，坐标靠光标轮询保鲜）
+        if (lastPointer !== null && !dragging && !ctx.pinned && insideModel(lastPointer.x, lastPointer.y)) {
+          setInteractive(true)
+        }
+      }, DWELL_MS)
+    }
   }
 
   // ── 忙碌拦截：8 秒冷却，避免刷屏 ──
@@ -92,11 +156,26 @@ export function initInteract(ctx) {
   })
 
   // 桌宠全局视线：主进程轮询 OS 光标坐标，换算为窗内坐标（整屏追踪）
+  // 同时充当穿透评估的坐标保鲜源：指针静止/移到副屏时 window 级 pointermove 不再来，
+  // 没有这路喂给，停留计时会在指针实际已离开的情况下误放行
   // 首帧位置主动拉取：轮询只推「变化」，页面加载前的首帧推送会被丢弃
+  // 按钮显隐的进出迁移沿（穿透态下 forwarded 事件不进 box，改由轮询驱动，
+  // 否则穿透模式下 ⚙/穿透 钮永远隐身再也点不到；只在迁移沿触发，防定时器被反复重置）
+  let wasInside = false
+
   if (BRIDGE && BRIDGE.onCursor) {
     BRIDGE.onCursor((data) => {
       ctx.lastGaze = { x: data.x - data.bounds.x, y: data.y - data.bounds.y }
       ctx.model.focus(ctx.lastGaze.x, ctx.lastGaze.y)
+      lastPointer = { x: ctx.lastGaze.x, y: ctx.lastGaze.y }
+      ctx.evalIgnore()
+      // 「在内」= 模型邻近区 或 任一 UI 控件上（悬在菜单/卡片上时不算离开，防误收）
+      const nowInside = insideModel(lastPointer.x, lastPointer.y) || uiHit()
+      if (nowInside !== wasInside) {
+        wasInside = nowInside
+        if (nowInside) ctx.showChrome?.()
+        else ctx.hideChrome?.()
+      }
     })
     BRIDGE.getCursor?.().then((data) => {
       if (!data) return

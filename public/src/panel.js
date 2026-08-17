@@ -6,7 +6,7 @@
  * 鼠标悬停模型区域时重新出现（面板打开时保持显示）。
  */
 
-import { BASE, PREVIEW, BRIDGE, loadQuips } from './config.js'
+import { BASE, PREVIEW, BRIDGE, loadQuips, store } from './config.js'
 import { resolveBinding, extractInventory } from './binding.js'
 
 /** 面板宽度上限（px）；窄窗口（如桌宠）下由 CSS min() 收缩，钳制用实测宽度。 */
@@ -22,16 +22,20 @@ export function initPanel(ctx) {
 
   const style = document.createElement('style')
   style.textContent = `
-#l2d-model-toggle {
+#l2d-model-toggle, #l2d-pin-toggle, #l2d-help-toggle {
   position: absolute; top: 6px; right: 6px; z-index: 20;
-  width: 30px; height: 30px; padding: 0; border-radius: 50%;
+  width: 34px; height: 34px; padding: 0; border-radius: 50%;
   border: 1px solid rgba(0,0,0,.12); background: rgba(255,255,255,.88);
-  color: #556; font: 15px/1 system-ui, sans-serif; cursor: pointer;
+  color: #556; font: 16px/1 system-ui, sans-serif; cursor: pointer;
   box-shadow: 0 2px 8px rgba(0,0,0,.18);
-  opacity: .72; transition: opacity .25s ease, background .15s ease;
+  opacity: .72; transition: opacity .25s ease, background .15s ease, color .15s ease;
 }
-#l2d-model-toggle:hover { opacity: 1; background: #fff; }
-#l2d-model-toggle.l2d-hidden { opacity: 0; pointer-events: none; }
+#l2d-model-toggle:hover, #l2d-pin-toggle:hover, #l2d-help-toggle:hover { opacity: 1; background: #fff; }
+#l2d-model-toggle.l2d-hidden, #l2d-pin-toggle.l2d-hidden, #l2d-help-toggle.l2d-hidden { opacity: 0; pointer-events: none; }
+/* 锁钮三态：绿底🔒=自动穿透中（路过不挡） / 白底🔓=停留已解锁可互动 / 蓝底🔒=手动锁定 */
+#l2d-pin-toggle.auto { opacity: .9; background: rgba(46,160,67,.85); border-color: #2ea043; color: #fff; }
+#l2d-pin-toggle.auto:hover { background: rgba(46,160,67,1); }
+#l2d-pin-toggle.on { opacity: 1; background: #4a7fb5; border-color: #4a7fb5; color: #fff; }
 #l2d-pet-menu {
   position: fixed; z-index: 100000; min-width: 112px; padding: 4px;
   background: rgba(255,255,255,.97); color: #445;
@@ -75,6 +79,7 @@ export function initPanel(ctx) {
 #l2d-quips-card .l2d-quips-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 6px; }
 #l2d-quips-card .l2d-quips-close { border: 0; background: none; cursor: pointer; color: #889; font-size: 14px; padding: 0 2px; }
 #l2d-quips-card .l2d-quips-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+#l2d-quips-card .l2d-quips-row[hidden] { display: none; }
 #l2d-quips-card .l2d-quips-pool { flex: 1; min-width: 0; height: 26px; border: 1px solid #d5dbe5; border-radius: 6px; background: #fff; font-size: 12px; }
 #l2d-quips-card .l2d-quips-count { color: #99a; white-space: nowrap; }
 #l2d-quips-card .l2d-quips-text {
@@ -188,8 +193,7 @@ export function initPanel(ctx) {
   width: min(520px, 94vw); height: min(620px, 88vh); display: flex; flex-direction: column;
   background: rgba(255,255,255,.97); border-radius: 16px; overflow: hidden;
   box-shadow: 0 18px 60px rgba(0,0,0,.35);
-}
-#l2d-viewer .l2d-viewer-top {
+}#l2d-viewer .l2d-viewer-top {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   padding: 10px 12px; border-bottom: 1px solid rgba(0,0,0,.08); font-weight: 600;
 }
@@ -199,9 +203,18 @@ export function initPanel(ctx) {
   font: 16px/1 system-ui, sans-serif; padding: 2px 8px; border-radius: 6px;
 }
 #l2d-viewer .l2d-viewer-close:hover { background: #f0f1f3; color: #334; }
+/* 双栏工作台：左预览右绑定（挂件窄窗退化为上下堆叠） */
+#l2d-viewer .l2d-viewer-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#l2d-viewer .l2d-viewer-stage { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 #l2d-viewer iframe {
   flex: 1; border: 0; background: linear-gradient(180deg, #fafbff 0%, #eef1f8 100%);
 }
+#l2d-viewer .l2d-binder {
+  overflow-y: auto; padding: 10px 12px;
+  border-top: 1px solid rgba(0,0,0,.08); background: #fbfcfe;
+  font-size: 12px; color: #445; max-height: 40vh;
+}
+#l2d-viewer .l2d-binder[hidden] { display: none; }
 #l2d-viewer .l2d-viewer-states {
   display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px;
   border-bottom: 1px solid rgba(0,0,0,.08);
@@ -218,15 +231,14 @@ export function initPanel(ctx) {
 }
 #l2d-viewer .l2d-binder-toggle:hover { background: #f0f4ff; border-color: #9db8ff; }
 #l2d-viewer .l2d-binder-toggle.active { background: #e7f0ff; border-color: #6c96ff; color: #2b4a8f; }
-#l2d-viewer .l2d-binder {
-  max-height: 240px; overflow-y: auto; padding: 8px 12px;
-  border-bottom: 1px solid rgba(0,0,0,.08); background: #fbfcfe;
-  font-size: 12px; color: #445;
-}
 #l2d-viewer .l2d-binder-h { font-weight: 600; margin: 6px 0 4px; color: #556; }
 #l2d-viewer .l2d-binder-tip { color: #889; margin-bottom: 2px; }
 #l2d-viewer .l2d-binder-eslots, #l2d-viewer .l2d-binder-mslots, #l2d-viewer .l2d-binder-gallery {
   display: flex; flex-wrap: wrap; gap: 5px;
+}
+/* 素材阵列：等宽网格取代参差流式墙 */
+#l2d-viewer .l2d-binder-faces, #l2d-viewer .l2d-binder-moves, #l2d-viewer .l2d-binder-pool {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 6px;
 }
 #l2d-viewer .l2d-chip {
   padding: 3px 9px; border: 1px solid rgba(0,0,0,.12); border-radius: 999px;
@@ -236,9 +248,10 @@ export function initPanel(ctx) {
 #l2d-viewer .l2d-chip.on { background: #e7f0ff; border-color: #6c96ff; color: #2b4a8f; }
 #l2d-viewer .l2d-chip .bound { color: #98a2b3; font-size: 10px; margin-left: 4px; }
 #l2d-viewer .l2d-mat {
-  padding: 4px 8px; border: 1px solid rgba(0,0,0,.12); border-radius: 8px;
-  background: #fff; cursor: pointer; font: 12px/1.4 inherit; color: #334;
-  text-align: left; max-width: 100%; overflow-wrap: anywhere;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  min-height: 42px; padding: 4px 6px; border: 1px solid rgba(0,0,0,.12); border-radius: 8px;
+  background: #fff; cursor: pointer; font: 12px/1.35 inherit; color: #334;
+  text-align: center; max-width: 100%; overflow-wrap: anywhere;
 }
 #l2d-viewer .l2d-mat:hover { background: #f0f4ff; border-color: #9db8ff; }
 #l2d-viewer .l2d-mat.on { background: #e7f0ff; border-color: #6c96ff; box-shadow: inset 0 0 0 1px #6c96ff; }
@@ -247,7 +260,11 @@ export function initPanel(ctx) {
 #l2d-viewer .l2d-binder-current { margin: 4px 0; color: #445; }
 #l2d-viewer .l2d-binder-current b { color: #2b4a8f; }
 #l2d-viewer .l2d-binder-share { color: #b0792a; margin: 2px 0; }
-#l2d-viewer .l2d-binder-actions { display: flex; gap: 8px; margin-top: 8px; }
+#l2d-viewer .l2d-binder-actions {
+  display: flex; gap: 8px; margin-top: 8px;
+  position: sticky; bottom: -10px; padding: 8px 0 6px;
+  background: #fbfcfe; border-top: 1px solid rgba(0,0,0,.06);
+}
 #l2d-viewer .l2d-binder-actions button {
   flex: 1; padding: 5px 8px; border: 1px solid rgba(0,0,0,.12); border-radius: 8px;
   background: #fff; color: #445; cursor: pointer; font: inherit;
@@ -255,8 +272,98 @@ export function initPanel(ctx) {
 #l2d-viewer .l2d-binder-actions button:hover { background: #f0f4ff; border-color: #9db8ff; }
 #l2d-viewer .l2d-binder-status { min-height: 16px; margin-top: 4px; color: #778; }
 #l2d-viewer .l2d-binder-status.error { color: #c0392b; }
+
+/* ── 卡片拖动：头部即把手 ── */
+#l2d-model-panel .l2d-panel-head, #l2d-quips-card .l2d-quips-head, #l2d-help-card .l2d-help-head { cursor: move; user-select: none; }
+
+/* ── 模型面板分页签 ── */
+#l2d-model-panel .l2d-panel-tabs {
+  display: flex; gap: 4px; margin: 0 12px 8px; padding: 3px;
+  background: rgba(0,0,0,.05); border-radius: 9px;
+}
+#l2d-model-panel .l2d-tab {
+  flex: 1; border: 0; border-radius: 7px; padding: 5px 0;
+  background: transparent; color: #778; cursor: pointer; font: inherit; font-size: 12.5px;
+}
+#l2d-model-panel .l2d-tab:hover { color: #445; }
+#l2d-model-panel .l2d-tab.on { background: #fff; color: #2b4a8f; font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+#l2d-model-panel .l2d-tabpage { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#l2d-model-panel .l2d-tabpage[hidden] { display: none; }
+
+/* ── 绑定编辑器分区卡 ── */
+#l2d-viewer .l2d-binder-sec {
+  margin: 8px 0; padding: 8px 10px; border: 1px solid rgba(0,0,0,.07);
+  border-radius: 10px; background: #fff;
+}
+#l2d-viewer .l2d-binder-sec .l2d-binder-h { display: flex; justify-content: space-between; align-items: baseline; margin: 0 0 6px; }
+#l2d-viewer .l2d-binder-sub { color: #9aa; font-weight: 400; font-size: 11px; }
+
+/* ── roomy：桌宠全屏窗口空间充裕，面板/卡片/菜单整体扩容美化（挂件保持紧凑）── */
+body.l2d-roomy #l2d-model-panel {
+  width: min(360px, calc(100vw - 16px)); max-height: min(560px, calc(100vh - 16px));
+  font-size: 14px; border-radius: 14px;
+}
+body.l2d-roomy #l2d-model-panel .l2d-panel-head { padding: 14px 16px 8px; font-size: 15px; }
+body.l2d-roomy #l2d-model-panel .l2d-panel-tabs { margin: 0 16px 10px; }
+body.l2d-roomy #l2d-model-panel .l2d-tab { font-size: 13.5px; padding: 6px 0; }
+body.l2d-roomy #l2d-model-panel .l2d-panel-current { padding: 0 16px 10px; font-size: 13px; }
+body.l2d-roomy #l2d-model-panel .l2d-panel-list { gap: 8px; padding: 0 12px 10px; }
+body.l2d-roomy .l2d-model-item { padding: 10px 12px; border-radius: 10px; }
+body.l2d-roomy .l2d-model-path { font-size: 12px; }
+body.l2d-roomy .l2d-model-view { flex: 0 0 54px; font-size: 13px; border-radius: 10px; }
+body.l2d-roomy #l2d-model-panel .l2d-panel-status { padding: 6px 16px 10px; font-size: 13px; }
+body.l2d-roomy #l2d-model-panel .l2d-panel-actions { padding: 0 16px 14px; gap: 10px; }
+body.l2d-roomy #l2d-model-panel .l2d-panel-actions button { padding: 8px 10px; border-radius: 10px; }
+body.l2d-roomy #l2d-model-panel .l2d-fps-row { padding: 0 16px 14px; font-size: 13px; gap: 10px; }
+body.l2d-roomy #l2d-model-panel .l2d-fps-row select { padding: 5px 8px; border-radius: 8px; }
+body.l2d-roomy #l2d-model-panel .l2d-soft-row { padding: 0 16px 12px; }
+body.l2d-roomy #l2d-model-panel .l2d-soft-label { font-size: 13px; gap: 8px; }
+body.l2d-roomy #l2d-model-panel .l2d-quit-row { padding: 0 16px 14px; }
+body.l2d-roomy #l2d-model-panel .l2d-quit-row button { padding: 8px 10px; font-size: 13px; border-radius: 10px; }
+body.l2d-roomy #l2d-pet-menu { min-width: 136px; padding: 6px; font-size: 13.5px; border-radius: 12px; }
+body.l2d-roomy #l2d-pet-menu button { padding: 8px 12px; border-radius: 8px; }
+body.l2d-roomy #l2d-help-card {
+  width: min(330px, calc(100vw - 16px)); font-size: 13.5px; line-height: 1.9;
+  padding: 14px 16px; border-radius: 14px;
+}
+body.l2d-roomy #l2d-help-card .l2d-help-head { font-size: 14.5px; margin-bottom: 4px; }
+body.l2d-roomy #l2d-help-card ul { padding-left: 4px; list-style: none; }
+body.l2d-roomy #l2d-help-card li { margin: 3px 0; }
+body.l2d-roomy #l2d-quips-card {
+  width: min(430px, calc(100vw - 16px)); font-size: 13.5px;
+  padding: 14px 16px; border-radius: 14px;
+}
+body.l2d-roomy #l2d-quips-card .l2d-quips-head { font-size: 14.5px; margin-bottom: 10px; }
+body.l2d-roomy #l2d-quips-card .l2d-quips-row { gap: 10px; margin-bottom: 10px; }
+body.l2d-roomy #l2d-quips-card .l2d-quips-pool, body.l2d-roomy #l2d-quips-card .l2d-quips-preset { height: 32px; font-size: 13.5px; border-radius: 8px; }
+body.l2d-roomy #l2d-quips-card .l2d-quips-text { min-height: 230px; font-size: 13px; padding: 8px 10px; border-radius: 10px; }
+body.l2d-roomy #l2d-quips-card .l2d-quips-save { padding: 7px 22px; font-size: 13.5px; border-radius: 10px; }
+body.l2d-roomy #l2d-quips-card .l2d-quips-saveas, body.l2d-roomy #l2d-quips-card .l2d-quips-nameok,
+body.l2d-roomy #l2d-quips-card .l2d-quips-namecancel { padding: 5px 12px; font-size: 13px; border-radius: 8px; }
+body.l2d-roomy #l2d-quips-card .l2d-quips-name { height: 32px; font-size: 13.5px; border-radius: 8px; }
+body.l2d-roomy #l2d-quips-card .l2d-quips-reset, body.l2d-roomy #l2d-quips-card .l2d-quips-del { padding: 6px 14px; font-size: 13px; border-radius: 10px; }
+body.l2d-roomy #l2d-quips-card .l2d-quips-foot { margin-top: 10px; }
+
+/* roomy 预览工作台：大卡双栏，绑定编辑侧栏化 */
+body.l2d-roomy #l2d-viewer .l2d-viewer-card { width: min(1120px, 94vw); height: min(800px, 92vh); }
+body.l2d-roomy #l2d-viewer .l2d-viewer-body { flex-direction: row; }
+body.l2d-roomy #l2d-viewer .l2d-binder {
+  flex: 0 0 440px; max-height: none;
+  border-top: 0; border-left: 1px solid rgba(0,0,0,.08);
+  font-size: 13px; padding: 14px 16px;
+}
+body.l2d-roomy #l2d-viewer .l2d-binder-actions { bottom: -14px; padding: 10px 0 8px; }
+body.l2d-roomy #l2d-viewer .l2d-binder-faces, body.l2d-roomy #l2d-viewer .l2d-binder-moves,
+body.l2d-roomy #l2d-viewer .l2d-binder-pool { grid-template-columns: repeat(auto-fill, minmax(122px, 1fr)); gap: 8px; }
+body.l2d-roomy #l2d-viewer .l2d-mat { min-height: 48px; font-size: 12.5px; }
+body.l2d-roomy #l2d-viewer .l2d-binder-tip { font-size: 12.5px; line-height: 1.7; }
+body.l2d-roomy #l2d-viewer .l2d-binder-current { font-size: 13px; margin: 8px 0; }
+body.l2d-roomy #l2d-viewer .l2d-binder-sec { padding: 10px 12px; margin: 10px 0; }
+body.l2d-roomy #l2d-viewer .l2d-viewer-states { padding: 10px 14px; gap: 8px; }
+body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; }
 `
   document.head.appendChild(style)
+  if (BRIDGE) document.body.classList.add('l2d-roomy')   // 桌宠全屏空间充裕：扩容排版
 
   // ── 悬浮入口：挂件/桌宠右上角，静置自动隐藏 ──
   const toggle = document.createElement('button')
@@ -272,13 +379,59 @@ export function initPanel(ctx) {
   toggle.addEventListener('wheel', (e) => e.stopPropagation())
   ctx.box.appendChild(toggle)
 
+  // ── 穿透钮：⚙ 左边的独立开关。平时自动（路过穿透、停留即互动），
+  // 按下=强制穿透（模型不响应鼠标，UI 保留可点），再按恢复自动。
+  // 图标即实时状态：绿底🔒=自动穿透中 / 白底🔓=已解锁可互动 / 蓝底🔒=手动锁定 ──
+  const pinToggle = document.createElement('button')
+  pinToggle.id = 'l2d-pin-toggle'
+  pinToggle.type = 'button'
+  pinToggle.title = '锁定后不响应鼠标（平时自动——路过不打扰，停留片刻即可互动）'
+  pinToggle.setAttribute('aria-label', '穿透锁定')
+  const syncPinBtn = () => {
+    const unlocked = !ctx.pinned && ctx.lastIgnore === false
+    pinToggle.classList.toggle('on', !!ctx.pinned)
+    pinToggle.classList.toggle('auto', !ctx.pinned && !unlocked)
+    pinToggle.textContent = unlocked ? '🔓' : '🔒'
+  }
+  ctx.syncPinBtn = syncPinBtn   // interact 的穿透状态迁移会回调这里
+  pinToggle.addEventListener('pointerdown', (e) => e.stopPropagation())
+  pinToggle.addEventListener('pointerup', (e) => e.stopPropagation())
+  pinToggle.addEventListener('click', (e) => {
+    e.stopPropagation()
+    ctx.pinned = !ctx.pinned
+    store.setPinned(ctx.pinned)
+    ctx.evalIgnore?.()
+    syncPinBtn()
+    if (ctx.pinned) pinToggle.classList.remove('l2d-hidden')   // 锁定时必须现身——它是「不响应」的常驻告示
+    scheduleHide()
+    ctx.showBubble?.(ctx.pinned ? '锁定：咱不挡路啦' : '解锁：恢复自动', 1800)
+  })
+  pinToggle.addEventListener('dblclick', (e) => e.stopPropagation())
+  pinToggle.addEventListener('wheel', (e) => e.stopPropagation())
+  if (!BRIDGE) pinToggle.style.display = 'none'   // 网页挂件无穿透概念，藏钮
+  ctx.box.appendChild(pinToggle)
+  syncPinBtn()
+
+  // ── 帮助钮：独立 ? 图标，点开大白话操作引导 ──
+  const helpToggle = document.createElement('button')
+  helpToggle.id = 'l2d-help-toggle'
+  helpToggle.type = 'button'
+  helpToggle.title = '基本操作'
+  helpToggle.setAttribute('aria-label', '基本操作')
+  helpToggle.textContent = '?'
+  helpToggle.addEventListener('pointerdown', (e) => e.stopPropagation())
+  helpToggle.addEventListener('pointerup', (e) => e.stopPropagation())
+  helpToggle.addEventListener('click', (e) => { e.stopPropagation(); toggleHelp() })
+  helpToggle.addEventListener('dblclick', (e) => e.stopPropagation())
+  helpToggle.addEventListener('wheel', (e) => e.stopPropagation())
+  ctx.box.appendChild(helpToggle)
+
   // ── 设置菜单：单 ⚙ 向下展开，合并「切换模型 / 台词编辑 / 基本操作」三入口 ──
   const menu = document.createElement('div')
   menu.id = 'l2d-pet-menu'
   menu.innerHTML = `
     <button type="button" data-act="panel">切换模型</button>
-    <button type="button" data-act="quips">台词编辑</button>
-    <button type="button" data-act="help">基本操作</button>`
+    <button type="button" data-act="quips">台词编辑</button>`
   menu.addEventListener('pointerdown', (e) => e.stopPropagation())
   menu.addEventListener('pointerup', (e) => e.stopPropagation())
   menu.addEventListener('wheel', (e) => e.stopPropagation())
@@ -302,7 +455,6 @@ export function initPanel(ctx) {
   }
   menu.querySelector('[data-act="panel"]').addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(false); togglePanel() })
   menu.querySelector('[data-act="quips"]').addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(false); toggleQuips() })
-  menu.querySelector('[data-act="help"]').addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(false); toggleHelp() })
   // 外点关闭（拖拽起点在 box 上，冒泡到 window 即触发收拢）
   window.addEventListener('pointerdown', (e) => {
     if (menuOpen && !menu.contains(e.target) && e.target !== toggle) toggleMenu(false)
@@ -311,21 +463,24 @@ export function initPanel(ctx) {
   const helpCard = document.createElement('section')
   helpCard.id = 'l2d-help-card'
   helpCard.innerHTML = `
-<div class="l2d-help-head"><span>基本操作</span><button class="l2d-help-close" type="button" title="关闭">×</button></div>
+<div class="l2d-help-head"><span>怎么和咱相处</span><button class="l2d-help-close" type="button" title="关闭">×</button></div>
 <ul>
-  <li>点我：随机动作 + 吐槽</li>
-  <li>双击：兴奋卖萌</li>
-  <li>头顶悬停：摸头害羞</li>
-  <li>拖拽：带我搬家（全屏随意拖，松手即定位；拖拽中缩放自动锁定）</li>
-  <li>缩放：挂件滚轮 / 桌宠 Ctrl+滚轮</li>
-  <li>⚙ 设置菜单：切换模型 / 台词编辑 / 基本操作；模型面板内含帧率 / CPU渲染 / 退出</li>
-  <li>左上小灯：AI 状态；多任务并行会分列任务灯</li>
+  <li>👆 <b>点一下</b>：随机动作，偶尔吐槽你一句</li>
+  <li>👆👆 <b>快速双击</b>：开心卖萌</li>
+  <li>🫳 <b>摸摸头顶</b>：会害羞</li>
+  <li>✋ <b>按住拖动</b>：带咱搬家，松手就站定</li>
+  <li>🔍 <b>Ctrl + 滚轮</b>：放大缩小</li>
+  <li>🖱 <b>鼠标扫过</b>：默认不挡路——看剧路过不会黑屏；想互动，在咱身上停半秒就好</li>
+  <li>🔒 <b>锁头按钮</b>：绿底=自动不挡路中；点一下变蓝=彻底不响应鼠标；再点恢复</li>
+  <li>⚙ <b>齿轮</b>：换模型、改台词；面板里还有帧率 / CPU渲染 / 退出</li>
+  <li>💡 <b>左上小灯</b>：AI 正在干嘛；多任务会分列小灯</li>
 </ul>`
   document.body.appendChild(helpCard)
   helpCard.querySelector('.l2d-help-close').addEventListener('click', () => toggleHelp(false))
 
   let helpOpen = false
   function positionHelp() {
+    if (helpPlaced) return
     const rect = toggle.getBoundingClientRect()
     const w = helpCard.offsetWidth || 250
     const left = Math.min(Math.max(rect.right - w, 8), Math.max(8, window.innerWidth - w - 8))
@@ -336,6 +491,7 @@ export function initPanel(ctx) {
   }
   function toggleHelp(show) {
     helpOpen = show ?? !helpOpen
+    if (!helpOpen) helpPlaced = false   // 重开恢复锚定
     helpCard.classList.toggle('open', helpOpen)
     if (helpOpen) { showToggle(); positionHelp() }
     else scheduleHide()
@@ -349,21 +505,27 @@ export function initPanel(ctx) {
     click: '点击反应', pat: '摸头', drag: '拖拽', greet: '见面问候',
     greet_morning: '早安问候', greet_night: '深夜问候',
   }
-  // ── 桌宠 UI 跟随：桌宠窗铺满全屏（overlay），⚙ 按钮锚定模型右侧而非窗口角落 ──
+  // ── 桌宠 UI 跟随：桌宠窗铺满全屏（overlay），⚙/🔒/? 按钮锚定模型右侧而非窗口角落 ──
   if (BRIDGE) {
     toggle.style.right = 'auto'
+    pinToggle.style.right = 'auto'
+    helpToggle.style.right = 'auto'
     let fx = null
     let fy = null
     const followButtons = () => {
       const b = ctx.modelBounds?.()
       if (b && b.width > 0) {
-        const tx = Math.min(Math.max(b.x + b.width + 8, 6), Math.max(6, window.innerWidth - 38))
-        const ty = Math.min(Math.max(b.y + 4, 6), Math.max(6, window.innerHeight - 44))
+        const tx = Math.min(Math.max(b.x + b.width + 8, 6), Math.max(6, window.innerWidth - 42))
+        const ty = Math.min(Math.max(b.y + 4, 6), Math.max(6, window.innerHeight - 48))
         if (fx === null) { fx = tx; fy = ty }
         fx += (tx - fx) * 0.3
         fy += (ty - fy) * 0.3
         toggle.style.left = Math.round(fx) + 'px'
         toggle.style.top = Math.round(fy) + 'px'
+        pinToggle.style.left = Math.round(fx - 40) + 'px'
+        pinToggle.style.top = Math.round(fy) + 'px'
+        helpToggle.style.left = Math.round(fx - 80) + 'px'
+        helpToggle.style.top = Math.round(fy) + 'px'
       }
       requestAnimationFrame(followButtons)
     }
@@ -377,15 +539,20 @@ export function initPanel(ctx) {
 <div class="l2d-quips-row">
   <select class="l2d-quips-preset" title="台词预设：官方默认不可写，编辑请另存为"></select>
   <button class="l2d-quips-saveas" type="button" title="把当前内容另存为新预设">另存为</button>
+  <button class="l2d-quips-del" type="button" title="删除当前预设">删除</button>
 </div>
 <div class="l2d-quips-row l2d-quips-namerow" hidden>
   <input class="l2d-quips-name" type="text" maxlength="64" placeholder="新预设名称（如：Nori人设）">
   <button class="l2d-quips-nameok" type="button">确定</button>
   <button class="l2d-quips-namecancel" type="button">取消</button>
 </div>
-<div class="l2d-quips-row"><select class="l2d-quips-pool"></select><span class="l2d-quips-count"></span></div>
+<div class="l2d-quips-row">
+  <select class="l2d-quips-pool"></select>
+  <span class="l2d-quips-count"></span>
+  <button class="l2d-quips-reset" type="button" title="此池恢复跟随官方默认">恢复默认</button>
+</div>
 <textarea class="l2d-quips-text" spellcheck="false" placeholder="每行一句台词，随机抽取"></textarea>
-<div class="l2d-quips-foot"><span class="l2d-quips-status"></span><span class="l2d-quips-actions"><button class="l2d-quips-del" type="button" title="删除当前预设">删除预设</button><button class="l2d-quips-reset" type="button" title="此池恢复跟随官方默认">恢复默认</button><button class="l2d-quips-save" type="button">保存</button></span></div>`
+<div class="l2d-quips-foot"><span class="l2d-quips-status"></span><button class="l2d-quips-save" type="button">保存</button></div>`
   document.body.appendChild(quipsCard)
   quipsCard.querySelector('.l2d-quips-close').addEventListener('click', () => toggleQuips(false))
   const quipsPresetEl = quipsCard.querySelector('.l2d-quips-preset')
@@ -448,6 +615,7 @@ export function initPanel(ctx) {
   quipsPoolEl.addEventListener('change', () => { quipsPool = quipsPoolEl.value; renderQuipsPool() })
 
   function positionQuips() {
+    if (quipsPlaced) return
     const rect = toggle.getBoundingClientRect()
     const w = quipsCard.offsetWidth || 300
     const left = Math.min(Math.max(rect.right - w, 8), Math.max(8, window.innerWidth - w - 8))
@@ -499,6 +667,7 @@ export function initPanel(ctx) {
   }
   function toggleQuips(show) {
     quipsOpen = show ?? !quipsOpen
+    if (!quipsOpen) quipsPlaced = false   // 重开恢复锚定
     quipsCard.classList.toggle('open', quipsOpen)
     if (quipsOpen) { showToggle(); positionQuips(); void openQuips() }
     else scheduleHide()
@@ -622,31 +791,46 @@ export function initPanel(ctx) {
   <span>Live2D 模型</span>
   <button class="l2d-panel-close" type="button" title="关闭">×</button>
 </div>
-<div class="l2d-panel-current">当前：<span class="l2d-current-path"></span></div>
-<div class="l2d-panel-list"></div>
-<div class="l2d-panel-status"></div>
-<div class="l2d-panel-actions">
-  <button type="button" class="l2d-reset">恢复默认</button>
-  <button type="button" class="l2d-refresh">刷新列表</button>
-  <button type="button" class="l2d-import">导入模型</button>
+<div class="l2d-panel-tabs">
+  <button type="button" class="l2d-tab on" data-tab="models">模型</button>
+  <button type="button" class="l2d-tab" data-tab="prefs">设置</button>
 </div>
-<div class="l2d-fps-row">
-  <span>帧率</span>
-  <select class="l2d-fps-select" title="渲染帧率预设（常态/睡眠/离线三档联动）">
-    <option value="full">满血（60/30/12 fps）</option>
-    <option value="balanced">均衡（30/12/6 fps，默认）</option>
-    <option value="saver">省电（15/8/4 fps）</option>
-  </select>
+<div class="l2d-tabpage" data-page="models">
+  <div class="l2d-panel-current">当前：<span class="l2d-current-path"></span></div>
+  <div class="l2d-panel-list"></div>
+  <div class="l2d-panel-status"></div>
+  <div class="l2d-panel-actions">
+    <button type="button" class="l2d-reset">恢复默认</button>
+    <button type="button" class="l2d-refresh">刷新列表</button>
+    <button type="button" class="l2d-import">导入模型</button>
+  </div>
 </div>
-<div class="l2d-soft-row" hidden>
-  <label class="l2d-soft-label" title="默认 GPU 渲染；拖动闪烁的机器开启后改走 CPU，切换后桌宠自动重启生效">
-    <input type="checkbox" class="l2d-soft"> CPU 渲染模式（拖动闪烁时开启，切换后自动重启生效）
-  </label>
-</div>
-<div class="l2d-quit-row" hidden>
-  <button type="button" class="l2d-quit">退出桌宠</button>
+<div class="l2d-tabpage" data-page="prefs" hidden>
+  <div class="l2d-fps-row">
+    <span>帧率</span>
+    <select class="l2d-fps-select" title="渲染帧率预设（常态/睡眠/离线三档联动）">
+      <option value="full">满血（60/30/12 fps）</option>
+      <option value="balanced">均衡（30/12/6 fps，默认）</option>
+      <option value="saver">省电（15/8/4 fps）</option>
+    </select>
+  </div>
+  <div class="l2d-soft-row" hidden>
+    <label class="l2d-soft-label" title="默认 GPU 渲染；拖动闪烁的机器开启后改走 CPU，切换后桌宠自动重启生效">
+      <input type="checkbox" class="l2d-soft"> CPU 渲染模式（拖动闪烁时开启，切换后自动重启生效）
+    </label>
+  </div>
+  <div class="l2d-quit-row" hidden>
+    <button type="button" class="l2d-quit">退出桌宠</button>
+  </div>
 </div>`
   document.body.appendChild(panel)
+  // 分页签切换
+  panel.querySelectorAll('.l2d-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      panel.querySelectorAll('.l2d-tab').forEach((t) => t.classList.toggle('on', t === tab))
+      panel.querySelectorAll('.l2d-tabpage').forEach((p) => { p.hidden = p.dataset.page !== tab.dataset.tab })
+    })
+  })
 
   const viewer = document.createElement('div')
   viewer.id = 'l2d-viewer'
@@ -657,24 +841,34 @@ export function initPanel(ctx) {
     <button class="l2d-binder-toggle" type="button" title="可视化绑定编辑">绑定</button>
     <button class="l2d-viewer-close" type="button" title="关闭">×</button>
   </div>
-  <div class="l2d-binder" hidden>
-    <div class="l2d-binder-tip">用法：先点上方状态按钮（工作/闲置…）选要配谁，再点下面的素材直接换上——点完立刻在预览里看到效果，满意了点「保存绑定」</div>
-    <div class="l2d-binder-current">正在给【<b class="l2d-binder-state"></b>】配表现：　脸 <span class="l2d-binder-face"></span>　动作 <span class="l2d-binder-move"></span></div>
-    <div class="l2d-binder-share" hidden></div>
-    <div class="l2d-binder-h">脸（点一个换上）</div>
-    <div class="l2d-binder-faces"></div>
-    <div class="l2d-binder-h">动作（点一个换上）</div>
-    <div class="l2d-binder-moves"></div>
-    <div class="l2d-binder-h">点击池（点小人时随机播这些，可多选）</div>
-    <div class="l2d-binder-pool"></div>
-    <div class="l2d-binder-actions">
-      <button type="button" class="l2d-binder-save">保存绑定</button>
-      <button type="button" class="l2d-binder-reset">恢复自动嗅探</button>
+  <div class="l2d-viewer-body">
+    <div class="l2d-viewer-stage">
+      <div class="l2d-viewer-states"></div>
+      <iframe title="Live2D 模型预览"></iframe>
     </div>
-    <div class="l2d-binder-status"></div>
+    <div class="l2d-binder" hidden>
+      <div class="l2d-binder-tip">用法：先点状态按钮（工作/闲置…）选择要配谁，再点分区里的素材直接换上——预览里立刻出效果，满意了点「保存绑定」。改坏了也不怕，「恢复自动嗅探」一键还原</div>
+      <div class="l2d-binder-current">正在给【<b class="l2d-binder-state"></b>】配表现：　脸 <span class="l2d-binder-face"></span>　动作 <span class="l2d-binder-move"></span></div>
+      <div class="l2d-binder-share" hidden></div>
+      <div class="l2d-binder-sec">
+        <div class="l2d-binder-h">脸<span class="l2d-binder-sub">点一个立刻换上</span></div>
+        <div class="l2d-binder-faces"></div>
+      </div>
+      <div class="l2d-binder-sec">
+        <div class="l2d-binder-h">动作<span class="l2d-binder-sub">点一个立刻换上</span></div>
+        <div class="l2d-binder-moves"></div>
+      </div>
+      <div class="l2d-binder-sec">
+        <div class="l2d-binder-h">点击池<span class="l2d-binder-sub">点小人时随机播这些，可多选</span></div>
+        <div class="l2d-binder-pool"></div>
+      </div>
+      <div class="l2d-binder-actions">
+        <button type="button" class="l2d-binder-save">保存绑定</button>
+        <button type="button" class="l2d-binder-reset">恢复自动嗅探</button>
+      </div>
+      <div class="l2d-binder-status"></div>
+    </div>
   </div>
-  <div class="l2d-viewer-states"></div>
-  <iframe title="Live2D 模型预览"></iframe>
 </div>`
   document.body.appendChild(viewer)
 
@@ -1031,24 +1225,74 @@ export function initPanel(ctx) {
   let serverDefaultModel = ''
   let hideTimer = 0
 
-  // ── 入口静置自动隐藏：悬停/指针移动时出现，菜单/面板/任一卡片打开时保持 ──
+  // ── 入口静置自动隐藏：指针靠近模型时出现，面板/任一卡片打开时保持，
+  // 远离后三兄弟（⚙/🔒/?）一起隐退——锁没锁定看颜色，不靠常显。
+  // 菜单不作阻断条件：穿透态下「点外面关闭」收不到事件，菜单容易卡死成永开，
+  // 改为隐藏时连菜单一起收（按钮都隐了菜单也点不到，留着只会堵死隐藏）──
   function showToggle() {
     clearTimeout(hideTimer)
     toggle.classList.remove('l2d-hidden')
+    pinToggle.classList.remove('l2d-hidden')
+    helpToggle.classList.remove('l2d-hidden')
   }
   function scheduleHide() {
     clearTimeout(hideTimer)
-    if (!panelOpen && !helpOpen && !quipsOpen && !menuOpen) {
+    if (!panelOpen && !helpOpen && !quipsOpen) {
       hideTimer = setTimeout(() => {
+        // 直接收菜单而非 toggleMenu(false)：后者会回调 scheduleHide 造成 1.2s 重军备循环
+        menuOpen = false
+        menu.classList.remove('open')
         toggle.classList.add('l2d-hidden')
+        helpToggle.classList.add('l2d-hidden')
+        pinToggle.classList.add('l2d-hidden')
       }, 1200)
     }
   }
   showToggle()
   scheduleHide()
-  ctx.box.addEventListener('pointerenter', showToggle)
-  ctx.box.addEventListener('pointermove', showToggle)
-  ctx.box.addEventListener('pointerleave', scheduleHide)
+  // 挂件：box 即小窗，指针进出直接驱动显隐。
+  // 桌宠：box 铺满全屏，任何鼠标移动都会触发——显隐改由 interact 光标轮询
+  // 按「指针是否靠近模型」驱动（迁移沿触发），路过屏幕别处不惊动按钮。
+  if (!BRIDGE) {
+    ctx.box.addEventListener('pointerenter', showToggle)
+    ctx.box.addEventListener('pointermove', showToggle)
+    ctx.box.addEventListener('pointerleave', scheduleHide)
+  }
+  // 桌宠穿透态下指针事件不进页面，按钮显隐改由 interact 的光标轮询驱动（见 interact.js onCursor）
+  ctx.showChrome = showToggle
+  ctx.hideChrome = scheduleHide
+
+  // ── 卡片拖动：头部即把手；拖过一次即自由定位（position* 不再锚定），关闭重开恢复锚定 ──
+  let panelPlaced = false
+  let quipsPlaced = false
+  let helpPlaced = false
+  function makeDraggable(card, handle, setPlaced) {
+    handle.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('button, input, select, textarea, a')) return
+      e.preventDefault()
+      const r = card.getBoundingClientRect()
+      const dx = e.clientX - r.left
+      const dy = e.clientY - r.top
+      const move = (ev) => {
+        // 钳制：至少保留 80px 横边与 40px 顶边在屏内，防拖丢
+        const left = Math.min(Math.max(ev.clientX - dx, 8 - card.offsetWidth + 80), window.innerWidth - 88)
+        const top = Math.min(Math.max(ev.clientY - dy, 8), window.innerHeight - 48)
+        card.style.left = Math.round(left) + 'px'
+        card.style.top = Math.round(top) + 'px'
+      }
+      const up = () => {
+        window.removeEventListener('pointermove', move)
+        window.removeEventListener('pointerup', up)
+        setPlaced(true)
+        ctx.evalIgnore?.()
+      }
+      window.addEventListener('pointermove', move)
+      window.addEventListener('pointerup', up)
+    })
+  }
+  makeDraggable(panel, panel.querySelector('.l2d-panel-head'), (v) => { panelPlaced = v })
+  makeDraggable(quipsCard, quipsCard.querySelector('.l2d-quips-head'), (v) => { quipsPlaced = v })
+  makeDraggable(helpCard, helpCard.querySelector('.l2d-help-head'), (v) => { helpPlaced = v })
 
   function setStatus(text, isError = false) {
     statusEl.textContent = text
@@ -1056,7 +1300,7 @@ export function initPanel(ctx) {
   }
 
   function positionPanel() {
-    if (!panelOpen) return
+    if (!panelOpen || panelPlaced) return
     const rect = toggle.getBoundingClientRect()
     const gap = 8
     // 窄窗口下面板会被 CSS min() 收缩，钳制必须用实测宽度而非宽度上限
@@ -1185,6 +1429,7 @@ export function initPanel(ctx) {
 
   function closePanel() {
     panelOpen = false
+    panelPlaced = false   // 重开恢复锚定
     panel.classList.remove('open')
     scheduleHide()
     ctx.evalIgnore?.()
