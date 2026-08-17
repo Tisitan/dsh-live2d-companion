@@ -293,7 +293,8 @@ export default function apply(api) {
 
 1. 看桌宠右上角有没有「?」按钮——没有就是旧包，`dsh plugin add` 重装后重启 DSH 与桌宠
 2. 复现后在 DevTools 控制台查 `localStorage.getItem('l2d-pet-scale')` 是否被拖动改写（应为 `1` 或你 Ctrl+滚轮设的值）
-3. 仍闪则打开面板勾选「CPU 渲染模式」（自动重启生效，渲染改走 CPU）——CPU 渲染下不闪 = 命中 Electron/Windows 透明窗已知问题，常驻该模式即可；`L2D_SOFT=1` 环境变量可做等效临时测试
+3. 新包已内置双保险：拖拽位移按帧合并 + 关闭 Windows 原生遮挡计算（`CalculateNativeWinOcclusion`，拖动时误判遮挡掐停渲染器是软硬渲染都闪的主因）
+4. 仍闪则打开面板勾选「CPU 渲染模式」（自动重启生效，渲染改走 CPU）——命中 Electron/Windows 透明窗合成问题的机器可常驻该模式；`L2D_SOFT=1` 环境变量可做等效临时测试
 
 ## 许可
 
