@@ -1,6 +1,8 @@
 node_modules/
 public/model/
 public/vendor/live2dcubismcore.min.js
+public/quips.local.json
+public/quips-presets/
 *.log
 
 /model-selection.json

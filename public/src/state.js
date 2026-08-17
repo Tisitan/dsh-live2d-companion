@@ -91,6 +91,7 @@ export function initState(ctx) {
     }
     if (def.rotate) {
       ctx.showBubble(quip(def.pool), cfg.rotation.holdMs)
+      // intervalMs 在 enter 时快照：quips 热重载改了节奏后，下次进入状态才生效（设计如此，勿改成每轮换读）
       rotateTimer = setInterval(() => {
         if (document.hidden) return
         // 加班升级：工作时间越长表情越凝重，超时后切焦虑台词池（预览模式不升级，保持所选状态的原始表现）

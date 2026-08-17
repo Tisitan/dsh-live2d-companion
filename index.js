@@ -1,6 +1,6 @@
 import { createReadStream, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
-import { mkdir, readdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, lstat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, normalize, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -9,6 +9,8 @@ export const inject = ['webServer']
 
 const PUBLIC_DIR = normalize(fileURLToPath(new URL('./public', import.meta.url)))
 const MODEL_DIR = join(PUBLIC_DIR, 'model')
+const QUIPS_PRESETS_DIR = join(PUBLIC_DIR, 'quips-presets')
+const QUIPS_ACTIVE_FILE = join(PUBLIC_DIR, 'quips.local.json')
 const SELECTION_FILE = fileURLToPath(new URL('./model-selection.json', import.meta.url))
 const DEFAULT_MODEL = 'nori/ARGNori.model3.json'
 const MAX_SELECTION_BYTES = 64 * 1024
@@ -62,6 +64,8 @@ function safePathSegment(segment, maxLength) {
   if (typeof segment !== 'string' || segment === '' || segment === '.' || segment === '..') return false
   if (segment.length > maxLength || segment.includes('\0')) return false
   if (segment.includes('/') || segment.includes('\\') || segment.includes(':')) return false
+  // Windows 保留名（含带后缀形式）：writeFile 必失败且会触发未捕获异常路径
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(segment)) return false
   return !segment.startsWith('.')
 }
 
@@ -113,6 +117,32 @@ function sanitizeProfile(profile) {
     }
   }
   if (clean.expressions === undefined && clean.motions === undefined) return undefined
+  return clean
+}
+
+// 台词库白名单校验：pools 为 {池名: [台词…]}，池名限小写字母/下划线（≤32），
+// 每池 1-200 条、每条 1-300 字符；rotation/behavior 若提供须为 0-3600000 的纯数字表。
+function sanitizeQuips(body) {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return undefined
+  if (body.pools === null || typeof body.pools !== 'object' || Array.isArray(body.pools)) return undefined
+  const keys = Object.keys(body.pools)
+  if (keys.length > 50) return undefined
+  const pools = {}
+  for (const [key, value] of keys.map((k) => [k, body.pools[k]])) {
+    if (!/^[a-z_]{1,32}$/.test(key)) return undefined
+    if (!Array.isArray(value) || value.length === 0 || value.length > 200) return undefined
+    if (!value.every((s) => typeof s === 'string' && s.length > 0 && s.length <= 300)) return undefined
+    pools[key] = value
+  }
+  const clean = { pools }
+  for (const section of ['rotation', 'behavior']) {
+    if (body[section] !== undefined) {
+      const v = body[section]
+      if (v === null || typeof v !== 'object' || Array.isArray(v)) return undefined
+      if (!Object.values(v).every((n) => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 3600000)) return undefined
+      clean[section] = v
+    }
+  }
   return clean
 }
 
@@ -380,6 +410,15 @@ export function apply(ctx, config) {
     },
   }))
 
+  // SSE 心跳：25 秒注释帧。客户端被杀死而 TCP 未 RST 的半开连接会在
+  // 写失败时被 sseWrite 自动剔除，防止 sseClients 只增不减、广播成本线性膨胀。
+  ctx.effect(() => {
+    const hb = setInterval(() => {
+      for (const res of sseClients) sseWrite(res, ': ka\n\n')
+    }, 25000)
+    return () => clearInterval(hb)
+  })
+
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: '/live2d/config',
@@ -427,27 +466,32 @@ export function apply(ctx, config) {
         return
       }
       readJsonBody(req).then(parsed => {
-        if (parsed.reset === true) {
-          rmSync(SELECTION_FILE, { force: true })
-          modelPath = configModel
+        try {
+          if (parsed.reset === true) {
+            rmSync(SELECTION_FILE, { force: true })
+            modelPath = configModel
+            broadcastModel()
+            sendJson(res, 200, { model: modelPath, defaultModel: configModel, reset: true })
+            return
+          }
+          const ref = normalizeModelRef(parsed.model)
+          const file = ref === undefined ? undefined : modelFile(ref)
+          if (file === undefined) {
+            sendJson(res, 400, { error: 'model must be a relative path ending in .model3.json' })
+            return
+          }
+          if (!existsSync(file)) {
+            sendJson(res, 404, { error: `model not found: ${ref}` })
+            return
+          }
+          writeFileSync(SELECTION_FILE, JSON.stringify({ model: ref, updatedAt: new Date().toISOString() }, null, 2) + '\n')
+          modelPath = ref
           broadcastModel()
-          sendJson(res, 200, { model: modelPath, defaultModel: configModel, reset: true })
-          return
+          sendJson(res, 200, { model: modelPath, defaultModel: configModel })
+        } catch (error) {
+          // 文件被锁/EACCES 等写盘异常绝不能逃逸成 unhandled rejection 崩掉宿主
+          sendJson(res, 500, { error: `failed to persist selection: ${String(error)}` })
         }
-        const ref = normalizeModelRef(parsed.model)
-        const file = ref === undefined ? undefined : modelFile(ref)
-        if (file === undefined) {
-          sendJson(res, 400, { error: 'model must be a relative path ending in .model3.json' })
-          return
-        }
-        if (!existsSync(file)) {
-          sendJson(res, 404, { error: `model not found: ${ref}` })
-          return
-        }
-        writeFileSync(SELECTION_FILE, JSON.stringify({ model: ref, updatedAt: new Date().toISOString() }, null, 2) + '\n')
-        modelPath = ref
-        broadcastModel()
-        sendJson(res, 200, { model: modelPath, defaultModel: configModel })
       }, error => {
         sendJson(res, 400, { error: `invalid request body: ${String(error)}` })
       })
@@ -480,10 +524,15 @@ export function apply(ctx, config) {
         return
       }
       readRawBody(req, MAX_IMPORT_FILE_BYTES).then(async buffer => {
-        const target = join(MODEL_DIR, modelName, ...parts)
-        await mkdir(dirname(target), { recursive: true })
-        await writeFile(target, buffer)
-        sendJson(res, 200, { imported: { model: modelName, path: parts.join('/'), bytes: buffer.length } })
+        try {
+          const target = join(MODEL_DIR, modelName, ...parts)
+          await mkdir(dirname(target), { recursive: true })
+          await writeFile(target, buffer)
+          sendJson(res, 200, { imported: { model: modelName, path: parts.join('/'), bytes: buffer.length } })
+        } catch (error) {
+          // 写盘异常（锁/权限/磁盘满）兜底为 500，不许逃逸成 unhandled rejection
+          sendJson(res, 500, { error: `failed to write import: ${String(error)}` })
+        }
       }, error => {
         sendJson(res, error.message === 'file too large' ? 413 : 400, { error: error.message })
       })
@@ -506,23 +555,23 @@ export function apply(ctx, config) {
         return
       }
       readJsonBody(req).then(async parsed => {
-        const dir = typeof parsed.dir === 'string' && safePathSegment(parsed.dir, 128) ? parsed.dir : undefined
-        if (dir === undefined) {
-          sendJson(res, 400, { error: 'dir is invalid' })
-          return
-        }
-        const file = join(MODEL_DIR, dir, 'profile.json')
-        if (parsed.reset === true) {
-          rmSync(file, { force: true })
-          sendJson(res, 200, { reset: true })
-          return
-        }
-        const clean = sanitizeProfile(parsed.profile)
-        if (clean === undefined) {
-          sendJson(res, 400, { error: 'profile shape is invalid' })
-          return
-        }
         try {
+          const dir = typeof parsed.dir === 'string' && safePathSegment(parsed.dir, 128) ? parsed.dir : undefined
+          if (dir === undefined) {
+            sendJson(res, 400, { error: 'dir is invalid' })
+            return
+          }
+          const file = join(MODEL_DIR, dir, 'profile.json')
+          if (parsed.reset === true) {
+            rmSync(file, { force: true })
+            sendJson(res, 200, { reset: true })
+            return
+          }
+          const clean = sanitizeProfile(parsed.profile)
+          if (clean === undefined) {
+            sendJson(res, 400, { error: 'profile shape is invalid' })
+            return
+          }
           await mkdir(dirname(file), { recursive: true })
           await writeFile(file, JSON.stringify(clean, null, 2) + '\n')
           sendJson(res, 200, { saved: `${dir}/profile.json` })
@@ -535,10 +584,113 @@ export function apply(ctx, config) {
     },
   }))
 
+  // 台词预设列表：{active: 当前生效的预设名|null, presets: [预设名…]}。
+  // 预设文件本体走静态路由直接读（quips-presets/<名>.json）。
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/live2d/quips-config',
+    async handler(req, res) {
+      if (req.method !== 'GET') {
+        res.writeHead(405, { allow: 'GET' })
+        res.end('method not allowed')
+        return
+      }
+      let active = null
+      try {
+        const p = JSON.parse(readFileSync(QUIPS_ACTIVE_FILE, 'utf8'))
+        if (typeof p?.active === 'string' && safePathSegment(p.active, 64)) active = p.active
+      } catch { }
+      let presets = []
+      try {
+        presets = (await readdir(QUIPS_PRESETS_DIR))
+          .filter((f) => f.endsWith('.json') && safePathSegment(f.slice(0, -5), 64))
+          .map((f) => f.slice(0, -5))
+          .sort()
+      } catch { }
+      if (active !== null && !presets.includes(active)) active = null
+      sendJson(res, 200, { active, presets })
+    },
+  }))
+
+  // 台词预设写盘：三个动作共用一路由（均为本机限定）。
+  //   {save: 预设名, data: {pools…}}  新建/覆盖预设并设为生效
+  //   {activate: 预设名|null}         仅切换生效预设（null=回官方默认）
+  //   {delete: 预设名}                删除预设（若为生效预设则指针回 null）
+  // 覆盖层与官方 quips.json 池级合并，用户自定义永不与上游更新冲突。
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/live2d/quips',
+    handler(req, res) {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { allow: 'POST' })
+        res.end('method not allowed')
+        return
+      }
+      if (!isLocalReq(req)) {
+        sendJson(res, 403, { error: 'this route is local-only' })
+        return
+      }
+      const writeActive = async (name) => {
+        await writeFile(QUIPS_ACTIVE_FILE, JSON.stringify({ active: name }, null, 2) + '\n')
+      }
+      readJsonBody(req).then(async parsed => {
+        try {
+          if (typeof parsed.activate !== 'undefined') {
+            if (parsed.activate !== null && (typeof parsed.activate !== 'string' || !safePathSegment(parsed.activate, 64))) {
+              sendJson(res, 400, { error: 'activate is invalid' })
+              return
+            }
+            await writeActive(parsed.activate)
+            sendJson(res, 200, { active: parsed.activate })
+            return
+          }
+          if (typeof parsed.delete === 'string') {
+            if (!safePathSegment(parsed.delete, 64)) {
+              sendJson(res, 400, { error: 'delete is invalid' })
+              return
+            }
+            rmSync(join(QUIPS_PRESETS_DIR, parsed.delete + '.json'), { force: true })
+            let active = null
+            try { active = JSON.parse(readFileSync(QUIPS_ACTIVE_FILE, 'utf8'))?.active } catch { }
+            if (active === parsed.delete) await writeActive(null)
+            sendJson(res, 200, { deleted: parsed.delete })
+            return
+          }
+          if (typeof parsed.save === 'string') {
+            if (!safePathSegment(parsed.save, 64)) {
+              sendJson(res, 400, { error: 'preset name is invalid' })
+              return
+            }
+            const clean = sanitizeQuips(parsed.data)
+            if (clean === undefined) {
+              sendJson(res, 400, { error: 'quips shape is invalid' })
+              return
+            }
+            await mkdir(QUIPS_PRESETS_DIR, { recursive: true })
+            await writeFile(join(QUIPS_PRESETS_DIR, parsed.save + '.json'), JSON.stringify(clean, null, 2) + '\n')
+            await writeActive(parsed.save)
+            sendJson(res, 200, { saved: parsed.save })
+            return
+          }
+          sendJson(res, 400, { error: 'need one of: save / activate / delete' })
+        } catch (error) {
+          sendJson(res, 500, { error: `failed to write preset: ${String(error)}` })
+        }
+      }, error => {
+        sendJson(res, 400, { error: `invalid request body: ${String(error)}` })
+      })
+    },
+  }))
+
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: '/live2d',
     async handler(req, res) {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        res.writeHead(405, { allow: 'GET, HEAD' })
+        res.end('method not allowed')
+        return
+      }
       let pathname
       try {
         pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname)
@@ -557,10 +709,16 @@ export function apply(ctx, config) {
       }
       let info
       try {
-        info = await stat(file)
+        info = await lstat(file)
       } catch {
         res.writeHead(404)
         res.end('not found')
+        return
+      }
+      // 深度防御：public/ 内部的符号链接可逃逸前缀校验，一律拒读
+      if (info.isSymbolicLink()) {
+        res.writeHead(403)
+        res.end()
         return
       }
       if (!info.isFile()) {
@@ -602,10 +760,14 @@ export function apply(ctx, config) {
           stdio: 'ignore',
           env: { ...process.env, L2D_URL: petUrl },
         })
+        // spawn 的 ENOENT 走异步 error 事件，try/catch 接不住——不监听会 uncaughtException 崩宿主
+        child.on('error', (error) => ctx.logger.warn(`live2d pet spawn failed: ${String(error)}`))
         child.unref()
         ctx.logger.info(`live2d pet spawned (pid ${child.pid}) -> ${petUrl}`)
         return () => {
-          try { spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }) } catch { }
+          try {
+            spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => { })
+          } catch { }
         }
       })
     } else {

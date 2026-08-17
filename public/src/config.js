@@ -78,23 +78,46 @@ export const cfg = {
 }
 
 /**
- * 拉取并合并 quips.json：池逐个校验（非空字符串数组才采信），
- * rotation/behavior 浅合并，失败保留现状。可安全反复调用（热重载）。
+ * 拉取并合并台词库：官方默认 quips.json + 用户预设（quips.local.json 指针 →
+ * quips-presets/<名>.json，均可多份另存）池级合并——预设逐池胜出，
+ * 未覆盖的池继续跟随上游更新。失败保留现状。可安全反复调用（热重载）。
  */
 export async function loadQuips() {
+  const validPools = (raw) => {
+    const pools = {}
+    if (raw?.pools && typeof raw.pools === 'object') {
+      for (const [key, value] of Object.entries(raw.pools)) {
+        if (Array.isArray(value) && value.length > 0 && value.every((s) => typeof s === 'string')) pools[key] = value
+      }
+    }
+    return pools
+  }
+  const validSection = (raw, name) => {
+    const v = raw?.[name]
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return {}
+    // 只采信有限数值键，脏数据（字符串/负数/NaN）不得混入节奏与阈值
+    const out = {}
+    for (const [k, n] of Object.entries(v)) {
+      if (typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 3600000) out[k] = n
+    }
+    return out
+  }
+  const tryFetch = async (url) => {
+    try {
+      const r = await fetch(url, { cache: 'no-store' })
+      return r.ok ? await r.json() : null
+    } catch { return null }
+  }
   try {
     const raw = await (await fetch(BASE + '/quips.json', { cache: 'no-store' })).json()
-    if (raw && typeof raw === 'object') {
-      if (raw.pools && typeof raw.pools === 'object') {
-        const pools = {}
-        for (const [key, value] of Object.entries(raw.pools)) {
-          if (Array.isArray(value) && value.length > 0 && value.every((s) => typeof s === 'string')) pools[key] = value
-        }
-        cfg.quips = { ...DEFAULT_QUIPS, ...pools }
-      }
-      if (raw.rotation && typeof raw.rotation === 'object') cfg.rotation = { ...cfg.rotation, ...raw.rotation }
-      if (raw.behavior && typeof raw.behavior === 'object') cfg.behavior = { ...cfg.behavior, ...raw.behavior }
-    }
+    // 活跃指针：{active: 预设名}；预设文件读取失败则仅回落官方默认
+    const pointer = await tryFetch(BASE + '/quips.local.json')
+    const presetName = typeof pointer?.active === 'string' ? pointer.active : null
+    const preset = presetName === null ? null
+      : await tryFetch(BASE + '/quips-presets/' + encodeURIComponent(presetName) + '.json')
+    cfg.quips = { ...DEFAULT_QUIPS, ...validPools(raw), ...validPools(preset) }
+    cfg.rotation = { ...cfg.rotation, ...validSection(raw, 'rotation'), ...validSection(preset, 'rotation') }
+    cfg.behavior = { ...cfg.behavior, ...validSection(raw, 'behavior'), ...validSection(preset, 'behavior') }
   } catch { }
 }
 

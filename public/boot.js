@@ -125,6 +125,8 @@ async function loadExtensions(api) {
     const list = await (await fetch(BASE + '/extensions/index.json', { cache: 'no-store' })).json()
     if (!Array.isArray(list)) return
     for (const name of list) {
+      // 清单条目必须是纯文件名：防 ../ 遍历加载同源任意脚本
+      if (typeof name !== 'string' || !/^[\w.-]+\.js$/.test(name)) continue
       try {
         const mod = await import(`${BASE}/extensions/${name}`)
         const apply = mod.default ?? mod.apply

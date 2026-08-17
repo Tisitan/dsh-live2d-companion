@@ -6,7 +6,7 @@
  * 鼠标悬停模型区域时重新出现（面板打开时保持显示）。
  */
 
-import { BASE, PREVIEW, BRIDGE } from './config.js'
+import { BASE, PREVIEW, BRIDGE, loadQuips } from './config.js'
 import { resolveBinding, extractInventory } from './binding.js'
 
 /** 面板宽度上限（px）；窄窗口（如桌宠）下由 CSS min() 收缩，钳制用实测宽度。 */
@@ -32,8 +32,18 @@ export function initPanel(ctx) {
 }
 #l2d-model-toggle:hover { opacity: 1; background: #fff; }
 #l2d-model-toggle.l2d-hidden { opacity: 0; pointer-events: none; }
-#l2d-model-help {
+#l2d-quips-toggle {
   position: absolute; top: 42px; right: 6px; z-index: 20;
+  width: 30px; height: 30px; padding: 0; border-radius: 50%;
+  border: 1px solid rgba(0,0,0,.12); background: rgba(255,255,255,.88);
+  color: #556; font: 13px/1 system-ui, sans-serif; cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,.18);
+  opacity: .72; transition: opacity .25s ease, background .15s ease;
+}
+#l2d-quips-toggle:hover { opacity: 1; background: #fff; }
+#l2d-quips-toggle.l2d-hidden { opacity: 0; pointer-events: none; }
+#l2d-model-help {
+  position: absolute; top: 78px; right: 6px; z-index: 20;
   width: 30px; height: 30px; padding: 0; border-radius: 50%;
   border: 1px solid rgba(0,0,0,.12); background: rgba(255,255,255,.88);
   color: #556; font: 14px/1 system-ui, sans-serif; cursor: pointer;
@@ -56,6 +66,56 @@ export function initPanel(ctx) {
 #l2d-help-card .l2d-help-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 2px; }
 #l2d-help-card .l2d-help-close { border: 0; background: none; cursor: pointer; color: #889; font-size: 14px; padding: 0 2px; }
 #l2d-help-card ul { margin: 0; padding-left: 16px; }
+#l2d-quips-card {
+  position: fixed; z-index: 100000; width: min(300px, calc(100vw - 16px));
+  background: rgba(255,255,255,.97); color: #334;
+  border: 1px solid rgba(0,0,0,.12); border-radius: 12px;
+  box-shadow: 0 10px 34px rgba(0,0,0,.24);
+  font: 12px/1.6 system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  padding: 10px 12px; box-sizing: border-box;
+  opacity: 0; visibility: hidden; transform: translateY(-4px);
+  transition: opacity .15s ease, transform .15s ease, visibility .15s;
+}
+#l2d-quips-card.open { opacity: 1; visibility: visible; transform: none; }
+#l2d-quips-card .l2d-quips-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 6px; }
+#l2d-quips-card .l2d-quips-close { border: 0; background: none; cursor: pointer; color: #889; font-size: 14px; padding: 0 2px; }
+#l2d-quips-card .l2d-quips-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+#l2d-quips-card .l2d-quips-pool { flex: 1; min-width: 0; height: 26px; border: 1px solid #d5dbe5; border-radius: 6px; background: #fff; font-size: 12px; }
+#l2d-quips-card .l2d-quips-count { color: #99a; white-space: nowrap; }
+#l2d-quips-card .l2d-quips-text {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 140px; max-height: 40vh;
+  border: 1px solid #d5dbe5; border-radius: 8px; padding: 6px 8px;
+  font: 12px/1.7 ui-monospace, 'Cascadia Mono', Consolas, monospace; color: #334;
+}
+#l2d-quips-card .l2d-quips-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
+#l2d-quips-card .l2d-quips-status { color: #99a; }
+#l2d-quips-card .l2d-quips-status.error { color: #c0392b; }
+#l2d-quips-card .l2d-quips-save {
+  border: 0; border-radius: 8px; padding: 5px 16px;
+  background: #4a7fb5; color: #fff; font-size: 12px; cursor: pointer;
+}
+#l2d-quips-card .l2d-quips-save:hover { background: #3d6d9e; }
+#l2d-quips-card .l2d-quips-actions { display: flex; gap: 6px; }
+#l2d-quips-card .l2d-quips-preset { flex: 1; min-width: 0; height: 26px; border: 1px solid #d5dbe5; border-radius: 6px; background: #fff; font-size: 12px; }
+#l2d-quips-card .l2d-quips-saveas {
+  border: 1px solid #d5dbe5; border-radius: 6px; padding: 3px 8px;
+  background: #fff; color: #556; font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+#l2d-quips-card .l2d-quips-name {
+  flex: 1; min-width: 0; height: 26px; box-sizing: border-box;
+  border: 1px solid #d5dbe5; border-radius: 6px; padding: 0 8px; font-size: 12px;
+}
+#l2d-quips-card .l2d-quips-nameok, #l2d-quips-card .l2d-quips-namecancel {
+  border: 1px solid #d5dbe5; border-radius: 6px; padding: 3px 8px;
+  background: #fff; color: #556; font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+#l2d-quips-card .l2d-quips-nameok { background: #4a7fb5; border-color: #4a7fb5; color: #fff; }
+#l2d-quips-card .l2d-quips-reset, #l2d-quips-card .l2d-quips-del {
+  border: 1px solid #d5dbe5; border-radius: 8px; padding: 4px 10px;
+  background: #fff; color: #778; font-size: 12px; cursor: pointer;
+}
+#l2d-quips-card .l2d-quips-del:hover { color: #c0392b; border-color: #c0392b; }
+#l2d-quips-card .l2d-quips-reset:disabled, #l2d-quips-card .l2d-quips-del:disabled { opacity: .45; cursor: default; }
 #l2d-model-panel {
   position: fixed; z-index: 100000; width: min(280px, calc(100vw - 16px)); max-height: min(420px, calc(100vh - 16px));
   display: flex; flex-direction: column; box-sizing: border-box;
@@ -241,9 +301,9 @@ export function initPanel(ctx) {
   <li>头顶悬停：摸头害羞</li>
   <li>拖拽：带我搬家（拖拽中缩放自动锁定）</li>
   <li>缩放：挂件滚轮 / 桌宠 Ctrl+滚轮</li>
-  <li>⚙ 齿轮：模型 / 预览 / 绑定 / 帧率 / 退出</li>
+  <li>⚙ 齿轮：模型 / 预览 / 绑定 / 帧率 / CPU渲染 / 退出</li>
+  <li>词：台词编辑器——每个状态的随机台词都能改，可另存多份预设</li>
   <li>左上小灯：AI 状态；多任务并行会分列任务灯</li>
-  <li>台词：quips.json 自定义，保存约 30 秒生效</li>
 </ul>`
   document.body.appendChild(helpCard)
   helpCard.querySelector('.l2d-help-close').addEventListener('click', () => toggleHelp(false))
@@ -265,6 +325,271 @@ export function initPanel(ctx) {
     else scheduleHide()
     ctx.evalIgnore?.()
   }
+
+  // ── 台词池编辑器：齿轮与 ? 之间的「词」入口；草稿机制（切池不丢），保存即热生效 ──
+  const QUIP_POOL_LABELS = {
+    thinking: '思考', working: '工作', done: '完成', waiting: '等待确认', error: '报错',
+    overtime: '加班中', sleeping: '睡眠', idle: '闲置碎碎念', busy: '忙中回应',
+    click: '点击反应', pat: '摸头', drag: '拖拽', greet: '见面问候',
+    greet_morning: '早安问候', greet_night: '深夜问候',
+  }
+  const quipsToggle = document.createElement('button')
+  quipsToggle.id = 'l2d-quips-toggle'
+  quipsToggle.type = 'button'
+  quipsToggle.title = '台词池编辑器'
+  quipsToggle.setAttribute('aria-label', '台词池编辑器')
+  quipsToggle.textContent = '词'
+  quipsToggle.addEventListener('pointerdown', (e) => e.stopPropagation())
+  quipsToggle.addEventListener('pointerup', (e) => e.stopPropagation())
+  quipsToggle.addEventListener('click', (e) => { e.stopPropagation(); toggleQuips() })
+  quipsToggle.addEventListener('dblclick', (e) => e.stopPropagation())
+  quipsToggle.addEventListener('wheel', (e) => e.stopPropagation())
+  ctx.box.appendChild(quipsToggle)
+
+  const quipsCard = document.createElement('section')
+  quipsCard.id = 'l2d-quips-card'
+  quipsCard.innerHTML = `
+<div class="l2d-quips-head"><span>台词池编辑器</span><button class="l2d-quips-close" type="button" title="关闭">×</button></div>
+<div class="l2d-quips-row">
+  <select class="l2d-quips-preset" title="台词预设：官方默认不可写，编辑请另存为"></select>
+  <button class="l2d-quips-saveas" type="button" title="把当前内容另存为新预设">另存为</button>
+</div>
+<div class="l2d-quips-row l2d-quips-namerow" hidden>
+  <input class="l2d-quips-name" type="text" maxlength="64" placeholder="新预设名称（如：Nori人设）">
+  <button class="l2d-quips-nameok" type="button">确定</button>
+  <button class="l2d-quips-namecancel" type="button">取消</button>
+</div>
+<div class="l2d-quips-row"><select class="l2d-quips-pool"></select><span class="l2d-quips-count"></span></div>
+<textarea class="l2d-quips-text" spellcheck="false" placeholder="每行一句台词，随机抽取"></textarea>
+<div class="l2d-quips-foot"><span class="l2d-quips-status"></span><span class="l2d-quips-actions"><button class="l2d-quips-del" type="button" title="删除当前预设">删除预设</button><button class="l2d-quips-reset" type="button" title="此池恢复跟随官方默认">恢复默认</button><button class="l2d-quips-save" type="button">保存</button></span></div>`
+  document.body.appendChild(quipsCard)
+  quipsCard.querySelector('.l2d-quips-close').addEventListener('click', () => toggleQuips(false))
+  const quipsPresetEl = quipsCard.querySelector('.l2d-quips-preset')
+  const quipsPoolEl = quipsCard.querySelector('.l2d-quips-pool')
+  const quipsTextEl = quipsCard.querySelector('.l2d-quips-text')
+  const quipsStatusEl = quipsCard.querySelector('.l2d-quips-status')
+  const quipsCountEl = quipsCard.querySelector('.l2d-quips-count')
+  const quipsResetBtn = quipsCard.querySelector('.l2d-quips-reset')
+  const quipsDelBtn = quipsCard.querySelector('.l2d-quips-del')
+  let quipsOpen = false
+  let quipsDefaultRaw = null       // 官方默认文件（只读参照，永不写）
+  let quipsPresetRaw = null        // 当前预设文件内容（null=官方默认视图）
+  let quipsActive = null           // 生效预设名（null=官方默认）
+  let quipsDraft = {}              // {池名: [行…]} 未保存修改
+  let quipsPool = 'thinking'
+
+  const effectivePools = () => ({ ...(quipsDefaultRaw?.pools ?? {}), ...(quipsPresetRaw?.pools ?? {}) })
+  const poolDiffersFromDefault = (k) => {
+    const cur = quipsPresetRaw?.pools?.[k]
+    if (cur === undefined) return false
+    return JSON.stringify(cur) !== JSON.stringify(quipsDefaultRaw?.pools?.[k])
+  }
+
+  function setQuipsStatus(text, isError = false) {
+    quipsStatusEl.textContent = text
+    quipsStatusEl.classList.toggle('error', isError)
+  }
+  function buildQuipsOptions() {
+    const pools = effectivePools()
+    const keys = [
+      ...Object.keys(QUIP_POOL_LABELS).filter((k) => k in pools),
+      ...Object.keys(pools).filter((k) => !(k in QUIP_POOL_LABELS)),
+    ]
+    quipsPoolEl.replaceChildren(...keys.map((k) => {
+      const label = QUIP_POOL_LABELS[k] ? `${QUIP_POOL_LABELS[k]}（${k}）` : k
+      return new Option(poolDiffersFromDefault(k) ? `${label} ·自定义` : label, k)
+    }))
+    if (!keys.includes(quipsPool)) quipsPool = keys[0] ?? 'thinking'
+    quipsPoolEl.value = quipsPool
+  }
+  function renderQuipsPool() {
+    const lines = quipsDraft[quipsPool] ?? effectivePools()[quipsPool] ?? []
+    quipsTextEl.value = lines.join('\n')
+    quipsCountEl.textContent = `${lines.length} 句`
+    quipsResetBtn.disabled = !poolDiffersFromDefault(quipsPool)
+    quipsDelBtn.disabled = quipsActive === null
+    const dirty = Object.keys(quipsDraft).length
+    setQuipsStatus(dirty > 0 ? `${dirty} 个池未保存` : '')
+  }
+  quipsTextEl.addEventListener('input', () => {
+    const lines = quipsTextEl.value.split('\n').map((s) => s.trim()).filter(Boolean)
+    const base = effectivePools()[quipsPool] ?? []
+    const same = lines.length === base.length && lines.every((s, i) => s === base[i])
+    if (same) delete quipsDraft[quipsPool]
+    else quipsDraft[quipsPool] = lines
+    quipsCountEl.textContent = `${lines.length} 句`
+    const dirty = Object.keys(quipsDraft).length
+    setQuipsStatus(dirty > 0 ? `${dirty} 个池未保存` : '')
+  })
+  quipsPoolEl.addEventListener('change', () => { quipsPool = quipsPoolEl.value; renderQuipsPool() })
+
+  function positionQuips() {
+    const rect = quipsToggle.getBoundingClientRect()
+    const w = quipsCard.offsetWidth || 300
+    const left = Math.min(Math.max(rect.right - w, 8), Math.max(8, window.innerWidth - w - 8))
+    let top = rect.bottom + 8
+    if (top + quipsCard.offsetHeight > window.innerHeight - 8) top = Math.max(8, rect.top - quipsCard.offsetHeight - 8)
+    quipsCard.style.left = left + 'px'
+    quipsCard.style.top = top + 'px'
+  }
+  async function postQuips(payload) {
+    const res = await fetch(BASE + '/quips', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) throw new Error(await res.text())
+  }
+  async function loadPresetRaw(name) {
+    if (name === null) return null
+    try {
+      const r = await fetch(BASE + '/quips-presets/' + encodeURIComponent(name) + '.json', { cache: 'no-store' })
+      const raw = r.ok ? await r.json() : null
+      return raw && typeof raw === 'object' && raw.pools ? raw : null
+    } catch { return null }
+  }
+  async function openQuips() {
+    setQuipsStatus('读取中…')
+    try {
+      const [raw, cfgRes] = await Promise.all([
+        (await fetch(BASE + '/quips.json', { cache: 'no-store' })).json(),
+        // quips-config 路由不可用时优雅降级为纯官方视图（老宿主/独立服）
+        fetch(BASE + '/quips-config', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      ])
+      quipsDefaultRaw = raw
+      quipsActive = typeof cfgRes?.active === 'string' ? cfgRes.active : null
+      const presets = Array.isArray(cfgRes?.presets) ? cfgRes.presets : []
+      quipsPresetEl.replaceChildren(
+        new Option('官方默认', ''),
+        ...presets.map((p) => new Option(p, p)),
+      )
+      quipsPresetEl.value = quipsActive ?? ''
+      quipsPresetRaw = await loadPresetRaw(quipsActive)
+    } catch {
+      setQuipsStatus('读取失败', true)
+      return
+    }
+    quipsDraft = {}
+    buildQuipsOptions()
+    renderQuipsPool()
+  }
+  function toggleQuips(show) {
+    quipsOpen = show ?? !quipsOpen
+    quipsCard.classList.toggle('open', quipsOpen)
+    if (quipsOpen) { showToggle(); positionQuips(); void openQuips() }
+    else scheduleHide()
+    ctx.evalIgnore?.()
+  }
+  // 切换生效预设（含回官方默认）：指针写盘 + 热重载 + 刷新视图
+  quipsPresetEl.addEventListener('change', async () => {
+    const name = quipsPresetEl.value === '' ? null : quipsPresetEl.value
+    try {
+      await postQuips({ activate: name })
+      quipsActive = name
+      quipsPresetRaw = await loadPresetRaw(name)
+      quipsDraft = {}
+      await loadQuips()
+      buildQuipsOptions()
+      renderQuipsPool()
+      setQuipsStatus(name === null ? '已切回官方默认' : `已切换到「${name}」`)
+    } catch {
+      setQuipsStatus('切换失败', true)
+    }
+  })
+  // 保存：预设=全量快照（人设自包含）；官方默认视图下保存自动转另存为。
+  // Electron 不支持 window.prompt——命名走卡片内联输入行。
+  const quipsNameRow = quipsCard.querySelector('.l2d-quips-namerow')
+  const quipsPresetRow = quipsNameRow.previousElementSibling
+  const quipsNameInput = quipsCard.querySelector('.l2d-quips-name')
+  function showNameRow(show, prefill = '') {
+    quipsNameRow.hidden = !show
+    quipsPresetRow.hidden = show
+    if (show) { quipsNameInput.value = prefill; quipsNameInput.focus() }
+  }
+  async function doSavePreset(name) {
+    const pools = { ...effectivePools(), ...quipsDraft }
+    setQuipsStatus('保存中…')
+    try {
+      await postQuips({ save: name, data: { ...(quipsPresetRaw ?? {}), pools } })
+      quipsActive = name
+      quipsPresetRaw = await loadPresetRaw(name)
+      quipsDraft = {}
+      await loadQuips()
+      // 预设下拉可能新增了一项，重建
+      const cfgRes = await fetch(BASE + '/quips-config', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+      const presets = Array.isArray(cfgRes?.presets) ? cfgRes.presets : [name]
+      quipsPresetEl.replaceChildren(new Option('官方默认', ''), ...presets.map((p) => new Option(p, p)))
+      quipsPresetEl.value = name
+      buildQuipsOptions()
+      renderQuipsPool()
+      setQuipsStatus(`已保存到「${name}」并生效`)
+      ctx.showBubble?.('台词更新好啦~', 2500)
+    } catch {
+      setQuipsStatus('保存失败，请重试', true)
+    }
+  }
+  function saveQuipsPreset(forceNewName) {
+    const pools = { ...effectivePools(), ...quipsDraft }
+    for (const [k, v] of Object.entries(pools)) {
+      if (v.length === 0) {
+        setQuipsStatus(`「${QUIP_POOL_LABELS[k] ?? k}」至少保留一句`, true)
+        return
+      }
+    }
+    if (forceNewName || quipsActive === null) {
+      showNameRow(true, quipsActive ?? '')
+      return
+    }
+    void doSavePreset(quipsActive)
+  }
+  quipsCard.querySelector('.l2d-quips-nameok').addEventListener('click', () => {
+    const name = quipsNameInput.value.trim()
+    if (!name) { setQuipsStatus('预设名不能为空', true); return }
+    showNameRow(false)
+    void doSavePreset(name)
+  })
+  quipsCard.querySelector('.l2d-quips-namecancel').addEventListener('click', () => showNameRow(false))
+  quipsNameInput.addEventListener('keydown', (e) => {
+    e.stopPropagation()   // 阻止 document 级 Esc 把面板也一起关掉
+    if (e.key === 'Enter') quipsCard.querySelector('.l2d-quips-nameok').click()
+    if (e.key === 'Escape') showNameRow(false)
+  })
+  quipsCard.querySelector('.l2d-quips-save').addEventListener('click', () => saveQuipsPreset(false))
+  quipsCard.querySelector('.l2d-quips-saveas').addEventListener('click', () => saveQuipsPreset(true))
+  // 此池恢复默认：从预设快照中删掉该池，回落官方
+  quipsResetBtn.addEventListener('click', async () => {
+    if (quipsActive === null || !poolDiffersFromDefault(quipsPool)) return
+    const pools = { ...effectivePools(), ...quipsDraft }
+    delete pools[quipsPool]
+    delete quipsDraft[quipsPool]
+    setQuipsStatus('保存中…')
+    try {
+      await postQuips({ save: quipsActive, data: { ...(quipsPresetRaw ?? {}), pools } })
+      quipsPresetRaw = await loadPresetRaw(quipsActive)
+      await loadQuips()
+      buildQuipsOptions()
+      renderQuipsPool()
+      setQuipsStatus('此池已恢复官方默认')
+    } catch {
+      setQuipsStatus('操作失败', true)
+    }
+  })
+  // 删除当前预设：文件删除 + 指针回官方 + 热重载
+  quipsDelBtn.addEventListener('click', async () => {
+    if (quipsActive === null) return
+    if (!window.confirm(`删除预设「${quipsActive}」？此操作不可撤销。`)) return
+    try {
+      await postQuips({ delete: quipsActive })
+      quipsActive = null
+      quipsPresetRaw = null
+      quipsDraft = {}
+      await loadQuips()
+      await openQuips()
+      setQuipsStatus('已删除，回官方默认')
+    } catch {
+      setQuipsStatus('删除失败', true)
+    }
+  })
 
   const panel = document.createElement('section')
   panel.id = 'l2d-model-panel'
@@ -682,18 +1007,20 @@ export function initPanel(ctx) {
   let serverDefaultModel = ''
   let hideTimer = 0
 
-  // ── 入口静置自动隐藏：悬停/指针移动时出现，面板或说明卡打开时保持 ──
+  // ── 入口静置自动隐藏：悬停/指针移动时出现，面板或任一卡片打开时保持 ──
   function showToggle() {
     clearTimeout(hideTimer)
     toggle.classList.remove('l2d-hidden')
     helpToggle.classList.remove('l2d-hidden')
+    quipsToggle.classList.remove('l2d-hidden')
   }
   function scheduleHide() {
     clearTimeout(hideTimer)
-    if (!panelOpen && !helpOpen) {
+    if (!panelOpen && !helpOpen && !quipsOpen) {
       hideTimer = setTimeout(() => {
         toggle.classList.add('l2d-hidden')
         helpToggle.classList.add('l2d-hidden')
+        quipsToggle.classList.add('l2d-hidden')
       }, 1200)
     }
   }
@@ -885,9 +1212,14 @@ export function initPanel(ctx) {
       }
     }
     if (!modelName) {
-      const fallback = files.length === 1 ? files[0].name.replace(/\.model3\.json$/i, '') : 'my-model'
-      const prompted = window.prompt('请输入模型文件夹名称', fallback)
-      modelName = typeof prompted === 'string' ? prompted.trim() : ''
+      // Electron 不支持 window.prompt：单文件导入自动派生文件夹名（与现有模型冲突时追加序号）
+      const base = ((files.length === 1 ? files[0].name.replace(/\.model3\.json$/i, '') : 'my-model') || 'my-model').trim() || 'my-model'
+      modelName = base
+      let n = 2
+      while (models.some((m) => m.dir === modelName)) {
+        modelName = `${base}-${n}`
+        n += 1
+      }
     }
     if (!modelName || modelName.includes('/') || modelName.includes('\\') || modelName.includes(':') || modelName.startsWith('.')) {
       setStatus('模型名称无效：请使用不含 / \\\\ : 的文件夹名', true)
@@ -946,7 +1278,9 @@ export function initPanel(ctx) {
   resetBtn.title = '恢复 cordis.patch.yml 中配置的默认模型'
   window.addEventListener('resize', positionPanel)
   document.addEventListener('pointerdown', (e) => {
-    if (panelOpen && !panel.contains(e.target) && !toggle.contains(e.target) && !viewer.contains(e.target)) closePanel()
+    // 台词卡/说明卡也挂在 body 下，点它们不算「点在面板外」
+    if (panelOpen && !panel.contains(e.target) && !toggle.contains(e.target) && !viewer.contains(e.target)
+      && !quipsCard.contains(e.target) && !helpCard.contains(e.target)) closePanel()
   })
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return

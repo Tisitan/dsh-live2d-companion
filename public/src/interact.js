@@ -25,7 +25,7 @@ export function initInteract(ctx) {
   function uiHit() {
     if (lastPointer === null) return false
     const el = document.elementFromPoint(lastPointer.x, lastPointer.y)
-    return !!(el && el.closest('#l2d-model-toggle, #l2d-model-help, #l2d-model-panel, #l2d-help-card, #l2d-viewer, #l2d-chat-toggle, #l2d-chat-panel'))
+    return !!(el && el.closest('#l2d-model-toggle, #l2d-model-help, #l2d-model-panel, #l2d-help-card, #l2d-viewer, #l2d-chat-toggle, #l2d-chat-panel, #l2d-quips-toggle, #l2d-quips-card'))
   }
 
   /** 指针穿透评估：指针在模型包围盒（含余量）或面板控件上才接收事件，否则镂空让桌面。 */

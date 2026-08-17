@@ -111,12 +111,19 @@ app.whenReady().then(() => {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
       // 失焦/被判定遮挡时不节流渲染器，配合上方遮挡开关防拖动闪屏
       backgroundThrottling: false,
     },
   })
   win.setAlwaysOnTop(true, 'screen-saver')
   win.setIgnoreMouseEvents(true, { forward: true })
+  // 窗口锁定：禁开新窗、禁跳转到宿主源以外的地址（加载的是 http 页面，纵深防御）
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  const targetOrigin = new URL(TARGET).origin
+  win.webContents.on('will-navigate', (event, target) => {
+    if (!target.startsWith(targetOrigin + '/')) event.preventDefault()
+  })
 
   // preload 在页面启动阶段就会调 IPC（软渲染读取/首帧光标），必须先注册再加载页面
   ipcMain.on('l2d-ignore', (event, ignore) => {
@@ -171,7 +178,20 @@ app.whenReady().then(() => {
   })
   win.on('closed', () => { win = null })
 
-  win.loadURL(TARGET)
+  // 加载自愈：宿主未就绪/重载失败时指数退避重试，不再干等 80 秒自杀——
+  // 宿主晚于桌宠启动、宿主重启中途页面 404 等瞬态都能自己爬回来
+  let loadRetries = 0
+  const reloadPage = () => {
+    if (win === null || win.isDestroyed()) return
+    win.loadURL(TARGET).catch(() => { })
+  }
+  win.webContents.on('did-fail-load', () => {
+    const delay = Math.min(30000, 2000 * 2 ** loadRetries)
+    loadRetries += 1
+    setTimeout(reloadPage, delay)
+  })
+  win.webContents.on('did-finish-load', () => { loadRetries = 0 })
+  win.loadURL(TARGET).catch(() => { })
 
   let lastCursor = null
   setInterval(() => {
@@ -191,8 +211,10 @@ app.whenReady().then(() => {
     } catch {
       failures += 1
     }
-    // 80 秒宽限：低配机重启 DSH 可能超过 40 秒，别在宿主正常重启时误杀桌宠
-    if (failures >= 10) app.quit()
+    // 80 秒宽限（低配机重启 DSH 可能超过 40 秒）：先自愈重载页面；
+    // 持续 120 秒仍不通认定宿主已死才退出（宿主下次启动会重新 spawn）
+    if (failures >= 10) reloadPage()
+    if (failures >= 15) app.quit()
   }, 8000)
 })
 
