@@ -228,6 +228,10 @@ npm.cmd install
 - `POST /live2d/import?model=<文件夹名>&path=<相对文件路径>`：body 为原始文件字节，单文件上限 128 MiB；路径经过校验，无法写出 `model/` 目录
 - `POST /live2d/profile`：body `{ "dir": "<模型文件夹>", "profile": {...} }` 写绑定档案；`{ "dir": "...", "reset": true }` 删除档案恢复自动嗅探。档案经白名单形状清洗，写入范围锁死在 `model/<dir>/profile.json`
 
+> 🔒 三个变更类路由（`/model` `/import` `/profile`）仅允许本机来源（127.0.0.1/::1）。若把 DSH web 绑定到局域网，远端写入会被 403 拒绝。
+
+> 🛟 模型加载自带兜底链：配置模型加载失败自动回退默认模型；默认也失败时挂件内显示可见错误提示（首次使用未放模型/缺 cubismcore 时不再是一团空气）。
+
 ## 扩展开发（贡献者向）
 
 无需改核心代码即可拓展功能：`public/extensions/` 下放一个 ES Module，在 `index.json` 清单里登记文件名，启动时自动加载。

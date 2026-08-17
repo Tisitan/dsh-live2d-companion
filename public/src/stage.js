@@ -67,7 +67,32 @@ export async function initStage(ctx) {
 
   ctx.binding = await loadBinding(modelPath)
 
-  let model = await PIXI.live2d.Live2DModel.from(`${BASE}/model/${modelPath}`, { autoInteract: false })
+  /** 模型加载带兜底链：配置模型坏了回退内置默认；默认也挂则显示可见错误而非一团空气。 */
+  async function loadModel(path) {
+    return PIXI.live2d.Live2DModel.from(`${BASE}/model/${path}`, { autoInteract: false })
+  }
+  let model
+  try {
+    model = await loadModel(modelPath)
+  } catch (firstError) {
+    console.warn(`[l2d] model load failed, falling back to default: ${modelPath}`, firstError)
+    try {
+      modelPath = DEFAULT_MODEL
+      ctx.binding = await loadBinding(modelPath)
+      model = await loadModel(modelPath)
+    } catch (secondError) {
+      // 连默认模型都加载失败（首次使用未放模型 / 缺 cubismcore）：在容器里留文字提示
+      const notice = document.createElement('div')
+      Object.assign(notice.style, {
+        position: 'absolute', inset: '20% 8% auto', padding: '10px 12px', borderRadius: '10px',
+        background: 'rgba(0,0,0,.72)', color: '#ffd7d7', font: '12px/1.7 sans-serif',
+        whiteSpace: 'pre-wrap', pointerEvents: 'none', zIndex: 3,
+      })
+      notice.textContent = 'Live2D 模型加载失败\n请检查 model/ 目录与 vendor/live2dcubismcore.min.js'
+      ctx.box.appendChild(notice)
+      throw secondError
+    }
+  }
   app.stage.addChild(model)
   ctx.model = model
   let naturalW = model.internalModel.originalWidth
@@ -77,7 +102,11 @@ export async function initStage(ctx) {
   ctx.targetScale = ctx.scale
   ctx.petBaseW = PET_DEFAULT_W
   ctx.petBaseH = PET_DEFAULT_H
-  ctx.modelBounds = () => ctx.model.getBounds()
+  // 包围盒缓存：getBounds 要遍历全部网格顶点，而交互路径（穿透/摸头）随指针事件
+  // 可达 60-120Hz——每帧只量一次，交互全部读缓存；布局等需要精确值的仍走实测。
+  let cachedBounds = null
+  app.ticker.add(() => { if (ctx.model) cachedBounds = ctx.model.getBounds() })
+  ctx.modelBounds = () => cachedBounds ?? ctx.model.getBounds()
 
   /** 布局：挂件按固定画布，桌宠按窗口；桌宠底部锚定（站地上），挂件垂直居中。
    *  两遍制：先按标称尺寸缩放，再量真实渲染包围盒二次修正——标称与实测

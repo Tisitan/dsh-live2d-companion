@@ -271,6 +271,7 @@ export function initPanel(ctx) {
   function withViewerApi(cb) {
     let tries = 0
     const attempt = () => {
+      if (!viewer.classList.contains('open')) return // 弹窗已关，停止空转
       const api = viewerFrame.contentWindow?.__l2d
       if (api) { cb(api); return }
       if (++tries < 80) setTimeout(attempt, 300)
@@ -283,7 +284,7 @@ export function initPanel(ctx) {
     withViewerApi(api => api.enter(state))
   }
 
-  // ── 绑定编辑器：槽位下拉实时试穿，保存写 profile.json ──
+  // ── 绑定编辑器：状态直通（点状态选目标 → 点素材试穿换绑），保存写 profile.json ──
 
   const binderEl = viewer.querySelector('.l2d-binder')
   const binderToggle = viewer.querySelector('.l2d-binder-toggle')

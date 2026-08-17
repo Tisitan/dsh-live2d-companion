@@ -41,6 +41,7 @@ export function initState(ctx) {
   let rotateTimer = 0
   let remotionTimer = 0
   let transientTimer = 0
+  let wakeTimer = 0
 
   ctx.getState = () => state
   ctx.busy = () => BUSY_STATES.includes(state)
@@ -65,21 +66,24 @@ export function initState(ctx) {
     remotionTimer = 0
     clearTimeout(transientTimer)
     transientTimer = 0
+    clearTimeout(wakeTimer)
+    wakeTimer = 0
 
     const def = registry[next]
     if (!def) return
-    if (next === 'idle') {
-      idleSince = Date.now()
-      ctx.setExpr(def.expr)
-      return
-    }
-    // 从睡梦中被唤醒：先惊喜脸，1.2 秒后落回新状态表情
+    if (next === 'idle') idleSince = Date.now()
+    // 从睡梦中被唤醒：先惊喜脸，1.2 秒后落回新状态表情（含直接回 idle 的路径；
+    // wakeTimer 已纳入 enter 的清理队列，快速连切不会被旧定时器踩脸）
     if (woke) {
       ctx.setExpr('surprised')
-      setTimeout(() => ctx.setExpr(ctx.stateExpr()), 1200)
+      wakeTimer = setTimeout(() => {
+        wakeTimer = 0
+        ctx.setExpr(ctx.stateExpr())
+      }, 1200)
     } else {
       ctx.setExpr(def.expr)
     }
+    if (next === 'idle') return
     if (def.motion) {
       // 报错态 40% 概率播放故障特效（槽位存在时；预览模式求确定性，恒播主动作）
       if (!PREVIEW && next === 'error' && Math.random() < 0.4 && ctx.binding.motion.glitch) ctx.playMotion('glitch')

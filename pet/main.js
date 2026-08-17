@@ -109,7 +109,8 @@ app.whenReady().then(() => {
     } catch {
       failures += 1
     }
-    if (failures >= 5) app.quit()
+    // 80 秒宽限：低配机重启 DSH 可能超过 40 秒，别在宿主正常重启时误杀桌宠
+    if (failures >= 10) app.quit()
   }, 8000)
 })
 

@@ -22,7 +22,13 @@ const MIME = {
   '.js': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
   '.moc3': 'application/octet-stream',
+  '.wav': 'audio/wav',
+  '.mp3': 'audio/mpeg',
+  '.ogg': 'audio/ogg',
 }
 
 const INDEX_TAG = '<script src="/live2d/boot.js" type="module"></script>'
@@ -140,9 +146,14 @@ export function apply(ctx, config) {
     'approval/asked', 'approval/decided', 'llm/retry-started',
   ])
 
+  /** SSE 写帧：断连竞态下 write 可能抛 ERR_STREAM_DESTROYED，吞掉并剔除死客户端，绝不上抛宿主。 */
+  function sseWrite(res, frame) {
+    try { res.write(frame) } catch { sseClients.delete(res) }
+  }
+
   function broadcastRaw(type) {
     const frame = `data: ${JSON.stringify({ ev: type })}\n\n`
-    for (const res of sseClients) res.write(frame)
+    for (const res of sseClients) sseWrite(res, frame)
   }
 
   function aggregate() {
@@ -158,17 +169,23 @@ export function apply(ctx, config) {
     if (next === current) return
     current = next
     const frame = `data: ${JSON.stringify({ state: current })}\n\n`
-    for (const res of sseClients) res.write(frame)
+    for (const res of sseClients) sseWrite(res, frame)
   }
 
   function broadcastModel() {
     const frame = `data: ${JSON.stringify({ model: modelPath })}\n\n`
-    for (const res of sseClients) res.write(frame)
+    for (const res of sseClients) sseWrite(res, frame)
   }
 
   function sendJson(res, status, payload) {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
     res.end(JSON.stringify(payload))
+  }
+
+  /** 变更类路由仅允许本机来源：DSH web 若被绑到 0.0.0.0/暴露到局域网，挡住远端写模型目录。 */
+  function isLocalReq(req) {
+    const addr = req.socket.remoteAddress
+    return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1'
   }
 
   function readJsonBody(req) {
@@ -177,8 +194,9 @@ export function apply(ctx, config) {
       let oversized = false
       req.setEncoding('utf8')
       req.on('data', chunk => {
+        if (oversized) return // 超限即停读入内存，等 end 统一拒绝
         body += chunk
-        if (body.length > MAX_SELECTION_BYTES) oversized = true
+        if (body.length > MAX_SELECTION_BYTES) { oversized = true; body = '' }
       })
       req.on('end', () => {
         if (oversized) {
@@ -312,8 +330,8 @@ export function apply(ctx, config) {
         'cache-control': 'no-store',
         connection: 'keep-alive',
       })
-      res.write(`data: ${JSON.stringify({ state: current, model: modelPath })}\n\n`)
       sseClients.add(res)
+      sseWrite(res, `data: ${JSON.stringify({ state: current, model: modelPath })}\n\n`)
       req.on('close', () => { sseClients.delete(res) })
     },
   }))
@@ -360,6 +378,10 @@ export function apply(ctx, config) {
         res.end('method not allowed')
         return
       }
+      if (!isLocalReq(req)) {
+        sendJson(res, 403, { error: 'this route is local-only' })
+        return
+      }
       readJsonBody(req).then(parsed => {
         if (parsed.reset === true) {
           rmSync(SELECTION_FILE, { force: true })
@@ -397,6 +419,10 @@ export function apply(ctx, config) {
         res.end('method not allowed')
         return
       }
+      if (!isLocalReq(req)) {
+        sendJson(res, 403, { error: 'this route is local-only' })
+        return
+      }
       const url = new URL(req.url ?? '/', 'http://x')
       const modelName = url.searchParams.get('model') ?? ''
       const filePath = url.searchParams.get('path') ?? ''
@@ -429,6 +455,10 @@ export function apply(ctx, config) {
       if (req.method !== 'POST') {
         res.writeHead(405, { allow: 'POST' })
         res.end('method not allowed')
+        return
+      }
+      if (!isLocalReq(req)) {
+        sendJson(res, 403, { error: 'this route is local-only' })
         return
       }
       readJsonBody(req).then(async parsed => {
@@ -465,7 +495,14 @@ export function apply(ctx, config) {
     kind: 'prefix',
     path: '/live2d',
     async handler(req, res) {
-      const pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname)
+      let pathname
+      try {
+        pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname)
+      } catch {
+        res.writeHead(400)
+        res.end('bad request')
+        return
+      }
       let rel = pathname.slice('/live2d'.length)
       if (rel === '' || rel === '/') rel = '/pet.html'
       const file = normalize(join(PUBLIC_DIR, rel))
@@ -509,7 +546,10 @@ export function apply(ctx, config) {
         // spawn 节流：cordis 效果若因宿主故障反复重挂载，30 秒内只拉一次桌宠。
         // 桌宠自身有单实例锁兜底，但反复 spawn 进程本身就是 CPU 灾难。
         const now = Date.now()
-        if (now - lastPetSpawnAt < 30000) return undefined
+        if (now - lastPetSpawnAt < 30000) {
+          ctx.logger.info('live2d pet spawn throttled (effect remounted within 30s)')
+          return undefined
+        }
         lastPetSpawnAt = now
         const petUrl = `http://127.0.0.1:${ctx.webServer.port}/live2d/pet.html`
         const child = spawn(exe, ['.'], {

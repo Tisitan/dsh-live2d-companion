@@ -20,36 +20,38 @@ const ev = async (expr, awaitPromise = false) => {
   return r.exceptionDetails ? 'EXC: ' + (r.exceptionDetails.exception?.description ?? r.exceptionDetails.text) : r.result?.value
 }
 
-console.log('parent binding excited before:', await ev(`JSON.stringify(window.__l2d.ctx.binding.motion.excited)`))
-console.log('open viewer:', await ev(`window.__l2d.openModelViewer(window.__l2d.modelPath), 'ok'`))
-for (let i = 0; i < 15; i++) {
+// ① 主窗健康 + 包围盒缓存生效（缓存值与实测值同帧一致）
+console.log('=== main pet healthy ===')
+console.log('state:', await ev(`window.__l2d.state`), '| modelPath:', await ev(`window.__l2d.modelPath`))
+console.log('modelBounds cached:', await ev(`JSON.stringify(window.__l2d.ctx.modelBounds())`))
+console.log('fresh getBounds:', await ev(`JSON.stringify(window.__l2d.model.getBounds())`))
+
+// ② 模型加载回退链：坏模型路径 → 应回退默认 nori 而非裸死
+console.log('=== fallback chain test ===')
+await ev(`(() => { const f = document.createElement('iframe'); f.id = 'l2d-fallback-test'; f.src = '/live2d/pet.html?model=bogus/notexist.model3.json&preview=1'; f.style.cssText = 'position:fixed;width:10px;height:10px;left:-9999px'; document.body.appendChild(f); return 'iframe planted' })()`)
+let fb = null
+for (let i = 0; i < 20; i++) {
   await new Promise(r => setTimeout(r, 2000))
-  if (await ev(`!!document.querySelector('#l2d-viewer iframe').contentWindow.__l2d`)) break
+  fb = await ev(`(() => { const w = document.getElementById('l2d-fallback-test').contentWindow; return w.__l2d ? w.__l2d.modelPath : null })()`)
+  if (fb) break
+  console.log(`t=${(i + 1) * 2}s waiting...`)
 }
-await ev(`document.querySelector('.l2d-binder-toggle').click()`)
-await new Promise(r => setTimeout(r, 1200))
+console.log('fallback iframe modelPath (expect nori/ARGNori.model3.json):', fb)
+console.log('fallback iframe model alive:', await ev(`(() => { const w = document.getElementById('l2d-fallback-test').contentWindow; return !!(w.__l2d && w.__l2d.model && w.__l2d.model.width > 0) })()`))
+await ev(`document.getElementById('l2d-fallback-test').remove()`)
 
-// 给「工作」换成 Angry（Reactions:3）
-await ev(`[...document.querySelectorAll('.l2d-state-btn')].find(b => b.dataset.state === 'working').click()`)
-await new Promise(r => setTimeout(r, 400))
-await ev(`[...document.querySelectorAll('.l2d-binder-moves .l2d-mat')].find(x => x.textContent.includes('Angry')).click()`)
-await new Promise(r => setTimeout(r, 400))
+// ③ 唤醒竞态：sleeping→done→立刻 thinking，1.4 秒后脸上表情必须跟随 thinking（不被旧定时器踩）
+console.log('=== wake timer race test ===')
+await ev(`window.__l2d.enter('sleeping')`)
+await new Promise(r => setTimeout(r, 300))
+await ev(`window.__l2d.enter('done')`)
+await new Promise(r => setTimeout(r, 200))
+await ev(`window.__l2d.enter('thinking')`)
+await new Promise(r => setTimeout(r, 1400))
+console.log('state now (expect thinking):', await ev(`window.__l2d.state`))
+console.log('current expr slot (expect doubt):', await ev(`window.__l2d.ctx.stateExpr()`))
+console.log('active expression name:', await ev(`(() => { const em = window.__l2d.model.internalModel.expressionManager; return em && em.definitions ? 'expr mgr alive' : 'n/a' })()`))
+await ev(`window.__l2d.enter('idle')`)
 
-// 保存
-await ev(`document.querySelector('.l2d-binder-save').click()`)
-await new Promise(r => setTimeout(r, 6000))  // 保存 + 主窗强制热重载（模型重新加载要几秒）
-console.log('save status:', await ev(`document.querySelector('.l2d-binder-status').textContent`))
-console.log('parent binding excited after save (expect ["Reactions",3]):', await ev(`JSON.stringify(window.__l2d.ctx.binding.motion.excited)`))
-console.log('parent modelPath still nori:', await ev(`window.__l2d.ctx.getModelPath()`))
-
-// 回滚：换回 WakuWaku（Reactions:2）再保存，恢复原状
-await ev(`[...document.querySelectorAll('.l2d-binder-moves .l2d-mat')].find(x => x.textContent.includes('WakuWaku')).click()`)
-await new Promise(r => setTimeout(r, 400))
-await ev(`document.querySelector('.l2d-binder-save').click()`)
-await new Promise(r => setTimeout(r, 6000))
-console.log('restore status:', await ev(`document.querySelector('.l2d-binder-status').textContent`))
-console.log('parent binding excited restored (expect ["Reactions",2]):', await ev(`JSON.stringify(window.__l2d.ctx.binding.motion.excited)`))
-
-await ev(`document.getElementById('l2d-viewer').classList.remove('open')`)
 ws.close()
 process.exit(0)
