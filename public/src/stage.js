@@ -132,11 +132,23 @@ export async function initStage(ctx) {
 
   /** 布局：挂件按固定画布，桌宠按窗口；桌宠底部锚定（站地上），挂件垂直居中。
    *  两遍制：先按标称尺寸缩放，再量真实渲染包围盒二次修正——标称与实测
-   *  不符的模型（帽檐/飘带溢出标称框）在任何窗口下都不会被裁切。 */
+   *  不符的模型（帽檐/飘带溢出标称框）在任何窗口下都不会被裁切。
+   *  尺寸未变时跳过 renderer.resize：canvas 位图重分配会清屏闪帧，
+   *  窗口纯移动/系统偶发同尺寸 resize 事件（跨屏 DPI、DWM）不该触发它。 */
+  let lastLayoutW = 0
+  let lastLayoutH = 0
+  let lastLayoutDpr = 0
   ctx.layout = () => {
     const w = PET ? window.innerWidth : BASE_W
     const h = PET ? window.innerHeight : BASE_H
-    app.renderer.resize(w, h)
+    const dpr = window.devicePixelRatio || 1
+    if (w !== lastLayoutW || h !== lastLayoutH || dpr !== lastLayoutDpr) {
+      app.renderer.resolution = dpr   // 跨屏拖动换 DPI 时同步渲染精度
+      app.renderer.resize(w, h)
+      lastLayoutW = w
+      lastLayoutH = h
+      lastLayoutDpr = dpr
+    }
     const zoom = (BRIDGE || PREVIEW) ? 1 : ctx.scale
     let s = Math.min(w / naturalW, h / naturalH) * FIT_RATIO * zoom
     ctx.model.scale.set(s)

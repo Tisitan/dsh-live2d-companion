@@ -20,25 +20,29 @@ const ev = async (expr, awaitPromise = false) => {
   return r.exceptionDetails ? 'EXC: ' + (r.exceptionDetails.exception?.description ?? r.exceptionDetails.text) : r.result?.value
 }
 
-console.log('=== quit button flow ===')
-console.log('quit row visible (expect false=shown):', await ev(`document.querySelector('.l2d-quit-row')?.hidden`))
-console.log('initial text:', await ev(`document.querySelector('.l2d-quit')?.textContent`))
+console.log('=== idempotent layout guard ===')
+const b0 = JSON.parse(await ev(`JSON.stringify(window.__l2d.bounds)`))
+console.log('bounds before:', JSON.stringify(b0))
 
-// 第一次点击：进入确认态（不退出）
-await ev(`document.querySelector('.l2d-quit').click()`)
+// 同尺寸连调三次 layout：不报错、模型位置稳定
+await ev(`window.__l2d.ctx.layout(); window.__l2d.ctx.layout(); window.__l2d.ctx.layout(); 'ok'`)
 await new Promise(r => setTimeout(r, 300))
-console.log('after 1st click text (expect 确认):', await ev(`document.querySelector('.l2d-quit')?.textContent`))
-console.log('armed class:', await ev(`document.querySelector('.l2d-quit')?.classList.contains('arm')`))
+const b1 = JSON.parse(await ev(`JSON.stringify(window.__l2d.bounds)`))
+console.log('bounds after 3 same-size layout:', JSON.stringify(b1))
+console.log('model position stable:', Math.abs(b0.x - b1.x) < 1 && Math.abs(b0.y - b1.y) < 1 && Math.abs(b0.w - b1.w) < 1)
 
-// 等 3 秒确认态过期 → 文字应还原（验证防误触回退）
-await new Promise(r => setTimeout(r, 3200))
-console.log('after 3.2s text (expect 还原):', await ev(`document.querySelector('.l2d-quit')?.textContent`))
+// 真实窗口尺寸变化 → resize 照常生效
+await ev(`window.__petBridge.resizeTo(500, 700)`)
+await new Promise(r => setTimeout(r, 600))
+console.log('after resizeTo 500x700 → innerW/H:', await ev(`window.innerWidth + 'x' + window.innerHeight`))
+console.log('renderer screen matches:', await ev(`window.__l2d.app.renderer.screen.width + 'x' + window.__l2d.app.renderer.screen.height`))
+const b2 = JSON.parse(await ev(`JSON.stringify(window.__l2d.bounds)`))
+console.log('model fits new window:', b2.x >= 0 && b2.y >= 0 && b2.x + b2.w <= 500 && b2.y + b2.h <= 700)
 
-// 双击确认退出：点两次
-await ev(`document.querySelector('.l2d-quit').click()`)
-await new Promise(r => setTimeout(r, 200))
-await ev(`document.querySelector('.l2d-quit').click()`)
-console.log('double-clicked quit, waiting for app exit...')
-await new Promise(r => setTimeout(r, 3000))
+// 还原
+await ev(`window.__petBridge.resizeTo(339, 631)`)
+await new Promise(r => setTimeout(r, 400))
+console.log('restored:', await ev(`window.innerWidth + 'x' + window.innerHeight`))
+
 ws.close()
 process.exit(0)

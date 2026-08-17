@@ -28,7 +28,7 @@ export function initUI(ctx) {
   const box = document.createElement('div')
   box.id = 'l2d-companion'
   if (PET) {
-    Object.assign(box.style, { position: 'fixed', inset: '0', zIndex: 1 })
+    Object.assign(box.style, { position: 'fixed', inset: '0', zIndex: 1, touchAction: 'none', userSelect: 'none' })
   } else {
     Object.assign(box.style, {
       position: 'fixed', zIndex: 9999, width: BASE_W + 'px', height: BASE_H + 'px',

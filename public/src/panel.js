@@ -32,6 +32,30 @@ export function initPanel(ctx) {
 }
 #l2d-model-toggle:hover { opacity: 1; background: #fff; }
 #l2d-model-toggle.l2d-hidden { opacity: 0; pointer-events: none; }
+#l2d-model-help {
+  position: absolute; top: 42px; right: 6px; z-index: 20;
+  width: 30px; height: 30px; padding: 0; border-radius: 50%;
+  border: 1px solid rgba(0,0,0,.12); background: rgba(255,255,255,.88);
+  color: #556; font: 14px/1 system-ui, sans-serif; cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,.18);
+  opacity: .72; transition: opacity .25s ease, background .15s ease;
+}
+#l2d-model-help:hover { opacity: 1; background: #fff; }
+#l2d-model-help.l2d-hidden { opacity: 0; pointer-events: none; }
+#l2d-help-card {
+  position: fixed; z-index: 100000; width: min(250px, calc(100vw - 16px));
+  background: rgba(255,255,255,.97); color: #334;
+  border: 1px solid rgba(0,0,0,.12); border-radius: 12px;
+  box-shadow: 0 10px 34px rgba(0,0,0,.24);
+  font: 12px/1.8 system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  padding: 10px 12px; box-sizing: border-box;
+  opacity: 0; visibility: hidden; transform: translateY(-4px);
+  transition: opacity .15s ease, transform .15s ease, visibility .15s;
+}
+#l2d-help-card.open { opacity: 1; visibility: visible; transform: none; }
+#l2d-help-card .l2d-help-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 2px; }
+#l2d-help-card .l2d-help-close { border: 0; background: none; cursor: pointer; color: #889; font-size: 14px; padding: 0 2px; }
+#l2d-help-card ul { margin: 0; padding-left: 16px; }
 #l2d-model-panel {
   position: fixed; z-index: 100000; width: min(280px, calc(100vw - 16px)); max-height: min(420px, calc(100vh - 16px));
   display: flex; flex-direction: column; box-sizing: border-box;
@@ -190,6 +214,55 @@ export function initPanel(ctx) {
   toggle.addEventListener('dblclick', (e) => e.stopPropagation())
   toggle.addEventListener('wheel', (e) => e.stopPropagation())
   ctx.box.appendChild(toggle)
+
+  // ── 说明入口：齿轮下方的 ? 按钮，与齿轮同一显隐节奏 ──
+  const helpToggle = document.createElement('button')
+  helpToggle.id = 'l2d-model-help'
+  helpToggle.type = 'button'
+  helpToggle.title = '基本操作说明'
+  helpToggle.setAttribute('aria-label', '基本操作说明')
+  helpToggle.textContent = '?'
+  helpToggle.addEventListener('pointerdown', (e) => e.stopPropagation())
+  helpToggle.addEventListener('pointerup', (e) => e.stopPropagation())
+  helpToggle.addEventListener('click', (e) => { e.stopPropagation(); toggleHelp() })
+  helpToggle.addEventListener('dblclick', (e) => e.stopPropagation())
+  helpToggle.addEventListener('wheel', (e) => e.stopPropagation())
+  ctx.box.appendChild(helpToggle)
+
+  const helpCard = document.createElement('section')
+  helpCard.id = 'l2d-help-card'
+  helpCard.innerHTML = `
+<div class="l2d-help-head"><span>基本操作</span><button class="l2d-help-close" type="button" title="关闭">×</button></div>
+<ul>
+  <li>点我：随机动作 + 吐槽</li>
+  <li>双击：兴奋卖萌</li>
+  <li>头顶悬停：摸头害羞</li>
+  <li>拖拽：带我搬家（拖拽中缩放自动锁定）</li>
+  <li>缩放：挂件滚轮 / 桌宠 Ctrl+滚轮</li>
+  <li>⚙ 齿轮：模型 / 预览 / 绑定 / 帧率 / 退出</li>
+  <li>左上小灯：AI 状态；多任务并行会分列任务灯</li>
+  <li>台词：quips.json 自定义，保存约 30 秒生效</li>
+</ul>`
+  document.body.appendChild(helpCard)
+  helpCard.querySelector('.l2d-help-close').addEventListener('click', () => toggleHelp(false))
+
+  let helpOpen = false
+  function positionHelp() {
+    const rect = helpToggle.getBoundingClientRect()
+    const w = helpCard.offsetWidth || 250
+    const left = Math.min(Math.max(rect.right - w, 8), Math.max(8, window.innerWidth - w - 8))
+    let top = rect.bottom + 8
+    if (top + helpCard.offsetHeight > window.innerHeight - 8) top = Math.max(8, rect.top - helpCard.offsetHeight - 8)
+    helpCard.style.left = left + 'px'
+    helpCard.style.top = top + 'px'
+  }
+  function toggleHelp(show) {
+    helpOpen = show ?? !helpOpen
+    helpCard.classList.toggle('open', helpOpen)
+    if (helpOpen) { showToggle(); positionHelp() }
+    else scheduleHide()
+    ctx.evalIgnore?.()
+  }
 
   const panel = document.createElement('section')
   panel.id = 'l2d-model-panel'
@@ -591,14 +664,20 @@ export function initPanel(ctx) {
   let serverDefaultModel = ''
   let hideTimer = 0
 
-  // ── 入口静置自动隐藏：悬停/指针移动时出现，面板打开时保持 ──
+  // ── 入口静置自动隐藏：悬停/指针移动时出现，面板或说明卡打开时保持 ──
   function showToggle() {
     clearTimeout(hideTimer)
     toggle.classList.remove('l2d-hidden')
+    helpToggle.classList.remove('l2d-hidden')
   }
   function scheduleHide() {
     clearTimeout(hideTimer)
-    if (!panelOpen) hideTimer = setTimeout(() => toggle.classList.add('l2d-hidden'), 1200)
+    if (!panelOpen && !helpOpen) {
+      hideTimer = setTimeout(() => {
+        toggle.classList.add('l2d-hidden')
+        helpToggle.classList.add('l2d-hidden')
+      }, 1200)
+    }
   }
   showToggle()
   scheduleHide()

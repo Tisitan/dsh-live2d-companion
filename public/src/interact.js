@@ -25,7 +25,7 @@ export function initInteract(ctx) {
   function uiHit() {
     if (lastPointer === null) return false
     const el = document.elementFromPoint(lastPointer.x, lastPointer.y)
-    return !!(el && el.closest('#l2d-model-toggle, #l2d-model-panel, #l2d-viewer'))
+    return !!(el && el.closest('#l2d-model-toggle, #l2d-model-help, #l2d-model-panel, #l2d-help-card, #l2d-viewer'))
   }
 
   /** 指针穿透评估：指针在模型包围盒（含余量）或面板控件上才接收事件，否则镂空让桌面。 */
@@ -145,31 +145,45 @@ export function initInteract(ctx) {
     })
   } else if (BRIDGE) {
     let drag = null
+    // 拖拽位移合并：电竞鼠标回报率可达 500-1000Hz，逐事件 IPC+setPosition 会
+    // 迫使透明窗高频重合成（弱 GPU/旧驱动下表现为拖动闪屏）。位移量累积起来
+    // 按动画帧冲刷一次，移动频率封顶显示器刷新率，且总位移分毫不丢。
+    let movePending = false
+    const flushMove = () => {
+      movePending = false
+      if (!drag) return
+      const dx = drag.curX - drag.flushX
+      const dy = drag.curY - drag.flushY
+      if (dx === 0 && dy === 0) return
+      drag.flushX = drag.curX
+      drag.flushY = drag.curY
+      BRIDGE.moveBy(dx, dy)
+    }
     const endDrag = () => {
       if (!drag) return
+      flushMove()  // 收尾冲刷：指针停在最后一帧的位移不丢
       if (drag.moved) ctx.setExpr(ctx.stateExpr())
       else clickReact()
       drag = null
       dragging = false
     }
     box.addEventListener('pointerdown', (e) => {
-      drag = { x: e.screenX, y: e.screenY, moved: false }
+      drag = { x: e.screenX, y: e.screenY, curX: e.screenX, curY: e.screenY, flushX: e.screenX, flushY: e.screenY, moved: false }
       dragging = true
       box.setPointerCapture(e.pointerId)
     })
     box.addEventListener('pointermove', (e) => {
       if (!drag) return
-      const dx = e.screenX - drag.x
-      const dy = e.screenY - drag.y
-      if (!drag.moved && Math.hypot(dx, dy) > 4) {
+      drag.curX = e.screenX
+      drag.curY = e.screenY
+      if (!drag.moved && Math.hypot(drag.curX - drag.x, drag.curY - drag.y) > 4) {
         drag.moved = true
         ctx.setExpr('shy')
         if (Math.random() < 0.5) ctx.showBubble(quip('drag'), 1500)
       }
-      if (drag.moved) {
-        BRIDGE.moveBy(dx, dy)
-        drag.x = e.screenX
-        drag.y = e.screenY
+      if (drag.moved && !movePending) {
+        movePending = true
+        requestAnimationFrame(flushMove)
       }
     })
     box.addEventListener('pointerup', endDrag)
@@ -189,8 +203,13 @@ export function initInteract(ctx) {
   })
 
   // 滚轮缩放：delta 比例因子（Chromium 会把一格滚轮拆成多个事件）
+  // 两道防误触：① 拖拽期间锁缩放（触控板拖动手势易夹带 wheel）
+  // ② 桌宠形态仅 Ctrl+滚轮缩放（触控板滚动漂移是普通 wheel，彻底免疫；
+  //    误触一旦持久化会重启沿用——闸死入口即根治）；网页挂件保留普通滚轮
   box.addEventListener('wheel', (e) => {
     e.preventDefault()
+    if (dragging) return
+    if (BRIDGE && !e.ctrlKey) return
     ctx.targetScale = Math.min(2.5, Math.max(0.4, ctx.targetScale * Math.exp(-e.deltaY * 0.0012)))
     store.setScale(ctx.targetScale)
   }, { passive: false })
