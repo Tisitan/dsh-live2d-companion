@@ -32,26 +32,21 @@ export function initPanel(ctx) {
 }
 #l2d-model-toggle:hover { opacity: 1; background: #fff; }
 #l2d-model-toggle.l2d-hidden { opacity: 0; pointer-events: none; }
-#l2d-quips-toggle {
-  position: absolute; top: 42px; right: 6px; z-index: 20;
-  width: 30px; height: 30px; padding: 0; border-radius: 50%;
-  border: 1px solid rgba(0,0,0,.12); background: rgba(255,255,255,.88);
-  color: #556; font: 13px/1 system-ui, sans-serif; cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0,0,0,.18);
-  opacity: .72; transition: opacity .25s ease, background .15s ease;
+#l2d-pet-menu {
+  position: fixed; z-index: 100000; min-width: 112px; padding: 4px;
+  background: rgba(255,255,255,.97); color: #445;
+  border: 1px solid rgba(0,0,0,.12); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.22);
+  font: 12px/1.4 system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  opacity: 0; visibility: hidden; transform: translateY(-4px);
+  transition: opacity .15s ease, transform .15s ease, visibility .15s;
 }
-#l2d-quips-toggle:hover { opacity: 1; background: #fff; }
-#l2d-quips-toggle.l2d-hidden { opacity: 0; pointer-events: none; }
-#l2d-model-help {
-  position: absolute; top: 78px; right: 6px; z-index: 20;
-  width: 30px; height: 30px; padding: 0; border-radius: 50%;
-  border: 1px solid rgba(0,0,0,.12); background: rgba(255,255,255,.88);
-  color: #556; font: 14px/1 system-ui, sans-serif; cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0,0,0,.18);
-  opacity: .72; transition: opacity .25s ease, background .15s ease;
+#l2d-pet-menu.open { opacity: 1; visibility: visible; transform: none; }
+#l2d-pet-menu button {
+  display: block; width: 100%; padding: 6px 10px; border: 0; border-radius: 7px;
+  background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
 }
-#l2d-model-help:hover { opacity: 1; background: #fff; }
-#l2d-model-help.l2d-hidden { opacity: 0; pointer-events: none; }
+#l2d-pet-menu button:hover { background: #f0f4ff; }
 #l2d-help-card {
   position: fixed; z-index: 100000; width: min(250px, calc(100vw - 16px));
   background: rgba(255,255,255,.97); color: #334;
@@ -267,29 +262,51 @@ export function initPanel(ctx) {
   const toggle = document.createElement('button')
   toggle.id = 'l2d-model-toggle'
   toggle.type = 'button'
-  toggle.title = '切换 Live2D 模型'
-  toggle.setAttribute('aria-label', '切换 Live2D 模型')
+  toggle.title = '设置'
+  toggle.setAttribute('aria-label', '设置')
   toggle.textContent = '⚙'
   toggle.addEventListener('pointerdown', (e) => e.stopPropagation())
   toggle.addEventListener('pointerup', (e) => e.stopPropagation())
-  toggle.addEventListener('click', (e) => { e.stopPropagation(); togglePanel() })
+  toggle.addEventListener('click', (e) => { e.stopPropagation(); toggleMenu() })
   toggle.addEventListener('dblclick', (e) => e.stopPropagation())
   toggle.addEventListener('wheel', (e) => e.stopPropagation())
   ctx.box.appendChild(toggle)
 
-  // ── 说明入口：齿轮下方的 ? 按钮，与齿轮同一显隐节奏 ──
-  const helpToggle = document.createElement('button')
-  helpToggle.id = 'l2d-model-help'
-  helpToggle.type = 'button'
-  helpToggle.title = '基本操作说明'
-  helpToggle.setAttribute('aria-label', '基本操作说明')
-  helpToggle.textContent = '?'
-  helpToggle.addEventListener('pointerdown', (e) => e.stopPropagation())
-  helpToggle.addEventListener('pointerup', (e) => e.stopPropagation())
-  helpToggle.addEventListener('click', (e) => { e.stopPropagation(); toggleHelp() })
-  helpToggle.addEventListener('dblclick', (e) => e.stopPropagation())
-  helpToggle.addEventListener('wheel', (e) => e.stopPropagation())
-  ctx.box.appendChild(helpToggle)
+  // ── 设置菜单：单 ⚙ 向下展开，合并「切换模型 / 台词编辑 / 基本操作」三入口 ──
+  const menu = document.createElement('div')
+  menu.id = 'l2d-pet-menu'
+  menu.innerHTML = `
+    <button type="button" data-act="panel">切换模型</button>
+    <button type="button" data-act="quips">台词编辑</button>
+    <button type="button" data-act="help">基本操作</button>`
+  menu.addEventListener('pointerdown', (e) => e.stopPropagation())
+  menu.addEventListener('pointerup', (e) => e.stopPropagation())
+  menu.addEventListener('wheel', (e) => e.stopPropagation())
+  document.body.appendChild(menu)
+  let menuOpen = false
+  function positionMenu() {
+    const rect = toggle.getBoundingClientRect()
+    const w = menu.offsetWidth || 112
+    const left = Math.min(Math.max(rect.right - w, 8), Math.max(8, window.innerWidth - w - 8))
+    let top = rect.bottom + 6
+    if (top + menu.offsetHeight > window.innerHeight - 8) top = Math.max(8, rect.top - menu.offsetHeight - 6)
+    menu.style.left = left + 'px'
+    menu.style.top = top + 'px'
+  }
+  function toggleMenu(show) {
+    menuOpen = show ?? !menuOpen
+    menu.classList.toggle('open', menuOpen)
+    if (menuOpen) { showToggle(); positionMenu() }
+    else scheduleHide()
+    ctx.evalIgnore?.()
+  }
+  menu.querySelector('[data-act="panel"]').addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(false); togglePanel() })
+  menu.querySelector('[data-act="quips"]').addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(false); toggleQuips() })
+  menu.querySelector('[data-act="help"]').addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(false); toggleHelp() })
+  // 外点关闭（拖拽起点在 box 上，冒泡到 window 即触发收拢）
+  window.addEventListener('pointerdown', (e) => {
+    if (menuOpen && !menu.contains(e.target) && e.target !== toggle) toggleMenu(false)
+  })
 
   const helpCard = document.createElement('section')
   helpCard.id = 'l2d-help-card'
@@ -299,10 +316,9 @@ export function initPanel(ctx) {
   <li>点我：随机动作 + 吐槽</li>
   <li>双击：兴奋卖萌</li>
   <li>头顶悬停：摸头害羞</li>
-  <li>拖拽：带我搬家（拖拽中缩放自动锁定）</li>
+  <li>拖拽：带我搬家（全屏随意拖，松手即定位；拖拽中缩放自动锁定）</li>
   <li>缩放：挂件滚轮 / 桌宠 Ctrl+滚轮</li>
-  <li>⚙ 齿轮：模型 / 预览 / 绑定 / 帧率 / CPU渲染 / 退出</li>
-  <li>词：台词编辑器——每个状态的随机台词都能改，可另存多份预设</li>
+  <li>⚙ 设置菜单：切换模型 / 台词编辑 / 基本操作；模型面板内含帧率 / CPU渲染 / 退出</li>
   <li>左上小灯：AI 状态；多任务并行会分列任务灯</li>
 </ul>`
   document.body.appendChild(helpCard)
@@ -310,7 +326,7 @@ export function initPanel(ctx) {
 
   let helpOpen = false
   function positionHelp() {
-    const rect = helpToggle.getBoundingClientRect()
+    const rect = toggle.getBoundingClientRect()
     const w = helpCard.offsetWidth || 250
     const left = Math.min(Math.max(rect.right - w, 8), Math.max(8, window.innerWidth - w - 8))
     let top = rect.bottom + 8
@@ -333,18 +349,26 @@ export function initPanel(ctx) {
     click: '点击反应', pat: '摸头', drag: '拖拽', greet: '见面问候',
     greet_morning: '早安问候', greet_night: '深夜问候',
   }
-  const quipsToggle = document.createElement('button')
-  quipsToggle.id = 'l2d-quips-toggle'
-  quipsToggle.type = 'button'
-  quipsToggle.title = '台词池编辑器'
-  quipsToggle.setAttribute('aria-label', '台词池编辑器')
-  quipsToggle.textContent = '词'
-  quipsToggle.addEventListener('pointerdown', (e) => e.stopPropagation())
-  quipsToggle.addEventListener('pointerup', (e) => e.stopPropagation())
-  quipsToggle.addEventListener('click', (e) => { e.stopPropagation(); toggleQuips() })
-  quipsToggle.addEventListener('dblclick', (e) => e.stopPropagation())
-  quipsToggle.addEventListener('wheel', (e) => e.stopPropagation())
-  ctx.box.appendChild(quipsToggle)
+  // ── 桌宠 UI 跟随：桌宠窗铺满全屏（overlay），⚙ 按钮锚定模型右侧而非窗口角落 ──
+  if (BRIDGE) {
+    toggle.style.right = 'auto'
+    let fx = null
+    let fy = null
+    const followButtons = () => {
+      const b = ctx.modelBounds?.()
+      if (b && b.width > 0) {
+        const tx = Math.min(Math.max(b.x + b.width + 8, 6), Math.max(6, window.innerWidth - 38))
+        const ty = Math.min(Math.max(b.y + 4, 6), Math.max(6, window.innerHeight - 44))
+        if (fx === null) { fx = tx; fy = ty }
+        fx += (tx - fx) * 0.3
+        fy += (ty - fy) * 0.3
+        toggle.style.left = Math.round(fx) + 'px'
+        toggle.style.top = Math.round(fy) + 'px'
+      }
+      requestAnimationFrame(followButtons)
+    }
+    requestAnimationFrame(followButtons)
+  }
 
   const quipsCard = document.createElement('section')
   quipsCard.id = 'l2d-quips-card'
@@ -424,7 +448,7 @@ export function initPanel(ctx) {
   quipsPoolEl.addEventListener('change', () => { quipsPool = quipsPoolEl.value; renderQuipsPool() })
 
   function positionQuips() {
-    const rect = quipsToggle.getBoundingClientRect()
+    const rect = toggle.getBoundingClientRect()
     const w = quipsCard.offsetWidth || 300
     const left = Math.min(Math.max(rect.right - w, 8), Math.max(8, window.innerWidth - w - 8))
     let top = rect.bottom + 8
@@ -1007,20 +1031,16 @@ export function initPanel(ctx) {
   let serverDefaultModel = ''
   let hideTimer = 0
 
-  // ── 入口静置自动隐藏：悬停/指针移动时出现，面板或任一卡片打开时保持 ──
+  // ── 入口静置自动隐藏：悬停/指针移动时出现，菜单/面板/任一卡片打开时保持 ──
   function showToggle() {
     clearTimeout(hideTimer)
     toggle.classList.remove('l2d-hidden')
-    helpToggle.classList.remove('l2d-hidden')
-    quipsToggle.classList.remove('l2d-hidden')
   }
   function scheduleHide() {
     clearTimeout(hideTimer)
-    if (!panelOpen && !helpOpen && !quipsOpen) {
+    if (!panelOpen && !helpOpen && !quipsOpen && !menuOpen) {
       hideTimer = setTimeout(() => {
         toggle.classList.add('l2d-hidden')
-        helpToggle.classList.add('l2d-hidden')
-        quipsToggle.classList.add('l2d-hidden')
       }, 1200)
     }
   }

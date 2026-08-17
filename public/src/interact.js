@@ -25,7 +25,7 @@ export function initInteract(ctx) {
   function uiHit() {
     if (lastPointer === null) return false
     const el = document.elementFromPoint(lastPointer.x, lastPointer.y)
-    return !!(el && el.closest('#l2d-model-toggle, #l2d-model-help, #l2d-model-panel, #l2d-help-card, #l2d-viewer, #l2d-chat-toggle, #l2d-chat-panel, #l2d-quips-toggle, #l2d-quips-card'))
+    return !!(el && el.closest('#l2d-model-toggle, #l2d-pet-menu, #l2d-model-panel, #l2d-help-card, #l2d-viewer, #l2d-chat-toggle, #l2d-chat-panel, #l2d-quips-card'))
   }
 
   /** 指针穿透评估：指针在模型包围盒（含余量）或面板控件上才接收事件，否则镂空让桌面。 */
@@ -145,25 +145,40 @@ export function initInteract(ctx) {
     })
   } else if (BRIDGE) {
     let drag = null
-    // 拖拽位移合并：电竞鼠标回报率可达 500-1000Hz，逐事件 IPC+setPosition 会
-    // 迫使透明窗高频重合成（弱 GPU/旧驱动下表现为拖动闪屏）。位移量累积起来
-    // 按动画帧冲刷一次，移动频率封顶显示器刷新率，且总位移分毫不丢。
+    // overlay-pet 拖拽：桌宠窗口铺满主屏、永不移动（透明窗呈现丢帧的触发条件
+    // 「按住鼠标的物理消息流 × 窗口移动」在架构上不存在），模型在画布内 1:1
+    // 跟手——没有锚定、没有接力、没有笼子。松手只记位置（画布坐标），窗口
+    // 从头到尾纹丝不动。位移按动画帧合并冲刷，频率封顶刷新率。
     let movePending = false
     const flushMove = () => {
       movePending = false
       if (!drag) return
-      const dx = drag.curX - drag.flushX
-      const dy = drag.curY - drag.flushY
+      let dx = drag.curX - drag.flushX
+      let dy = drag.curY - drag.flushY
       if (dx === 0 && dy === 0) return
       drag.flushX = drag.curX
       drag.flushY = drag.curY
-      BRIDGE.moveBy(dx, dy)
+      // 钳在屏幕边界内（允许半身探出），呼吸动画的包围盒波动仅影响边缘 1-2px
+      const b = ctx.modelBounds()
+      const ow = b.width * 0.5
+      const oh = b.height * 0.5
+      dx = Math.min(Math.max(dx, -ow - b.x), window.innerWidth - (b.x + b.width) + ow)
+      dy = Math.min(Math.max(dy, -oh - b.y), window.innerHeight - (b.y + b.height) + oh)
+      if (dx === 0 && dy === 0) return
+      ctx.model.x += dx
+      ctx.model.y += dy
     }
     const endDrag = () => {
       if (!drag) return
       flushMove()  // 收尾冲刷：指针停在最后一帧的位移不丢
-      if (drag.moved) ctx.setExpr(ctx.stateExpr())
-      else clickReact()
+      if (drag.moved) {
+        // 位置记忆 = 模型中心画布坐标（overlay 架构：窗口永不动，模型即位置）
+        const b = ctx.modelBounds()
+        store.setPetPos({ cx: b.x + b.width / 2, cy: b.y + b.height / 2 })
+        ctx.setExpr(ctx.stateExpr())
+      } else {
+        clickReact()
+      }
       drag = null
       dragging = false
     }
@@ -188,7 +203,14 @@ export function initInteract(ctx) {
     })
     box.addEventListener('pointerup', endDrag)
     box.addEventListener('pointercancel', endDrag)
-    window.addEventListener('blur', () => { drag = null; dragging = false })
+    window.addEventListener('blur', () => {
+      if (drag?.moved) {
+        const b = ctx.modelBounds()
+        store.setPetPos({ cx: b.x + b.width / 2, cy: b.y + b.height / 2 })
+      }
+      drag = null
+      dragging = false
+    })
   } else {
     box.addEventListener('pointerup', () => clickReact())
   }

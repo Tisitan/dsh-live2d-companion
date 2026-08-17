@@ -5,9 +5,6 @@ const path = require('node:path')
 const TARGET = process.env.L2D_URL
   || ('http://127.0.0.1:3080/live2d/pet.html'
     + (process.env.L2D_MODEL ? '?model=' + encodeURIComponent(process.env.L2D_MODEL) : ''))
-const WIN_W = 340
-const WIN_H = 460
-
 if (process.env.L2D_DEBUG === '1') {
   app.commandLine.appendSwitch('remote-debugging-port', '9222')
 }
@@ -26,59 +23,6 @@ if (process.env.L2D_SOFT === '1' || petConfig.soft === true) {
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 
 let win = null
-const stateFile = () => path.join(app.getPath('userData'), 'window-pos.json')
-
-function loadPos() {
-  try {
-    const p = JSON.parse(fs.readFileSync(stateFile(), 'utf8'))
-    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return null
-    // 防丢窗：保存位置不在任何显示器的合理范围内（拔过外接屏/分辨率变了）就回默认位
-    const onScreen = screen.getAllDisplays().some((d) =>
-      p.x > d.bounds.x - WIN_W / 2 && p.x < d.bounds.x + d.bounds.width - WIN_W / 2 &&
-      p.y > d.bounds.y - 40 && p.y < d.bounds.y + d.bounds.height - 40)
-    return onScreen ? p : null
-  } catch { }
-  return null
-}
-
-function savePos() {
-  if (win === null || win.isDestroyed()) return
-  const [x, y] = win.getPosition()
-  try { fs.writeFileSync(stateFile(), JSON.stringify({ x, y })) } catch { }
-}
-
-// 位置写盘防抖：拖动期间 'moved' 高频触发，逐事件同步写 JSON 会引入磁盘卡顿
-let savePosTimer = null
-function scheduleSavePos() {
-  clearTimeout(savePosTimer)
-  savePosTimer = setTimeout(savePos, 300)
-}
-
-// 拖动位移主进程合并限频：透明窗每次 setPosition 都是一次 DWM 重合成，
-// 高刷新率显示器下渲染进程 rAF 可达 144-165Hz → 重合成次数同步放大 → 闪烁。
-// 固定约 30Hz 冲刷（与显示器刷新率脱钩），亚像素余量保留不丢位移。
-let moveTimer = null
-let pendingMoveX = 0
-let pendingMoveY = 0
-
-function flushWindowMove() {
-  moveTimer = null
-  if (win === null || win.isDestroyed()) {
-    pendingMoveX = 0
-    pendingMoveY = 0
-    return
-  }
-  const dx = Math.round(pendingMoveX)
-  const dy = Math.round(pendingMoveY)
-  pendingMoveX -= dx
-  pendingMoveY -= dy
-  if (dx === 0 && dy === 0) return
-  const [x, y] = win.getPosition()
-  win.setPosition(x + dx, y + dy, false)
-  // Windows 上程序化 setPosition 不触发 'moved' 事件——在这里联动防抖写盘，
-  // 否则拖拽后的位置永远不会落盘（position persistence 静默失效）
-  scheduleSavePos()
-}
 
 // 仅接受桌宠页面自身发来的 IPC
 function fromPet(event) {
@@ -94,13 +38,15 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(() => {
-  const area = screen.getPrimaryDisplay().workAreaSize
-  const saved = loadPos()
+  // overlay-pet：窗口铺满主屏、永不移动——透明窗呈现丢帧的触发条件
+  // 「按住鼠标的物理消息流 × 窗口移动」在架构上不存在。模型位置=画布坐标，
+  // 由渲染层记忆（localStorage l2d-pet-pos）。指针穿透照旧按模型区域切换。
+  const disp = screen.getPrimaryDisplay()
   win = new BrowserWindow({
-    width: WIN_W,
-    height: WIN_H,
-    x: saved?.x ?? area.width - WIN_W - 24,
-    y: saved?.y ?? area.height - WIN_H - 24,
+    width: disp.bounds.width,
+    height: disp.bounds.height,
+    x: disp.bounds.x,
+    y: disp.bounds.y,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -118,6 +64,11 @@ app.whenReady().then(() => {
   })
   win.setAlwaysOnTop(true, 'screen-saver')
   win.setIgnoreMouseEvents(true, { forward: true })
+  // 显示器参数变化（分辨率/缩放/拔插屏）：窗口跟随新主屏，渲染层 resize 自会重排
+  screen.on('display-metrics-changed', () => {
+    if (win === null || win.isDestroyed()) return
+    win.setBounds(screen.getPrimaryDisplay().bounds)
+  })
   // 窗口锁定：禁开新窗、禁跳转到宿主源以外的地址（加载的是 http 页面，纵深防御）
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   const targetOrigin = new URL(TARGET).origin
@@ -145,36 +96,6 @@ app.whenReady().then(() => {
     if (!fromPet(event)) return null
     const p = screen.getCursorScreenPoint()
     return { x: p.x, y: p.y, bounds: win.getBounds() }
-  })
-  ipcMain.on('l2d-move', (event, dx, dy) => {
-    if (!fromPet(event) || !Number.isFinite(dx) || !Number.isFinite(dy)) return
-    // 单事件位移钳制，防异常大跳变
-    pendingMoveX += Math.max(-200, Math.min(200, dx))
-    pendingMoveY += Math.max(-200, Math.min(200, dy))
-    if (moveTimer === null) moveTimer = setTimeout(flushWindowMove, 33)
-  })
-  ipcMain.on('l2d-resize', (event, w, h) => {
-    if (!fromPet(event) || !Number.isFinite(w) || !Number.isFinite(h)) return
-    const width = Math.min(Math.max(Math.round(w), 160), 1200)
-    const height = Math.min(Math.max(Math.round(h), 220), 1600)
-    const b = win.getBounds()
-    if (width !== b.width || height !== b.height) {
-      win.setBounds({
-        x: Math.round(b.x - (width - b.width) / 2),
-        y: Math.round(b.y + b.height - height),
-        width,
-        height,
-      })
-    }
-  })
-  win.on('moved', scheduleSavePos)
-  win.on('close', () => {
-    if (moveTimer !== null) {
-      clearTimeout(moveTimer)
-      flushWindowMove()
-    }
-    clearTimeout(savePosTimer)
-    savePos()
   })
   win.on('closed', () => { win = null })
 

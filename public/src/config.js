@@ -44,6 +44,9 @@ export const store = {
   /** @returns {string} 帧率预设 full/balanced/saver，默认 balanced（双形态共享一档） */
   getFpsMode() { try { return localStorage.getItem('l2d-fps-mode') ?? 'balanced' } catch { return 'balanced' } },
   setFpsMode(v) { try { localStorage.setItem('l2d-fps-mode', v) } catch { } },
+  /** @returns {{cx:number,cy:number}|null} 桌宠模型中心的画布坐标（overlay 架构的"位置记忆"） */
+  getPetPos() { try { return JSON.parse(localStorage.getItem('l2d-pet-pos')) } catch { return null } },
+  setPetPos(v) { try { localStorage.setItem('l2d-pet-pos', JSON.stringify(v)) } catch { } },
 }
 
 /** quips.json 拉取失败时的保底台词（每池一句）。 */

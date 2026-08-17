@@ -2,16 +2,15 @@
  * stage.js —— 渲染层：PIXI 应用、模型加载/热切换、布局收身、缩放动画、槽位播放。
  *
  * 初始化完成后 ctx 上可用：app / model / binding / setExpr / playMotion /
- * modelBounds / layout / switchModel / getModelPath；缩放状态
- * （scale/targetScale/petBaseW/petBaseH）也挂在 ctx 上与 interact 模块共享。
+ * modelBounds / layout / switchModel / getModelPath / petHome；缩放状态
+ * （scale/targetScale）也挂在 ctx 上与 interact 模块共享。
  */
 
 import { BASE, PET, BRIDGE, MODEL_QUERY, PREVIEW, BASE_W, BASE_H, store, loadScript } from './config.js'
 import { loadBinding } from './binding.js'
 
-/** 桌宠窗口默认尺寸（收身前）；收身后被实测网格宽高比取代。 */
-const PET_DEFAULT_W = 340
-const PET_DEFAULT_H = 460
+/** 桌宠模型设计基线（px）：模型适配到该尺寸见方内，与窗口尺寸脱钩（overlay 架构）。 */
+const PET_BASE = 460
 
 /** 模型填充窗口的比例上限，保留的边距给动作挥臂留出余量。 */
 const FIT_RATIO = 0.92
@@ -122,33 +121,78 @@ export async function initStage(ctx) {
 
   ctx.scale = store.getScale()
   ctx.targetScale = ctx.scale
-  ctx.petBaseW = PET_DEFAULT_W
-  ctx.petBaseH = PET_DEFAULT_H
   // 包围盒缓存：getBounds 要遍历全部网格顶点，而交互路径（穿透/摸头）随指针事件
   // 可达 60-120Hz——每帧只量一次，交互全部读缓存；布局等需要精确值的仍走实测。
   let cachedBounds = null
   app.ticker.add(() => { if (ctx.model) cachedBounds = ctx.model.getBounds() })
   ctx.modelBounds = () => cachedBounds ?? ctx.model.getBounds()
 
-  /** 布局：挂件按固定画布，桌宠按窗口；桌宠底部锚定（站地上），挂件垂直居中。
-   *  两遍制：先按标称尺寸缩放，再量真实渲染包围盒二次修正——标称与实测
-   *  不符的模型（帽檐/飘带溢出标称框）在任何窗口下都不会被裁切。
-   *  尺寸未变时跳过 renderer.resize：canvas 位图重分配会清屏闪帧，
-   *  窗口纯移动/系统偶发同尺寸 resize 事件（跨屏 DPI、DWM）不该触发它。 */
+  // ── overlay-pet：桌宠窗口铺满主屏、永不移动（闪烁触发条件物理上不存在），
+  // 模型位置即"窗口位置"，记忆画布坐标。缩放挂靠设计基线（与窗口尺寸脱钩），
+  // 位置由拖拽/存档拥有；布局只做：缩放重算（保持模型中心不动）+ 钳回屏内。
+  const PET_OVERLAY = PET && !PREVIEW
+
+  /** 把模型钳回屏幕可视区（允许半身探出边缘）。 */
+  function clampModelIntoView() {
+    const b = ctx.model.getBounds()
+    if (b.width <= 0 || b.height <= 0) return
+    const ow = b.width * 0.5
+    const oh = b.height * 0.5
+    const minX = -ow
+    const maxX = window.innerWidth - b.width + ow
+    const minY = -oh
+    const maxY = window.innerHeight - b.height + oh
+    if (b.x < minX) ctx.model.x += minX - b.x
+    else if (b.x > maxX) ctx.model.x += maxX - b.x
+    if (b.y < minY) ctx.model.y += minY - b.y
+    else if (b.y > maxY) ctx.model.y += maxY - b.y
+  }
+
+  /** 把模型中心放到指定画布坐标（默认位：屏幕右下角留 24px）。 */
+  function placeModel(cx, cy) {
+    const b = ctx.model.getBounds()
+    if (b.width <= 0 || b.height <= 0) return
+    ctx.model.x += cx - (b.x + b.width / 2)
+    ctx.model.y += cy - (b.y + b.height / 2)
+  }
+  ctx.petHome = () => {
+    const p = store.getPetPos()
+    if (p && Number.isFinite(p.cx) && Number.isFinite(p.cy)) return p
+    const b = ctx.model.getBounds()
+    return {
+      cx: window.innerWidth - 24 - b.width / 2,
+      cy: window.innerHeight - 24 - b.height / 2,
+    }
+  }
+
+  /** 布局：挂件按固定画布两遍制居中度身；桌宠（overlay）只重算缩放与钳位。 */
   let lastLayoutW = 0
   let lastLayoutH = 0
   let lastLayoutDpr = 0
-  ctx.layout = () => {
+  ctx.layout = (force = false) => {
     const w = PET ? window.innerWidth : BASE_W
     const h = PET ? window.innerHeight : BASE_H
     const dpr = window.devicePixelRatio || 1
-    if (w !== lastLayoutW || h !== lastLayoutH || dpr !== lastLayoutDpr) {
+    const sizeChanged = w !== lastLayoutW || h !== lastLayoutH || dpr !== lastLayoutDpr
+    if (sizeChanged) {
       app.renderer.resolution = dpr   // 跨屏拖动换 DPI 时同步渲染精度
       app.renderer.resize(w, h)
       lastLayoutW = w
       lastLayoutH = h
       lastLayoutDpr = dpr
     }
+    if (PET_OVERLAY) {
+      // 缩放以模型中心为锚（缩放/换模型时模型不跑偏），随后钳回屏内
+      const b = ctx.model.getBounds()
+      const cx = b.width > 0 ? b.x + b.width / 2 : window.innerWidth / 2
+      const cy = b.height > 0 ? b.y + b.height / 2 : window.innerHeight / 2
+      ctx.model.scale.set(Math.min(PET_BASE / naturalW, PET_BASE / naturalH) * FIT_RATIO * ctx.scale)
+      placeModel(cx, cy)
+      clampModelIntoView()
+      return
+    }
+    // 尺寸未变且非强制调用时不动模型位置
+    if (!sizeChanged && !force) return
     const zoom = (BRIDGE || PREVIEW) ? 1 : ctx.scale
     let s = Math.min(w / naturalW, h / naturalH) * FIT_RATIO * zoom
     ctx.model.scale.set(s)
@@ -161,31 +205,24 @@ export async function initStage(ctx) {
       }
       const b2 = ctx.model.getBounds()
       ctx.model.x += (w - b2.width) / 2 - b2.x
-      ctx.model.y += (PET ? (h - b2.height) : (h - b2.height) / 2) - b2.y
+      ctx.model.y += (h - b2.height) / 2 - b2.y
       return
     }
     ctx.model.x = (w - ctx.model.width) / 2
-    ctx.model.y = PET ? (h - ctx.model.height) : (h - ctx.model.height) / 2
+    ctx.model.y = (h - ctx.model.height) / 2
   }
   ctx.layout()
+  if (PET_OVERLAY) {
+    const home = ctx.petHome()
+    placeModel(home.cx, home.cy)
+    clampModelIntoView()
+  }
 
   // 尺寸自愈：iframe/容器尺寸变化（预览弹窗开合、绑定栏展开等）不一定触发
   // window resize，用 ResizeObserver 兜底重新布局，防止预览按旧尺寸裁切
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(() => ctx.layout()).observe(ctx.box)
   }
-
-  // 桌宠收身：量网格真实宽高比，窗口收成刚好包住模型（保持用户缩放比例）
-  // 预览 iframe 中禁用（iframe 里可能继承 preload 桥，绝不能让它 resize 真窗口）
-  function fitPetWindow() {
-    if (!BRIDGE || PREVIEW) return
-    const b = ctx.model.getBounds()
-    if (b.width > 0 && b.height > 0) {
-      ctx.petBaseW = Math.min(1200, Math.max(160, Math.round(ctx.petBaseH * (b.width / b.height))))
-      BRIDGE.resizeTo(Math.round(ctx.petBaseW * ctx.scale), Math.round(ctx.petBaseH * ctx.scale))
-    }
-  }
-  if (BRIDGE) setTimeout(fitPetWindow, 200)
 
   window.addEventListener('resize', () => {
     ctx.layout()
@@ -201,12 +238,8 @@ export async function initStage(ctx) {
     const dt = app.ticker.deltaMS / 1000
     if (Math.abs(ctx.targetScale - ctx.scale) > 0.001) {
       ctx.scale += (ctx.targetScale - ctx.scale) * Math.min(1, dt * 7)
-      if (BRIDGE) {
-        BRIDGE.resizeTo(Math.round(ctx.petBaseW * ctx.scale), Math.round(ctx.petBaseH * ctx.scale))
-        ctx.evalIgnore?.()
-      } else {
-        ctx.layout()
-      }
+      ctx.layout(true)  // 缩放变化：强制重排（桌宠以模型中心为锚，挂件重适 zoom）
+      ctx.evalIgnore?.()
     }
   })
 
@@ -267,8 +300,12 @@ export async function initStage(ctx) {
     modelPath = nextPath
     naturalW = nextModel.internalModel.originalWidth
     naturalH = nextModel.internalModel.originalHeight
-    ctx.layout()
-    if (BRIDGE) setTimeout(fitPetWindow, 200)
+    ctx.layout(true)  // 换模型：标称尺寸变了，同窗口尺寸也要强制重排
+    if (PET_OVERLAY) {
+      const home = ctx.petHome()   // 换模型后回到记忆位置（中心锚定换算）
+      placeModel(home.cx, home.cy)
+      clampModelIntoView()
+    }
     ctx.setExpr(ctx.stateExpr?.() ?? 'default')
     ctx.emit?.('model', nextPath)
     return true

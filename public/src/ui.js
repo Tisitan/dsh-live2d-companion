@@ -135,6 +135,30 @@ export function initUI(ctx) {
   ctx.registerLamp = (name, spec) => { STATE_LAMP[name] = { ...STATE_LAMP[name], ...spec } }
   ctx.setLamp('idle')
 
+  // ── 桌宠 UI 跟随：桌宠窗是模型的 PET_MARGIN 倍大（拖拽留白），状态灯/任务灯
+  // 锚定模型左侧留白区而非容器角落，rAF 缓动跟随（拖拽时也随行） ──
+  if (PET) {
+    let lx = null
+    let ly = null
+    const followLamp = () => {
+      const b = ctx.modelBounds?.()
+      if (b && b.width > 0) {
+        const lw = lamp.offsetWidth || 80
+        const tx = Math.min(Math.max(b.x - lw - 8, 6), Math.max(6, window.innerWidth - lw - 8))
+        const ty = Math.min(Math.max(b.y + 4, 6), Math.max(6, window.innerHeight - 60))
+        if (lx === null) { lx = tx; ly = ty }
+        lx += (tx - lx) * 0.3
+        ly += (ty - ly) * 0.3
+        lamp.style.left = Math.round(lx) + 'px'
+        lamp.style.top = Math.round(ly) + 'px'
+        sessBox.style.left = Math.round(lx) + 'px'
+        sessBox.style.top = Math.round(ly + 22) + 'px'
+      }
+      requestAnimationFrame(followLamp)
+    }
+    requestAnimationFrame(followLamp)
+  }
+
   // ── 多任务指示灯：并行会话时每任务一枚小灯，列在主灯下方 ──
   // ≤1 个会话时隐藏（主灯即会话灯，不重复占地）；超过 8 个折叠为 +N
   const sessBox = document.createElement('div')
