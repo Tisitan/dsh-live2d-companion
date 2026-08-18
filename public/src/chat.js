@@ -81,7 +81,7 @@ export function initChat(ctx) {
     send.disabled = true
     closeChat()
     ctx.enter('thinking')
-    ctx.showBubble('唔......Nori想一下。', 90000)
+    ctx.showBubble('唔......Nori想一下。', 90000, 1)
     try {
       const response = await fetch(BASE + '/chat', {
         method: 'POST',
@@ -93,7 +93,7 @@ export function initChat(ctx) {
       input.value = ''
       ctx.enter('done')
       const holdMs = Math.max(6500, Math.min(15000, String(data.reply).length * 85))
-      ctx.showBubble(data.reply, holdMs)
+      ctx.showBubble(data.reply, holdMs, 2)
     } catch (error) {
       ctx.enter('error')
       const text = error.status === 503
@@ -101,7 +101,7 @@ export function initChat(ctx) {
         : error.status === 504
           ? '等了好久也没收到回答......再问Nori一次吧。'
           : '唔......这次没能接上OpenCode。'
-      ctx.showBubble(text, 8500)
+      ctx.showBubble(text, 8500, 2)
     } finally {
       input.disabled = false
       send.disabled = false

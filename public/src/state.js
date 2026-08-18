@@ -90,7 +90,9 @@ export function initState(ctx) {
       else ctx.playMotion(def.motion)
     }
     if (def.rotate) {
-      ctx.showBubble(quip(def.pool), cfg.rotation.holdMs)
+      // 优先级：完成/报错必须穿透对局解说等低级气泡；其余轮播最低级
+      const poolPriority = def.pool === 'done' || def.pool === 'error' ? 2 : 0
+      ctx.showBubble(quip(def.pool), cfg.rotation.holdMs, poolPriority)
       // intervalMs 在 enter 时快照：quips 热重载改了节奏后，下次进入状态才生效（设计如此，勿改成每轮换读）
       rotateTimer = setInterval(() => {
         if (document.hidden) return
@@ -99,12 +101,12 @@ export function initState(ctx) {
           const elapsed = Date.now() - stateSince
           if (elapsed > cfg.behavior.overtimeAfterMs) {
             ctx.setExpr('troubled')
-            ctx.showBubble(quip('overtime'), cfg.rotation.holdMs)
+            ctx.showBubble(quip('overtime'), cfg.rotation.holdMs, 0)
             return
           }
           if (elapsed > cfg.behavior.seriousAfterMs) ctx.setExpr('serious')
         }
-        ctx.showBubble(quip(def.pool), cfg.rotation.holdMs)
+        ctx.showBubble(quip(def.pool), cfg.rotation.holdMs, poolPriority)
       }, cfg.rotation.intervalMs)
     }
     if (def.remotionMs) {

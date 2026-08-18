@@ -16,6 +16,8 @@
 - 🧩 **多模型**：任何 Cubism 4/5 模型丢进 `model/` 目录即可接入；语义槽位 + 自动嗅探 + profile.json 绑定层，情绪表现零配置自适应
 - 🖼️ **模型面板**：挂件旁静置自动隐藏的齿轮入口，扫描/切换/导入/预览模型，选择持久化，恢复默认无需改配置
 - 🔌 **零侵入**：对 DSH 本体零修改，纯用户级 cordis patch 层挂载，DSH 升级免疫
+- ♟️ **游戏中心**：🎮 独立功能钮直达非模态对局浮卡（可拖动不挡事）。统一入口：游戏目录 chips（`/game/list` 登记即出现）+ 通用设置条（**用户称呼**/在线离线模式/难度一次设置全游戏复用，称呼注入提示词与解说）。**五子棋**：对手是**你自己的 agent**——任选 DSH agent 预设当人格、模型目录实时读取（`llm.listModels` 网关发现）自由切换；本地引擎确定性裁决，agent 通过 scoped 工具（get_board/place_stone）落子，非法落子同回合自纠，解说按所选人格以**小人气泡第一人称**输出；**离线模式**本地启发式 AI 秒回不耗 token（攻守双线评分×难度权重）；三档难度（在线=提示词风格注入，离线=AI 强度）；对手走神本地代打兜底，对局永不卡死
+- 🫧 **气泡优先级仲裁**：0=状态轮播 1=对局解说/思考 2=物理互动/任务完成/报错——低级不抢高级，完成事件必达，对局闲聊压不住正事
 
 ## 架构
 
@@ -33,6 +35,12 @@ dsh 宿主进程
          ├─ exact /live2d/profile        → 绑定档案写/删（POST，白名单清洗）
          ├─ exact /live2d/quips          → 台词预设存/切/删（POST，写 quips-presets/）
          ├─ exact /live2d/quips-config   → 预设清单与生效指针（GET）
+         ├─ exact /live2d/game/list      → 游戏目录（GET，游戏中心 chips 数据源）
+         ├─ exact /live2d/game/models    → 模型目录（GET，llm.listModels 网关发现 + settings 兜底）
+         ├─ exact /live2d/game/presets   → agent 预设清单（GET，喂对局面板下拉）
+         ├─ exact /live2d/game/state     → 对局快照：棋盘/手数/胜负/busy/模式/难度/解说（GET）
+         ├─ exact /live2d/game/new       → 开新局：在线=createAgent（预设/模型/难度/称呼注入）；离线=本地 AI（POST）
+         ├─ exact /live2d/game/move      → 玩家落子→引擎裁决→在线 agent 回合/离线本地 AI→事件流提取落子+解说（POST）
          ├─ tapIndex 注入 <script>       → 网页挂件（widget: false 可关）
          └─ spawn Electron 桌宠          → 随宿主启停（pet: false 可关）
 
@@ -45,9 +53,12 @@ dsh 宿主进程
      ├─ state.js     → 8 态状态机（灯 + 表情 + 动作 + 台词轮播）
      ├─ interact.js  → 点击/摸头/拖拽/缩放/穿透/全局视线
      ├─ stream.js    → SSE 客户端（raw 优先 / coarse 兜底 / 离线检测）
-     ├─ panel.js     → 模型面板（入口/列表/切换/查看/导入/绑定编辑器）
+     ├─ panel.js     → 模型面板（入口/列表/切换/查看/导入/绑定编辑器）+ 竖列按钮簇（🔒❓⚙️🎮）
+     ├─ game.js      → 游戏中心（非模态浮卡/游戏 chips/通用设置条/棋盘渲染/气泡解说声道）
          └─ pixi.js + pixi-live2d-display + Live2D Cubism Core
 ```
+
+`game-engine.mjs`（根目录）：纯逻辑游戏引擎层——五子棋确定性裁判 + 本地启发式 AI（攻守双线评分），无 IO 无依赖，宿主与离线模式共用。
 
 宿主只转发白名单原始事件（`turn/start`、`tool/call`、`approval/asked`……），状态判定全在前端——调行为不需要重启宿主。前端模块间不互相 import，经共享上下文 `ctx` 在运行期取用彼此能力，依赖方向即 `boot.js` 的初始化顺序。
 
