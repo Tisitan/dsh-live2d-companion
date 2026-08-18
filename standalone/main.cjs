@@ -3,15 +3,9 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { createStandaloneServer } = require('./server.cjs')
 
-const WIN_W = 340
-const WIN_H = 460
 let win = null
 let tray = null
 let standalone = null
-let moveTimer = null
-let pendingMoveX = 0
-let pendingMoveY = 0
-let savePosTimer = null
 
 if (process.env.L2D_DEBUG === '1') app.commandLine.appendSwitch('remote-debugging-port', '9222')
 
@@ -23,50 +17,10 @@ function configFile() {
 let petConfig = {}
 try { petConfig = JSON.parse(fs.readFileSync(configFile(), 'utf8')) } catch { }
 if (process.env.L2D_SOFT === '1' || petConfig.soft === true) app.disableHardwareAcceleration()
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) app.quit()
-
-function stateFile() {
-  return path.join(app.getPath('userData'), 'window-pos.json')
-}
-
-function loadPos() {
-  try {
-    const value = JSON.parse(fs.readFileSync(stateFile(), 'utf8'))
-    if (Number.isFinite(value.x) && Number.isFinite(value.y)) return value
-  } catch { }
-  return null
-}
-
-function savePos() {
-  if (win === null || win.isDestroyed()) return
-  const [x, y] = win.getPosition()
-  try { fs.writeFileSync(stateFile(), JSON.stringify({ x, y })) } catch { }
-}
-
-function scheduleSavePos() {
-  clearTimeout(savePosTimer)
-  savePosTimer = setTimeout(savePos, 300)
-}
-
-function flushWindowMove() {
-  moveTimer = null
-  if (win === null || win.isDestroyed()) {
-    pendingMoveX = 0
-    pendingMoveY = 0
-    return
-  }
-  const dx = Math.round(pendingMoveX)
-  const dy = Math.round(pendingMoveY)
-  pendingMoveX -= dx
-  pendingMoveY -= dy
-  if (dx === 0 && dy === 0) return
-  const [x, y] = win.getPosition()
-  // Windows 的透明窗口高频 setPosition 容易触发 DWM 重合成闪烁。
-  // 主进程统一按约 30fps 合并位移，并明确关闭位置动画。
-  win.setPosition(x + dx, y + dy, false)
-}
 
 function fromPet(event) {
   return win !== null && !win.isDestroyed() && event.sender === win.webContents
@@ -130,21 +84,25 @@ async function createWindow() {
     return
   }
 
-  const area = screen.getPrimaryDisplay().workArea
-  const saved = loadPos()
+  // 与 DSH 桌宠保持同一套 overlay 架构：透明窗口固定铺满主屏，拖拽只改变
+  // 画布中的模型坐标。窗口从不随物理鼠标消息移动，从根因上避开 DWM 闪烁。
+  const area = screen.getPrimaryDisplay().bounds
   win = new BrowserWindow({
-    width: WIN_W, height: WIN_H,
-    x: saved?.x ?? area.x + area.width - WIN_W - 24,
-    y: saved?.y ?? area.y + area.height - WIN_H - 24,
+    width: area.width, height: area.height,
+    x: area.x, y: area.y,
     frame: false, transparent: true, alwaysOnTop: true, resizable: false,
     skipTaskbar: true, hasShadow: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true, nodeIntegration: false, sandbox: true,
+      backgroundThrottling: false,
     },
   })
   win.setAlwaysOnTop(true, 'screen-saver')
   win.setIgnoreMouseEvents(true, { forward: true })
+  screen.on('display-metrics-changed', () => {
+    if (win !== null && !win.isDestroyed()) win.setBounds(screen.getPrimaryDisplay().bounds)
+  })
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   win.webContents.on('will-navigate', (event, target) => {
     if (!target.startsWith(standalone.origin + '/')) event.preventDefault()
@@ -172,37 +130,8 @@ async function createWindow() {
     const point = screen.getCursorScreenPoint()
     return { x: point.x, y: point.y, bounds: win.getBounds() }
   })
-  ipcMain.on('l2d-move', (event, dx, dy) => {
-    if (!fromPet(event) || !Number.isFinite(dx) || !Number.isFinite(dy)) return
-    pendingMoveX += Math.max(-200, Math.min(200, dx))
-    pendingMoveY += Math.max(-200, Math.min(200, dy))
-    if (moveTimer === null) moveTimer = setTimeout(flushWindowMove, 33)
-  })
-  ipcMain.on('l2d-resize', (event, w, h) => {
-    if (!fromPet(event) || !Number.isFinite(w) || !Number.isFinite(h)) return
-    const width = Math.min(Math.max(Math.round(w), 160), 1200)
-    const height = Math.min(Math.max(Math.round(h), 220), 1600)
-    const bounds = win.getBounds()
-    if (width !== bounds.width || height !== bounds.height) {
-      win.setBounds({
-        x: Math.round(bounds.x - (width - bounds.width) / 2),
-        y: Math.round(bounds.y + bounds.height - height), width, height,
-      })
-    }
-  })
-
   await win.loadURL(standalone.target + modelQuery)
 
-  // 拖动期间不再每个 moved 事件同步写磁盘，停下后再保存一次位置。
-  win.on('moved', scheduleSavePos)
-  win.on('close', () => {
-    if (moveTimer !== null) {
-      clearTimeout(moveTimer)
-      flushWindowMove()
-    }
-    clearTimeout(savePosTimer)
-    savePos()
-  })
   win.on('closed', () => { win = null })
   let lastCursor = null
   const cursorTimer = setInterval(() => {
