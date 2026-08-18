@@ -117,6 +117,11 @@ export function initInteract(ctx) {
 
   /** 点击反应：随机播放点击池动作，50% 概率搭一句吐槽。 */
   function clickReact() {
+    if (ctx.getState() === 'sleeping') {
+      ctx.enter('idle')
+      ctx.showBubble('唔......你回来啦？', 2200)
+      return
+    }
     if (ctx.busy()) { busyBlock(); return }
     const pool = ctx.binding.clickPool
     if (pool.length > 0) {
@@ -130,6 +135,8 @@ export function initInteract(ctx) {
   let patAt = 0
   let patRestore = 0
   function tryPat(clientX, clientY) {
+    // 睡眠时任意点击都应优先唤醒；点击头部不能被摸头逻辑截走。
+    if (ctx.getState() === 'sleeping') { clickReact(); return true }
     const r = ctx.app.view.getBoundingClientRect()
     const b = ctx.modelBounds()
     const x = clientX - r.left
