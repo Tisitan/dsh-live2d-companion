@@ -5,9 +5,9 @@ export function initChat(ctx) {
 
   const style = document.createElement('style')
   style.textContent = `
-    #l2d-chat-toggle{position:fixed;right:43px;top:7px;z-index:2147483645;width:30px;height:30px;border:1px solid rgba(178,211,255,.72);border-radius:50%;background:rgba(15,34,67,.82);color:#eaf4ff;font:18px/28px "Segoe UI",sans-serif;cursor:pointer;box-shadow:0 3px 14px rgba(0,10,35,.28);backdrop-filter:blur(8px)}
+    #l2d-chat-toggle{position:fixed;left:6px;top:6px;z-index:2147483645;display:grid;place-items:center;width:34px;height:34px;box-sizing:border-box;padding:0;border:1.5px solid rgba(178,211,255,.72);border-radius:50%;appearance:none;background:rgba(15,34,67,.82);color:#eaf4ff;font:18px/1 "Segoe UI Emoji","Segoe UI Symbol",sans-serif;text-align:center;cursor:pointer;box-shadow:0 3px 14px rgba(0,10,35,.28);backdrop-filter:blur(8px)}
     #l2d-chat-toggle:hover{background:rgba(35,70,120,.92)}
-    #l2d-chat-panel{position:fixed;z-index:2147483646;left:8px;right:8px;bottom:10px;padding:10px;border:1px solid rgba(177,211,255,.75);border-radius:14px;background:rgba(10,25,52,.94);box-shadow:0 8px 28px rgba(0,8,30,.42);color:#edf6ff;font:12px/1.4 "Segoe UI","Microsoft YaHei",sans-serif;backdrop-filter:blur(12px)}
+    #l2d-chat-panel{position:fixed;z-index:2147483646;left:8px;top:8px;width:min(360px,calc(100vw - 16px));box-sizing:border-box;padding:10px;border:1px solid rgba(177,211,255,.75);border-radius:14px;background:rgba(10,25,52,.94);box-shadow:0 8px 28px rgba(0,8,30,.42);color:#edf6ff;font:12px/1.4 "Segoe UI","Microsoft YaHei",sans-serif;backdrop-filter:blur(12px)}
     #l2d-chat-panel[hidden]{display:none}
     #l2d-chat-head{display:flex;align-items:center;justify-content:space-between;margin:0 2px 7px;color:#cfe6ff}
     #l2d-chat-close{border:0;background:transparent;color:#cfe6ff;font-size:18px;line-height:18px;cursor:pointer}
@@ -40,6 +40,36 @@ export function initChat(ctx) {
   const send = panel.querySelector('#l2d-chat-send')
   const status = panel.querySelector('#l2d-chat-status')
   const close = panel.querySelector('#l2d-chat-close')
+
+  // overlay 桌宠的窗口固定铺满屏幕，模型才是会移动的主体。聊天入口与
+  // panel.js 的 🔒❓⚙️🎮 共用右侧竖列，固定占第 5 格；输入框贴近模型并自动翻边。
+  let followX = null
+  let followY = null
+  function followChat() {
+    const b = ctx.modelBounds?.()
+    if (b && b.width > 0) {
+      const targetX = Math.min(Math.max(b.x + b.width + 8, 6), Math.max(6, window.innerWidth - 42))
+      const columnTop = Math.min(Math.max(b.y + 4, 6), Math.max(6, window.innerHeight - 216))
+      const targetY = columnTop + 160
+      if (followX === null) { followX = targetX; followY = targetY }
+      followX += (targetX - followX) * 0.3
+      followY += (targetY - followY) * 0.3
+      toggle.style.left = Math.round(followX) + 'px'
+      toggle.style.top = Math.round(followY) + 'px'
+
+      if (!panel.hidden) {
+        const panelW = panel.offsetWidth || Math.min(360, window.innerWidth - 16)
+        const panelH = panel.offsetHeight || 82
+        const left = Math.min(Math.max(b.x + b.width / 2 - panelW / 2, 8), Math.max(8, window.innerWidth - panelW - 8))
+        const above = b.y - panelH - 12
+        const top = above >= 8 ? above : Math.min(b.y + b.height + 12, window.innerHeight - panelH - 8)
+        panel.style.left = Math.round(left) + 'px'
+        panel.style.top = Math.round(Math.max(8, top)) + 'px'
+      }
+    }
+    requestAnimationFrame(followChat)
+  }
+  requestAnimationFrame(followChat)
 
   function protect(element) {
     for (const event of ['pointerdown', 'pointerup', 'click', 'dblclick', 'wheel']) {

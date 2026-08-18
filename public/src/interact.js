@@ -123,7 +123,13 @@ export function initInteract(ctx) {
 
   /** 点击反应：随机播放点击池动作，50% 概率搭一句吐槽。 */
   function clickReact() {
-    ctx.pokeActivity?.()   // 用户活动=唤醒+重置睡眠计时
+    // 睡眠时点击=唤醒+专属台词（PR#3）；pokeActivity 的静默唤醒让位给有台词版
+    if (ctx.getState() === 'sleeping') {
+      ctx.enter('idle')
+      ctx.showBubble('唔......你回来啦？', 2200, 2)
+      return
+    }
+    ctx.pokeActivity?.()   // 用户活动=重置睡眠计时
     if (ctx.busy()) { busyBlock(); return }
     const pool = ctx.binding.clickPool
     if (pool.length > 0) {
@@ -133,34 +139,38 @@ export function initInteract(ctx) {
     if (Math.random() < 0.5) ctx.showBubble(quip('click'), 1500, 2)
   }
 
-  // ── 摸头：头部 30% 区域划过触发害羞，2 秒冷却 ──
+  // ── 摸头：仅点击头部 30% 区域触发害羞，2 秒冷却 ──
   let patAt = 0
   let patRestore = 0
   function tryPat(clientX, clientY) {
-    ctx.pokeActivity?.()   // 用户活动=唤醒+重置睡眠计时
-    if (ctx.busy()) return
+    // 睡眠时任意点击都应优先唤醒；点击头部不能被摸头逻辑截走。
+    if (ctx.getState() === 'sleeping') { clickReact(); return true }
+    ctx.pokeActivity?.()   // 用户活动=重置睡眠计时
     const r = ctx.app.view.getBoundingClientRect()
     const b = ctx.modelBounds()
     const x = clientX - r.left
     const y = clientY - r.top
     const inHead = x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height * 0.3
+    if (!inHead) return false
+    // 忙碌时点击头部仍属于摸头，但静默忽略，不回落成普通点击提示。
+    if (ctx.busy()) return true
     const now = performance.now()
-    if (inHead && now - patAt > 2000) {
+    if (now - patAt > 2000) {
       patAt = now
       ctx.setExpr('shy')
       ctx.showBubble(quip('pat'), 1800, 2)
       clearTimeout(patRestore)
       patRestore = setTimeout(() => ctx.setExpr(ctx.stateExpr()), 1800)
     }
+    return true
   }
 
-  // 窗口内指针：视线跟随 + 穿透评估 + 摸头判定
+  // 窗口内指针：只做视线跟随与穿透评估；悬停不触发任何互动。
   window.addEventListener('pointermove', (e) => {
     lastPointer = { x: e.clientX, y: e.clientY }
     const r = ctx.app.view.getBoundingClientRect()
     ctx.model.focus(e.clientX - r.left, e.clientY - r.top)
     ctx.evalIgnore()
-    tryPat(e.clientX, e.clientY)
   })
 
   // 桌宠全局视线：主进程轮询 OS 光标坐标，换算为窗内坐标（整屏追踪）
@@ -244,22 +254,22 @@ export function initInteract(ctx) {
         box.style.bottom = 'auto'
       }
     })
-    const endDrag = () => {
+    const endDrag = (e) => {
       if (!drag) return
       if (drag.moved) {
         store.setPos({ x: parseFloat(box.style.left), y: parseFloat(box.style.top) })
         box.style.cursor = 'grab'
         ctx.setExpr(ctx.stateExpr())
+      } else if (e) {
+        // 未拖动的点击：先判摸头（头部 30%），否则普通点击反应
+        if (!tryPat(e.clientX, e.clientY)) clickReact()
       }
       drag = null
     }
-    box.addEventListener('pointerup', () => {
-      if (drag && !drag.moved) clickReact()
-      endDrag()
-    })
+    box.addEventListener('pointerup', (e) => endDrag(e))
     // 触屏 pointercancel / 窗口失焦也要收尾，否则 drag 悬挂成悬空拖动
-    box.addEventListener('pointercancel', endDrag)
-    window.addEventListener('blur', endDrag)
+    box.addEventListener('pointercancel', () => endDrag())
+    window.addEventListener('blur', () => endDrag())
   } else if (BRIDGE) {
     let drag = null
     // overlay-pet 拖拽：桌宠窗口铺满主屏、永不移动（透明窗呈现丢帧的触发条件
@@ -285,7 +295,7 @@ export function initInteract(ctx) {
       ctx.model.x += dx
       ctx.model.y += dy
     }
-    const endDrag = () => {
+    const endDrag = (e) => {
       if (!drag) return
       flushMove()  // 收尾冲刷：指针停在最后一帧的位移不丢
       if (drag.moved) {
@@ -293,7 +303,7 @@ export function initInteract(ctx) {
         const b = ctx.modelBounds()
         store.setPetPos({ cx: b.x + b.width / 2, cy: b.y + b.height / 2 })
         ctx.setExpr(ctx.stateExpr())
-      } else {
+      } else if (e?.type === 'pointerup' && !tryPat(e.clientX, e.clientY)) {
         clickReact()
       }
       drag = null
@@ -330,7 +340,7 @@ export function initInteract(ctx) {
       dragging = false
     })
   } else {
-    box.addEventListener('pointerup', () => clickReact())
+    box.addEventListener('pointerup', (e) => { if (!tryPat(e.clientX, e.clientY)) clickReact() })
   }
 
   // 双击：兴奋脸 + 兴奋动作卖萌

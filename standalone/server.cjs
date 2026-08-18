@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const fsp = require('node:fs/promises')
 const http = require('node:http')
 const path = require('node:path')
+const { pathToFileURL } = require('node:url')
 
 const MAX_JSON_BYTES = 64 * 1024
 const MAX_IMPORT_BYTES = 128 * 1024 * 1024
@@ -150,6 +151,8 @@ async function createStandaloneServer({ publicDir, dataDir }) {
   const selectionFile = path.join(dataDir, 'model-selection.json')
   const adapterFile = path.join(dataDir, 'adapter.json')
   await fsp.mkdir(modelDir, { recursive: true })
+  const gameModuleUrl = pathToFileURL(path.join(publicDir, '..', 'game-engine.mjs')).href
+  const { createGomoku, createLocalAI, BLACK, WHITE } = await import(gameModuleUrl)
 
   const modelRoots = [modelDir, bundledModelDir]
   const clients = new Set()
@@ -161,6 +164,32 @@ async function createStandaloneServer({ publicDir, dataDir }) {
   let lastOpenCodeHeartbeat = 0
   let state = 'idle'
   let modelPath = ''
+  let game = null
+
+  const sanitizeTitle = raw => typeof raw === 'string' && /^[\p{L}\p{N} _\-~·]{1,12}$/u.test(raw.trim()) ? raw.trim() : '主人'
+  const gameQuips = {
+    normal: ['嗯……就这里！', '这步如何？', '轮到主人啦~', '咱想想……有了！', '这里这里！'],
+    block: ['嘿嘿，堵上咯~', '此路不通！', '主人这手咱可看见了', '想连四？没门~'],
+    win: ['赢啦赢啦！主人承让承让~', '五子连珠！咱厉害吧~'],
+  }
+  const pickGameQuip = list => list[Math.floor(Math.random() * list.length)]
+
+  function gameSnapshot() {
+    if (!game) return { status: 'idle' }
+    return {
+      status: game.engine.winner !== 0 ? 'over' : 'playing',
+      size: game.engine.size,
+      board: game.engine.matrix(),
+      moves: game.engine.moves,
+      winner: game.engine.winner,
+      busy: false,
+      mode: 'offline',
+      difficulty: game.difficulty,
+      presetId: null,
+      commentary: game.commentary.slice(-20),
+      createdAt: game.createdAt,
+    }
+  }
 
   function resolveModel(ref) {
     const normalized = normalizeModelRef(ref)
@@ -459,6 +488,77 @@ async function createStandaloneServer({ publicDir, dataDir }) {
         }
         return
       }
+    }
+
+    if (pathname === '/live2d/game/list' && method === 'GET') {
+      json(res, 200, { games: [{ id: 'gomoku', name: '五子棋', available: true }] })
+      return
+    }
+
+    if (pathname === '/live2d/game/presets' && method === 'GET') {
+      json(res, 200, { presets: [], defaultId: '' })
+      return
+    }
+
+    if (pathname === '/live2d/game/models' && method === 'GET') {
+      json(res, 200, { models: [], defaultModel: '', provider: 'standalone' })
+      return
+    }
+
+    if (pathname === '/live2d/game/state' && method === 'GET') {
+      json(res, 200, gameSnapshot())
+      return
+    }
+
+    if (pathname === '/live2d/game/new' && method === 'POST') {
+      try {
+        const parsed = JSON.parse((await readBody(req, MAX_JSON_BYTES)).toString('utf8') || '{}')
+        const difficulty = ['easy', 'normal', 'hard'].includes(parsed.difficulty) ? parsed.difficulty : 'normal'
+        game = {
+          engine: createGomoku(15),
+          ai: createLocalAI(difficulty),
+          difficulty,
+          userTitle: sanitizeTitle(parsed.userTitle),
+          commentary: [{ from: 'system', text: `对局开始（独立版离线·${{ easy: '简单', normal: '普通', hard: '困难' }[difficulty]}）：你执黑先手。` }],
+          createdAt: new Date().toISOString(),
+        }
+        json(res, 200, gameSnapshot())
+      } catch (error) {
+        json(res, error.message === 'body too large' ? 413 : 400, { error: error.message })
+      }
+      return
+    }
+
+    if (pathname === '/live2d/game/move' && method === 'POST') {
+      try {
+        if (!game) {
+          json(res, 409, { error: '尚未开局' })
+          return
+        }
+        const parsed = JSON.parse((await readBody(req, MAX_JSON_BYTES)).toString('utf8') || '{}')
+        const placed = game.engine.place(parsed.x, parsed.y, BLACK)
+        if (!placed.ok) {
+          json(res, 400, { error: placed.reason })
+          return
+        }
+        if (placed.win || placed.draw) {
+          game.commentary.push({ from: 'system', text: placed.win ? '你赢了！五子连珠，漂亮！' : '棋盘已满，平局收场。' })
+          json(res, 200, gameSnapshot())
+          return
+        }
+        const move = game.ai.pickMove(game.engine)
+        const aiPlaced = game.engine.place(move.x, move.y, WHITE)
+        if (aiPlaced.ok) {
+          const raw = aiPlaced.win ? pickGameQuip(gameQuips.win) : move.blocked ? pickGameQuip(gameQuips.block) : pickGameQuip(gameQuips.normal)
+          game.commentary.push({ from: 'agent', text: raw.replaceAll('主人', game.userTitle) })
+        }
+        if (game.engine.winner === WHITE) game.commentary.push({ from: 'system', text: '白棋五子连珠，对局结束。' })
+        else if (game.engine.winner === -1) game.commentary.push({ from: 'system', text: '棋盘已满，平局收场。' })
+        json(res, 200, { ...gameSnapshot(), agentMove: { x: move.x, y: move.y } })
+      } catch (error) {
+        json(res, error.message === 'body too large' ? 413 : 400, { error: error.message })
+      }
+      return
     }
 
     if (pathname === '/live2d/config' && method === 'GET') {

@@ -6,7 +6,7 @@
  * 鼠标悬停模型区域时重新出现（面板打开时保持显示）。
  */
 
-import { BASE, PREVIEW, BRIDGE, loadQuips, store } from './config.js'
+import { BASE, PREVIEW, BRIDGE, STANDALONE, loadQuips, store } from './config.js'
 import { resolveBinding, extractInventory } from './binding.js'
 import { attachGame } from './game.js'
 
@@ -559,7 +559,8 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     click: '点击反应', pat: '摸头', drag: '拖拽', greet: '见面问候',
     greet_morning: '早安问候', greet_night: '深夜问候',
   }
-  // ── 桌宠 UI 跟随：桌宠窗铺满全屏（overlay），⚙️/🎮/🔒/❓ 按钮锚定模型右侧而非窗口角落 ──
+  // ── 桌宠 UI 跟随：桌宠窗铺满全屏（overlay），🔒/❓/⚙️/🎮 按钮锚定模型右侧。
+  // 独立聊天按钮占用同列第 5 格，因此整列按 5×40px 钳制，靠近屏幕底边也不会相互重叠。──
   if (BRIDGE) {
     toggle.style.right = 'auto'
     gameToggle.style.right = 'auto'
@@ -571,8 +572,8 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
       const b = ctx.modelBounds?.()
       if (b && b.width > 0) {
         const tx = Math.min(Math.max(b.x + b.width + 8, 6), Math.max(6, window.innerWidth - 42))
-        // 竖列 4×40px（🔒❓⚙️🎮 自上而下）：锚点钳制保证整列不出底边
-        const ty = Math.min(Math.max(b.y + 4, 6), Math.max(6, window.innerHeight - 176))
+        // 竖列 5×40px（🔒❓⚙️🎮💬 自上而下）：锚点钳制保证整列不出底边
+        const ty = Math.min(Math.max(b.y + 4, 6), Math.max(6, window.innerHeight - 216))
         if (fx === null) { fx = tx; fy = ty }
         fx += (tx - fx) * 0.3
         fy += (ty - fy) * 0.3
@@ -967,7 +968,9 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   // 显示模式：读宿主 config 回填；切换写 cordis.patch.yml 触发补丁层热重载。
   // 桌宠增减随重挂载自动发生；挂件注入变化要等主人刷新 DSH 页面才可见。
   const modeSelect = panel.querySelector('.l2d-mode-select')
+  if (STANDALONE) panel.querySelector('.l2d-mode-row').hidden = true
   async function refreshMode() {
+    if (STANDALONE) return
     try {
       const r = await fetch(BASE + '/config', { cache: 'no-store' })
       const d = await r.json().catch(() => ({}))
@@ -975,6 +978,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     } catch { }
   }
   modeSelect.addEventListener('change', async () => {
+    if (STANDALONE) return
     const mode = modeSelect.value
     setStatus('正在切换显示模式…')
     try {

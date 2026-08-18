@@ -1,6 +1,6 @@
 // 五子棋对局卡：非模态浮窗（可拖动、不挡别的事）+ 解说走小人气泡（对局话语与桌宠同一声道）。
 // 宿主路由 /live2d/game/* 驱动；roomy 恒开后挂件/桌宠两端一致。
-import { BASE } from './config.js'
+import { BASE, STANDALONE } from './config.js'
 
 const CELL = 32      // 格距 px
 const MARGIN = 26    // 棋盘边距 px
@@ -78,6 +78,12 @@ export function attachGame(ctx) {
 #l2d-game .l2d-game-msg.agent { background: #eef4fb; color: #345; align-self: flex-start; max-width: 95%; }
 #l2d-game .l2d-game-msg.system { background: transparent; color: #99a; font-size: 11.5px; align-self: center; text-align: center; padding: 2px 6px; }
 #l2d-game .l2d-game-hint { color: #aab; font-size: 11px; }
+@media (max-width: 760px), (max-height: 620px) {
+  #l2d-game { max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; }
+  #l2d-game .l2d-game-body { flex-direction: column; }
+  #l2d-game .l2d-game-side { width: auto; min-height: 130px; border-left: 0; border-top: 1px solid rgba(0,0,0,.06); }
+  #l2d-game canvas { width: min(500px, calc(100vw - 44px)); height: auto; }
+}
 `
   document.head.appendChild(style)
 
@@ -136,6 +142,11 @@ export function attachGame(ctx) {
   } catch { }
   if (typeof prefs.userTitle === 'string') titleInput.value = prefs.userTitle
   if (prefs.mode === 'online' || prefs.mode === 'offline') modeSelect.value = prefs.mode
+  if (STANDALONE) {
+    modeSelect.value = 'offline'
+    modeSelect.replaceChildren(new Option('离线速玩（独立版）', 'offline'))
+    modeSelect.title = '独立版使用本地对手，不消耗模型额度'
+  }
   if (['easy', 'normal', 'hard'].includes(prefs.difficulty)) diffSelect.value = prefs.difficulty
   function savePrefs() {
     try {
@@ -427,8 +438,10 @@ export function attachGame(ctx) {
     card.classList.add('open')
     ctx.evalIgnore?.()   // 浮卡纳入穿透判定的可交互区
     void loadGames()
-    void loadPresets()
-    void loadModels()
+    if (!STANDALONE) {
+      void loadPresets()
+      void loadModels()
+    }
     void refreshState()
     startPoll()
   }
