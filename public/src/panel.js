@@ -210,6 +210,14 @@ body.l2d-no-pin #l2d-game-toggle { top: 86px; }
   flex: 1; min-width: 0; font: inherit; color: #334;
   border: 1px solid rgba(0,0,0,.12); border-radius: 6px; padding: 3px 6px; background: #fff;
 }
+#l2d-model-panel .l2d-mode-apply {
+  flex: 0 0 auto; font: inherit; font-size: 12px; padding: 3px 10px; cursor: pointer;
+  border: 1px solid rgba(74,127,181,.5); border-radius: 6px; background: #eef4fb; color: #345;
+}
+#l2d-model-panel .l2d-mode-apply:hover { background: #dfeaf7; }
+#l2d-model-panel .l2d-hint {
+  padding: 0 12px 10px; margin-top: -6px; color: #99a; font-size: 11px; line-height: 1.5;
+}
 #l2d-model-panel .l2d-quit-row { padding: 0 12px 12px; }
 #l2d-model-panel .l2d-soft-row { padding: 0 12px 10px; }
 #l2d-model-panel .l2d-soft-label { display: flex; align-items: center; gap: 6px; color: #778; font-size: 12px; cursor: pointer; }
@@ -353,6 +361,7 @@ body.l2d-roomy #l2d-model-panel .l2d-panel-actions button { padding: 8px 10px; b
 body.l2d-roomy #l2d-model-panel .l2d-fps-row { padding: 0 16px 14px; font-size: 13px; gap: 10px; }
 body.l2d-roomy #l2d-model-panel .l2d-fps-row select { padding: 5px 8px; border-radius: 8px; }
 body.l2d-roomy #l2d-model-panel .l2d-soft-row { padding: 0 16px 12px; }
+body.l2d-roomy #l2d-model-panel .l2d-hint { padding: 0 16px 12px; font-size: 12px; }
 body.l2d-roomy #l2d-model-panel .l2d-soft-label { font-size: 13px; gap: 8px; }
 body.l2d-roomy #l2d-model-panel .l2d-quit-row { padding: 0 16px 14px; }
 body.l2d-roomy #l2d-model-panel .l2d-quit-row button { padding: 8px 10px; font-size: 13px; border-radius: 10px; }
@@ -519,14 +528,16 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   helpCard.innerHTML = `
 <div class="l2d-help-head"><span>怎么和咱相处</span><button class="l2d-help-close" type="button" title="关闭">×</button></div>
 <ul>
-  <li>👆 <b>点一下</b>：随机动作，偶尔吐槽你一句</li>
+  <li>👆 <b>点一下</b>：随机动作，偶尔吐槽你一句；咱睡着时点一下就醒</li>
   <li>👆👆 <b>快速双击</b>：开心卖萌</li>
-  <li>🫳 <b>摸摸头顶</b>：会害羞</li>
+  <li>🫳 <b>点咱的头</b>：摸头杀，会害羞（划过不算，要点下去）</li>
   <li>✋ <b>按住拖动</b>：带咱搬家，松手就站定</li>
   <li>🔍 <b>Ctrl + 滚轮</b>：放大缩小</li>
   <li>🖱 <b>鼠标扫过</b>：默认不挡路——看剧路过不会黑屏；想互动，在咱身上停半秒就好</li>
   <li>🔒 <b>锁头按钮</b>：绿圈呼吸=自动不挡路中；点一下蓝圈呼吸=彻底不响应鼠标；再点恢复</li>
-  <li>⚙ <b>齿轮</b>：换模型、改台词；面板里还有帧率 / CPU渲染 / 退出</li>
+  <li>🎮 <b>游戏中心</b>：和咱下五子棋——离线秒回不耗模型，在线让你的 agent 亲自执子</li>
+  <li>💬 <b>聊天按钮</b>：直接和咱说话（走你的 DSH 模型）</li>
+  <li>⚙ <b>齿轮</b>：换模型、改台词；面板里还有帧率 / 显示模式 / CPU渲染 / 退出</li>
   <li>💡 <b>左上小灯</b>：AI 正在干嘛；多任务会分列小灯</li>
 </ul>`
   document.body.appendChild(helpCard)
@@ -873,22 +884,27 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
       <option value="saver">省电（15/8/4 fps）</option>
     </select>
   </div>
+  <div class="l2d-hint">越高越丝滑，越低越省电脑（风扇更安静）。拿不准就用均衡。</div>
   <div class="l2d-mode-row">
     <span>显示模式</span>
-    <select class="l2d-mode-select" title="桌宠/网页挂件形态切换：补丁层热重载即时生效；挂件变化需刷新 DSH 页面（Ctrl+F5）">
+    <select class="l2d-mode-select" title="桌宠/网页挂件形态切换：补丁层热重载即时生效；摘掉挂件需刷新页面（给「立刻生效」钮）">
       <option value="both">桌宠 + 挂件</option>
       <option value="pet">仅桌宠</option>
       <option value="widget">仅网页挂件</option>
     </select>
+    <button type="button" class="l2d-mode-apply" hidden title="刷新 DSH 页面，让挂件变化立刻生效">立刻生效</button>
   </div>
+  <div class="l2d-hint">桌宠=趴在桌面上的独立窗口；网页挂件=嵌在 DSH 网页里。切换后桌宠立刻变化；挂件那边要刷新一下网页才跟着变（会送你「立刻生效」按钮，点一下就行）。</div>
   <div class="l2d-soft-row" hidden>
     <label class="l2d-soft-label" title="默认 GPU 渲染；拖动闪烁的机器开启后改走 CPU，切换后桌宠自动重启生效">
       <input type="checkbox" class="l2d-soft"> CPU 渲染模式（拖动闪烁时开启，切换后自动重启生效）
     </label>
   </div>
+  <div class="l2d-hint l2d-soft-hint" hidden>只有拖动桌宠时画面闪烁/撕裂才需要开。开启后改用 CPU 渲染、桌宠自动重启，会稍微多吃一点性能。</div>
   <div class="l2d-quit-row" hidden>
     <button type="button" class="l2d-quit">退出桌宠</button>
   </div>
+  <div class="l2d-hint l2d-quit-hint" hidden>让桌宠立刻下班（不影响网页挂件）。想叫它回来：把显示模式切一下，或重启 DSH。</div>
 </div>`
   document.body.appendChild(panel)
   // 分页签切换
@@ -966,9 +982,12 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   }
 
   // 显示模式：读宿主 config 回填；切换写 cordis.patch.yml 触发补丁层热重载。
-  // 桌宠增减随重挂载自动发生；挂件注入变化要等主人刷新 DSH 页面才可见。
+  // 桌宠增减随重挂载自动发生；挂件注入变化要刷新页面——挂件页内给「立刻生效」钮
+  // 一键 location.reload()；桌宠侧够不到浏览器页，文字指引手动刷新。
   const modeSelect = panel.querySelector('.l2d-mode-select')
+  const modeApply = panel.querySelector('.l2d-mode-apply')
   if (STANDALONE) panel.querySelector('.l2d-mode-row').hidden = true
+  modeApply.addEventListener('click', () => location.reload())
   async function refreshMode() {
     if (STANDALONE) return
     try {
@@ -989,7 +1008,15 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
       })
       const d = await r.json().catch(() => ({}))
       if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status)
-      setStatus('已切换，热重载生效中' + (mode !== 'pet' ? '；挂件变化需刷新 DSH 页面（Ctrl+F5）' : ''))
+      const inWidgetPage = !BRIDGE && !STANDALONE   // 本面板挂在 GUI 页里
+      // 仅当本页的挂件可见性因此翻转时才需要刷新：挂件页切「仅桌宠」=摘挂件
+      if (inWidgetPage && mode === 'pet') {
+        modeApply.hidden = false
+        setStatus('已切换；点「立刻生效」刷新页面摘掉挂件')
+      } else {
+        modeApply.hidden = true
+        setStatus('已切换，热重载生效中' + (!inWidgetPage && mode !== 'pet' ? '；挂件侧请刷新 DSH 页面（Ctrl+F5）' : ''))
+      }
     } catch (error) {
       setStatus('切换失败：' + error.message, true)
       void refreshMode()
@@ -1004,6 +1031,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   const softCheck = panel.querySelector('.l2d-soft')
   if (softRow && softCheck && BRIDGE?.getSoft) {
     softRow.hidden = false
+    panel.querySelector('.l2d-soft-hint').hidden = false
     BRIDGE.getSoft().then((v) => { softCheck.checked = !!v }).catch(() => { })
     softCheck.addEventListener('change', () => {
       ctx.showBubble?.(softCheck.checked ? '切换 CPU 渲染，咱马上回来…' : '切回 GPU 渲染，咱马上回来…', 1500, 2)
@@ -1012,6 +1040,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   }
   if (quitRow && quitBtn && BRIDGE) {
     quitRow.hidden = false
+    panel.querySelector('.l2d-quit-hint').hidden = false
     let armedAt = 0
     quitBtn.addEventListener('click', () => {
       const now = Date.now()

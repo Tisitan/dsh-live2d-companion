@@ -104,6 +104,8 @@ async function createWindow() {
     if (win !== null && !win.isDestroyed()) win.setBounds(screen.getPrimaryDisplay().bounds)
   })
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  // 锁视觉缩放：捏合手势误判会把整页放大导致命中坐标系错位（同 pet/main.js）
+  win.webContents.setVisualZoomLevelLimits(1, 1).catch(() => { })
   win.webContents.on('will-navigate', (event, target) => {
     if (!target.startsWith(standalone.origin + '/')) event.preventDefault()
   })

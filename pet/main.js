@@ -71,6 +71,9 @@ app.whenReady().then(() => {
   })
   // 窗口锁定：禁开新窗、禁跳转到宿主源以外的地址（加载的是 http 页面，纵深防御）
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  // 锁视觉缩放：overlay 铺满全屏，捏合手势一旦触发页面缩放，命中判定坐标系
+  // 会整体错位（点不准小人）；桌宠自带的 Ctrl+滚轮模型缩放走应用层，不受影响
+  win.webContents.setVisualZoomLevelLimits(1, 1).catch(() => { })
   const targetOrigin = new URL(TARGET).origin
   win.webContents.on('will-navigate', (event, target) => {
     if (!target.startsWith(targetOrigin + '/')) event.preventDefault()
@@ -148,6 +151,10 @@ app.whenReady().then(() => {
     cardWin.setAlwaysOnTop(true, 'screen-saver')
     cardWin.setMenu(null)
     cardWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    // 锁视觉缩放：触控板/触屏的捏合手势在拖拽标题栏时极易被误判成 pinch，
+    // Chromium 默认视觉缩放会把整页放大（"一拖动就放大"的嫌疑路径）；
+    // 卫星窗没有任何需要页面级缩放的场景，锁死 1:1
+    cardWin.webContents.setVisualZoomLevelLimits(1, 1).catch(() => { })
     cardWin.webContents.on('will-navigate', (e, target) => {
       if (!target.startsWith(targetOrigin + '/')) e.preventDefault()
     })

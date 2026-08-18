@@ -22,6 +22,12 @@ const PATCH_FILE = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'profil
 
 /** 桌宠 spawn 节流：效果重挂载（如端口冲突重试）时 30 秒内不重复拉起，防 electron 生死循环。 */
 let lastPetSpawnAt = 0
+/** 桌宠进程句柄：跨重挂载存活，新实例收养而非杀旧生新（杀+生竞态=单实例锁弹回新进程）。 */
+let petChild = null
+/** 延迟处死定时器：卸载后 8 秒内无新实例收养才杀（真卸载/关宿主兜底）。 */
+let petKillTimer = null
+/** 宿主进程退出钩子只挂一次（模块级状态跨挂载存活，反复注册会叠加）。 */
+let petExitHookArmed = false
 
 /** 显示模式 → config 布尔对。 */
 const DISPLAY_MODES = {
@@ -1245,7 +1251,37 @@ export function apply(ctx, config) {
     const petDir = config?.petDir ?? fileURLToPath(new URL('./pet', import.meta.url))
     const exe = join(petDir, 'node_modules', 'electron', 'dist', 'electron.exe')
     if (existsSync(exe)) {
+      /** 卸载不即杀：进入 8 秒收养窗口，超时无新实例才 taskkill（重挂载热更秒收养）。 */
+      const schedulePetKill = (child) => {
+        if (petKillTimer !== null) clearTimeout(petKillTimer)
+        petKillTimer = setTimeout(() => {
+          petKillTimer = null
+          if (petChild !== child) return   // 已被收养/更替
+          petChild = null
+          try {
+            spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => { })
+          } catch { }
+        }, 8000)
+      }
+      // 宿主真退出时定时器随进程消失——exit 钩子同步兜底杀，防孤儿桌宠
+      if (!petExitHookArmed) {
+        petExitHookArmed = true
+        process.on('exit', () => {
+          if (petChild === null) return
+          try {
+            spawn('taskkill', ['/pid', String(petChild.pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => { })
+          } catch { }
+        })
+      }
       ctx.effect(() => {
+        // 收养优先：重挂载（配置热更/端口重试）时旧桌宠还活着就直接续用——
+        // 杀旧生新的窗口里新进程会被单实例锁弹回秒退，桌宠永远回不来（实测血案）
+        if (petKillTimer !== null) { clearTimeout(petKillTimer); petKillTimer = null }
+        if (petChild !== null && petChild.exitCode === null && !petChild.killed) {
+          const adopted = petChild   // 闭包固化：处置器触发时模块变量可能已空（桌宠中途自退）
+          ctx.logger.info(`live2d pet adopted (pid ${adopted.pid})`)
+          return () => schedulePetKill(adopted)
+        }
         // spawn 节流：cordis 效果若因宿主故障反复重挂载，30 秒内只拉一次桌宠。
         // 桌宠自身有单实例锁兜底，但反复 spawn 进程本身就是 CPU 灾难。
         const now = Date.now()
@@ -1263,13 +1299,11 @@ export function apply(ctx, config) {
         })
         // spawn 的 ENOENT 走异步 error 事件，try/catch 接不住——不监听会 uncaughtException 崩宿主
         child.on('error', (error) => ctx.logger.warn(`live2d pet spawn failed: ${String(error)}`))
+        child.on('exit', () => { if (petChild === child) petChild = null })
+        petChild = child
         child.unref()
         ctx.logger.info(`live2d pet spawned (pid ${child.pid}) -> ${petUrl}`)
-        return () => {
-          try {
-            spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => { })
-          } catch { }
-        }
+        return () => schedulePetKill(child)
       })
     } else {
       ctx.logger.warn(`live2d pet enabled but electron not found at ${exe}`)
