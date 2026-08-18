@@ -814,6 +814,8 @@ export function apply(ctx, config) {
           // 模型自选：前端从 /game/models 清单选择；缺省跟随 GUI 默认。宽松校验防注入。
           const chosenModel = typeof parsed.model === 'string' && /^[\w.:-]{1,80}$/.test(parsed.model) ? parsed.model : sel.model
           const presetId = typeof parsed.preset === 'string' && parsed.preset !== '' ? parsed.preset : undefined
+          // 极速模式：小游戏无需长考，关思考链换取秒回（官方 agent/request 瀑布注入 reasoningEffort:'off'）
+          const noThink = parsed.reasoning === 'off'
           const sessionId = /** @type {any} */ (`l2d-gomoku-${Date.now()}`)
           const handle = await ctx.agentLoop.createAgent(ctx, {
             sessionId,
@@ -832,6 +834,21 @@ export function apply(ctx, config) {
                 if (roster.length > 0) agentCtx.tools.restrict({ deny: roster })
               } catch { }
               for (const tool of gomokuTools()) agentCtx.tools.register(tool)
+              if (noThink) {
+                // 能力闸门缓存成 Promise：同一 agent 的多次请求只查一次模型元数据。
+                // 模型不支持 off 档则原样放行（resolveCallFor 对未知档位直接抛错，必须先验证）。
+                let offCapable = null
+                agentCtx.on('agent/request', /** @type {any} */ (async (_payload, next) => {
+                  const resolved = await next()
+                  try {
+                    offCapable ??= ctx.llm.resolveModelInfo(resolved.provider, resolved.model)
+                      .then((info) => (info.reasoning?.efforts ?? []).some((e) => e.id === 'off'))
+                      .catch(() => false)
+                    if (await offCapable) return { ...resolved, reasoningEffort: 'off' }
+                  } catch { }
+                  return resolved
+                }))
+              }
             },
           })
           gameRef.current = {
