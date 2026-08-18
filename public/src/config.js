@@ -115,7 +115,8 @@ export async function loadQuips() {
     } catch { return null }
   }
   try {
-    const raw = await (await fetch(BASE + '/quips.json', { cache: 'no-store' })).json()
+    // 主拉取也走 tryFetch：官方 quips.json 404/损坏时保留现状并继续尝试用户预设，不拖垮整个热重载
+    const raw = await tryFetch(BASE + '/quips.json')
     // 活跃指针：{active: 预设名}；预设文件读取失败则仅回落官方默认
     const pointer = await tryFetch(BASE + '/quips.local.json')
     const presetName = typeof pointer?.active === 'string' ? pointer.active : null

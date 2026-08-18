@@ -132,10 +132,13 @@ async function createWindow() {
 
   const area = screen.getPrimaryDisplay().workArea
   const saved = loadPos()
+  // 记忆坐标钳回主屏工作区：拔掉外接屏/改过分辨率后，存的位置可能在屏外复活幽灵窗
+  const clampX = (x) => Math.min(Math.max(x, area.x), area.x + area.width - 60)
+  const clampY = (y) => Math.min(Math.max(y, area.y), area.y + area.height - 60)
   win = new BrowserWindow({
     width: WIN_W, height: WIN_H,
-    x: saved?.x ?? area.x + area.width - WIN_W - 24,
-    y: saved?.y ?? area.y + area.height - WIN_H - 24,
+    x: saved ? clampX(saved.x) : area.x + area.width - WIN_W - 24,
+    y: saved ? clampY(saved.y) : area.y + area.height - WIN_H - 24,
     frame: false, transparent: true, alwaysOnTop: true, resizable: false,
     skipTaskbar: true, hasShadow: false,
     webPreferences: {

@@ -30,6 +30,18 @@ const MIME = {
 http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost')
   if (url.pathname === '/live2d/events') { res.writeHead(204); res.end(); return }
+  // 桌宠心跳打这里：standalone 没有 DSH 宿主，回最小快照否则 404 会累计失败触发看门狗自杀
+  if (url.pathname === '/live2d/state') {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' })
+    res.end(JSON.stringify({ state: 'idle', online: true, standalone: true }))
+    return
+  }
+  // SSE 长连存根：发一帧 idle 后挂起，防前端 EventSource 断线重连风暴
+  if (url.pathname === '/live2d/state-stream') {
+    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
+    res.write('data: {"state":"idle"}\n\n')
+    return
+  }
   if (!url.pathname.startsWith('/live2d/')) { res.writeHead(404); res.end('not found'); return }
   let rel
   try { rel = decodeURIComponent(url.pathname.slice('/live2d/'.length)) } catch { res.writeHead(400); res.end('bad request'); return }
@@ -40,4 +52,4 @@ http.createServer((req, res) => {
   }
   res.writeHead(200, { 'content-type': MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream', 'cache-control': 'no-cache' })
   fs.createReadStream(file).pipe(res)
-}).listen(PORT, '0.0.0.0', () => console.log(`standalone pet server: http://127.0.0.1:${PORT}/live2d/pet.html`))
+}).listen(PORT, '127.0.0.1', () => console.log(`standalone pet server: http://127.0.0.1:${PORT}/live2d/pet.html`))

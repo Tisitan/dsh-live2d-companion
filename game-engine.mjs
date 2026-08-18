@@ -120,6 +120,12 @@ export function createLocalAI(difficulty = 'normal') {
     for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
       if (engine.at(x, y) === EMPTY) empties.push([x, y])
     }
+    if (empties.length === 0) return null   // 满盘防御（正常流程在平局前不会走到这）
+    // 必胜优先：任何立刻成五的手直接取——防守权重再高也不许压过赢棋；
+    // 且先于放水判定（简单难度可以漏防守，但不能送到嘴边的赢棋不下）
+    for (const [x, y] of empties) {
+      if (cellScore(engine, x, y, WHITE) >= 10000000) return { x, y, blocked: false }
+    }
     // 放水：概率性在棋子附近随性和棋（不下必堵位）
     if (Math.random() < profile.slack) {
       const near = empties.filter(([x, y]) =>

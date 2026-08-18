@@ -83,11 +83,18 @@ export function initChat(ctx) {
     ctx.enter('thinking')
     ctx.showBubble('唔......Nori想一下。', 90000, 1)
     try {
-      const response = await fetch(BASE + '/chat', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ message }),
-      })
+      // 95 秒前端超时：宿主 90s 超时返回 504，fetch 自身不设限会在 TCP 假死时永远转圈
+      const ac = new AbortController()
+      const timeout = setTimeout(() => ac.abort(), 95000)
+      let response
+      try {
+        response = await fetch(BASE + '/chat', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ message }),
+          signal: ac.signal,
+        })
+      } finally { clearTimeout(timeout) }
       const data = await response.json().catch(() => ({}))
       if (!response.ok) throw Object.assign(new Error(data.error || 'chat failed'), { status: response.status })
       input.value = ''
@@ -98,7 +105,7 @@ export function initChat(ctx) {
       ctx.enter('error')
       const text = error.status === 503
         ? 'OpenCode还没有连接......先打开OpenCode，再试一次哦。'
-        : error.status === 504
+        : error.status === 504 || error.name === 'AbortError'
           ? '等了好久也没收到回答......再问Nori一次吧。'
           : '唔......这次没能接上OpenCode。'
       ctx.showBubble(text, 8500, 2)

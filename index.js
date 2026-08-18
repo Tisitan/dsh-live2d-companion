@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { mkdir, readdir, lstat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, normalize, sep } from 'node:path'
@@ -34,8 +34,10 @@ const DISPLAY_MODES = {
  * 文本手术改写 cordis.patch.yml 中 live2d-companion 条目的 config。
  * 行级定位 `- id: live2d-companion` 块（止于下一个同级条目/insert 段/文件尾），
  * 块内重写 widget/pet 两行；无 config 块则补建。找不到条目返回 undefined。
+ * 缩进不写死：全部从上下文行派生，用户手改过的 patch.yml（缩进风格不同）不会被写坏。
  */
 function rewriteLive2dConfig(src, cfg) {
+  const indentOf = (l) => l.match(/^\s*/)[0]
   const lines = src.split('\n')
   const idIdx = lines.findIndex((l) => /^\s*-\s*id:\s*live2d-companion\s*$/.test(l))
   if (idIdx === -1) return undefined
@@ -44,14 +46,18 @@ function rewriteLive2dConfig(src, cfg) {
     if (/^\s*-\s+id:/.test(lines[i]) || /^\s*-\s*insert:/.test(lines[i])) { end = i; break }
   }
   const block = lines.slice(idIdx, end).filter((l) => !/^\s+(widget|pet):/.test(l))
-  const widgetLine = `        widget: ${cfg.widget}`
-  const petLine = `        pet: ${cfg.pet}`
   const configIdx = block.findIndex((l) => /^\s*config:\s*$/.test(l))
   if (configIdx === -1) {
     const nameIdx = block.findIndex((l) => /^\s*name:/.test(l))
-    block.splice(nameIdx === -1 ? 1 : nameIdx + 1, 0, '      config:', widgetLine, petLine)
+    // 以 name 行缩进为基准补建 config 块
+    const base = indentOf(block[nameIdx === -1 ? 0 : nameIdx])
+    block.splice(nameIdx === -1 ? 1 : nameIdx + 1, 0, `${base}config:`, `${base}  widget: ${cfg.widget}`, `${base}  pet: ${cfg.pet}`)
   } else {
-    block.splice(configIdx + 1, 0, widgetLine, petLine)
+    // 键缩进沿用 config 下既有子键；没有则 config 行缩进 +2
+    const cIndent = indentOf(block[configIdx])
+    const child = block.slice(configIdx + 1).find((l) => l.trim() !== '' && indentOf(l).length > cIndent.length)
+    const kIndent = child ? indentOf(child) : cIndent + '  '
+    block.splice(configIdx + 1, 0, `${kIndent}widget: ${cfg.widget}`, `${kIndent}pet: ${cfg.pet}`)
   }
   lines.splice(idIdx, end - idIdx, ...block)
   return lines.join('\n')
@@ -281,6 +287,20 @@ export function apply(ctx, config) {
     return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1'
   }
 
+  /**
+   * 写路由再加同源闸：本机地址校验挡不住「用户浏览恶意网页 → 浏览器向 127.0.0.1 发简单请求」
+   * 的 CSRF/DNS-rebind。浏览器跨站请求必带 Origin，校验其为本机回环；curl/electron 无 Origin 放行。
+   */
+  function isLocalWriteReq(req) {
+    if (!isLocalReq(req)) return false
+    const origin = req.headers.origin
+    if (!origin || origin === 'null') return true
+    try {
+      const host = new URL(origin).hostname
+      return host === '127.0.0.1' || host === 'localhost' || host === '[::1]'
+    } catch { return false }
+  }
+
   function readJsonBody(req) {
     return new Promise((resolve, reject) => {
       let body = ''
@@ -481,7 +501,7 @@ export function apply(ctx, config) {
         res.end('method not allowed')
         return
       }
-      if (!isLocalReq(req)) {
+      if (!isLocalWriteReq(req)) {
         sendJson(res, 403, { error: 'this route is local-only' })
         return
       }
@@ -503,7 +523,10 @@ export function apply(ctx, config) {
           }
           // 手动切到含桌宠的模式：解除 spawn 节流，确保热重挂载时桌宠立刻回来
           if (cfg.pet) lastPetSpawnAt = 0
-          writeFileSync(PATCH_FILE, next)
+          // 原子写：tmp+rename，崩溃中途不会把用户 patch 文件截成半截
+          const tmp = PATCH_FILE + '.tmp'
+          writeFileSync(tmp, next)
+          renameSync(tmp, PATCH_FILE)
           sendJson(res, 200, { mode: parsed.mode, ...cfg, hotReload: true })
         } catch (error) {
           sendJson(res, 500, { error: `failed to switch mode: ${String(error)}` })
@@ -548,7 +571,7 @@ export function apply(ctx, config) {
         res.end('method not allowed')
         return
       }
-      if (!isLocalReq(req)) {
+      if (!isLocalWriteReq(req)) {
         sendJson(res, 403, { error: 'this route is local-only' })
         return
       }
@@ -684,8 +707,11 @@ export function apply(ctx, config) {
       async execute(args) {
         const g = gameRef.current
         if (!g) return { ok: false, reason: '对局已结束' }
+        // 一回合一手闸：模型同回合重复调用时第二次起拒绝（否则玩家一手 AI 两手）
+        if (!g.turnOpen) return { ok: false, reason: '本回合已经落过子了，轮次结束' }
         const r = g.engine.place(args.x, args.y, WHITE)
         if (!r.ok) return { ok: false, reason: r.reason }
+        g.turnOpen = false   // 成功落子即关闸
         return { ok: true, win: r.win, draw: r.draw, board: g.engine.renderText(4) }
       },
     }
@@ -784,7 +810,7 @@ export function apply(ctx, config) {
     path: '/live2d/game/new',
     handler(req, res) {
       if (req.method !== 'POST') { res.writeHead(405, { allow: 'POST' }); res.end('method not allowed'); return }
-      if (!isLocalReq(req)) { sendJson(res, 403, { error: 'this route is local-only' }); return }
+      if (!isLocalWriteReq(req)) { sendJson(res, 403, { error: 'this route is local-only' }); return }
       readJsonBody(req).then(async (parsed) => {
         try {
           await disposeGame()
@@ -804,6 +830,7 @@ export function apply(ctx, config) {
               userTitle,
               presetId: null,
               busy: false,
+              turnOpen: false,   // 在线模式的单回合一手闸（离线用不到，字段统一）
               commentary: [{ from: 'system', text: `对局开始（咱亲自下场·${{ easy: '简单', normal: '普通', hard: '困难' }[difficulty]}）：你执黑先手。` }],
               createdAt: new Date().toISOString(),
             }
@@ -814,12 +841,10 @@ export function apply(ctx, config) {
           // 模型自选：前端从 /game/models 清单选择；缺省跟随 GUI 默认。宽松校验防注入。
           const chosenModel = typeof parsed.model === 'string' && /^[\w.:-]{1,80}$/.test(parsed.model) ? parsed.model : sel.model
           const presetId = typeof parsed.preset === 'string' && parsed.preset !== '' ? parsed.preset : undefined
-          // 极速模式：小游戏无需长考，关思考链换取秒回（官方 agent/request 瀑布注入 reasoningEffort:'off'）
-          const noThink = parsed.reasoning === 'off'
           const sessionId = /** @type {any} */ (`l2d-gomoku-${Date.now()}`)
           const handle = await ctx.agentLoop.createAgent(ctx, {
             sessionId,
-            meta: { cwd: 'C:\\Users\\Tisitan\\Desktop' },
+            meta: { cwd: homedir() },   // 不写死桌面路径：发布包在别人机器上该目录不存在
             agentOptions: /** @type {any} */ ({ provider: sel.provider, model: chosenModel }),
             setup: async (agentCtx) => {
               // 预设=人格：挂载失败裸跑兜底（对手变通用语气，游戏不受影响）
@@ -834,21 +859,6 @@ export function apply(ctx, config) {
                 if (roster.length > 0) agentCtx.tools.restrict({ deny: roster })
               } catch { }
               for (const tool of gomokuTools()) agentCtx.tools.register(tool)
-              if (noThink) {
-                // 能力闸门缓存成 Promise：同一 agent 的多次请求只查一次模型元数据。
-                // 模型不支持 off 档则原样放行（resolveCallFor 对未知档位直接抛错，必须先验证）。
-                let offCapable = null
-                agentCtx.on('agent/request', /** @type {any} */ (async (_payload, next) => {
-                  const resolved = await next()
-                  try {
-                    offCapable ??= ctx.llm.resolveModelInfo(resolved.provider, resolved.model)
-                      .then((info) => (info.reasoning?.efforts ?? []).some((e) => e.id === 'off'))
-                      .catch(() => false)
-                    if (await offCapable) return { ...resolved, reasoningEffort: 'off' }
-                  } catch { }
-                  return resolved
-                }))
-              }
             },
           })
           gameRef.current = {
@@ -861,6 +871,7 @@ export function apply(ctx, config) {
             userTitle,
             presetId: presetId ?? ctx.agentPresets.defaultId,
             busy: false,
+            turnOpen: false,   // 单回合一手闸：/game/move 开，place_stone 成功即关
             commentary: [{ from: 'system', text: '对局开始：你执黑先手，点击棋盘落子。' }],
             createdAt: new Date().toISOString(),
           }
@@ -879,7 +890,7 @@ export function apply(ctx, config) {
     path: '/live2d/game/move',
     handler(req, res) {
       if (req.method !== 'POST') { res.writeHead(405, { allow: 'POST' }); res.end('method not allowed'); return }
-      if (!isLocalReq(req)) { sendJson(res, 403, { error: 'this route is local-only' }); return }
+      if (!isLocalWriteReq(req)) { sendJson(res, 403, { error: 'this route is local-only' }); return }
       readJsonBody(req).then(async (parsed) => {
         const g = gameRef.current
         try {
@@ -909,7 +920,10 @@ export function apply(ctx, config) {
           }
           // agent 回合：每回合无状态重发指令+落点；首手附完整规则简报
           g.busy = true
+          g.turnOpen = true    // 开闸：本回合允许恰好一手（工具内关闸）
+          g.lastAgentMove = null   // 清上回合残留：响应里的 agentMove 永远是本回合的
           const seqBefore = g.agent.session.seq
+          const moveCountBefore = g.engine.moveCount   // 兜底判据：工具调用≠成功落子
           const isFirst = g.engine.moveCount === 1
           const diffLine = DIFFICULTY_LINES[g.difficulty] ?? ''
           const brief = isFirst ? gameRulesBrief(g.userTitle ?? '主人') + (diffLine ? diffLine : '') + '\n' : ''
@@ -919,14 +933,19 @@ export function apply(ctx, config) {
             content: [{ type: 'text', text: `${brief}${g.userTitle ?? '主人'}(黑)落在 (${x},${y})。轮到你(白)了：先 get_board 看局面，再 place_stone 落子。` }],
             source: { kind: 'plugin', plugin: 'dsh-live2d-companion' },
           }))
+          let timeoutHandle
           try {
             await Promise.race([
               g.agent.whenIdle(),
-              new Promise((_, reject) => setTimeout(() => reject(new Error('对手思考超时(120s)')), 120000)),
+              new Promise((_, reject) => { timeoutHandle = setTimeout(() => reject(new Error('对手思考超时(120s)')), 120000) }),
             ])
           } catch (idleError) {
-            g.commentary.push({ from: 'system', text: `对手走神了：${String(idleError).slice(0, 80)}` })
+            g.commentary.push({ from: 'system', text: `走神了：${String(idleError).slice(0, 80)}` })
+          } finally {
+            clearTimeout(timeoutHandle)   // 正常完赛要拆定时器，不然白挂 120 秒
           }
+          // 代际校验：等待期间主人开了新局（disposeGame），本 handler 作用的是旧局——不回写状态
+          if (gameRef.current !== g) { sendJson(res, 409, { error: '对局已更换，请以最新局面为准' }); return }
           // 从本回合事件提取：agent 落子（工具已在 execute 中应用）+ 解说文本
           const turnEvents = g.agent.session.events.slice(seqBefore)
           const stoneCalls = turnEvents.filter((e) => e.type === 'tool/call' && e.data?.name === 'place_stone')
@@ -936,8 +955,10 @@ export function apply(ctx, config) {
               const args = JSON.parse(last.data.arguments)
               g.lastAgentMove = { x: args.x, y: args.y }
             } catch { }
-          } else if (g.engine.winner === 0) {
-            // agent 没落子（走神/超时）→ 本地随机代打，对局不卡死
+          }
+          // 兜底判定看实际手数而非工具调用：agent 可能连续非法落子全被裁判拒绝，
+          // 此时有 place_stone 调用记录但棋盘没进子——仍须代打，否则对局假死
+          if (g.engine.moveCount === moveCountBefore && g.engine.winner === 0) {
             const empty = []
             for (let cy = 0; cy < g.engine.size; cy++) for (let cx = 0; cx < g.engine.size; cx++) {
               if (g.engine.at(cx, cy) === 0) empty.push([cx, cy])
@@ -946,7 +967,7 @@ export function apply(ctx, config) {
               const [rx, ry] = empty[Math.floor(Math.random() * empty.length)]
               g.engine.place(rx, ry, WHITE)
               g.lastAgentMove = { x: rx, y: ry }
-              g.commentary.push({ from: 'system', text: '（对手没反应过来，本地代下一手）' })
+              g.commentary.push({ from: 'system', text: '（这手没等到回应，本地代下一子）' })
             }
           }
           for (const e of turnEvents) {
@@ -956,9 +977,10 @@ export function apply(ctx, config) {
               if (text) g.commentary.push({ from: 'agent', text })
             }
           }
-          if (g.engine.winner === WHITE) g.commentary.push({ from: 'system', text: '对手五子连珠，这局它拿下了。' })
+          if (g.engine.winner === WHITE) g.commentary.push({ from: 'system', text: '白棋五子连珠，对局结束。' })
           else if (g.engine.winner === -1) g.commentary.push({ from: 'system', text: '棋盘已满，平局收场。' })
           g.busy = false   // 必须在 sendJson 前清：响应即回合终态，前端按 busy 渲染思考态
+          g.turnOpen = false   // 收闸：超时/走神没吃到闸门的残留统一关闭
           sendJson(res, 200, { ...gameStateJson(), agentMove: g.lastAgentMove ?? null })
         } catch (error) {
           sendJson(res, 500, { error: `回合失败：${String(error)}` })
@@ -981,7 +1003,7 @@ export function apply(ctx, config) {
         res.end('method not allowed')
         return
       }
-      if (!isLocalReq(req)) {
+      if (!isLocalWriteReq(req)) {
         sendJson(res, 403, { error: 'this route is local-only' })
         return
       }
@@ -1000,6 +1022,11 @@ export function apply(ctx, config) {
       readRawBody(req, MAX_IMPORT_FILE_BYTES).then(async buffer => {
         try {
           const target = join(MODEL_DIR, modelName, ...parts)
+          // 静默覆盖防御：重名导入须显式 ?overwrite=1，防误传毁模型
+          if (url.searchParams.get('overwrite') !== '1' && existsSync(target)) {
+            sendJson(res, 409, { error: `文件已存在：${modelName}/${parts.join('/')}（确认覆盖请加 overwrite=1）` })
+            return
+          }
           await mkdir(dirname(target), { recursive: true })
           await writeFile(target, buffer)
           sendJson(res, 200, { imported: { model: modelName, path: parts.join('/'), bytes: buffer.length } })
@@ -1024,7 +1051,7 @@ export function apply(ctx, config) {
         res.end('method not allowed')
         return
       }
-      if (!isLocalReq(req)) {
+      if (!isLocalWriteReq(req)) {
         sendJson(res, 403, { error: 'this route is local-only' })
         return
       }
@@ -1100,7 +1127,7 @@ export function apply(ctx, config) {
         res.end('method not allowed')
         return
       }
-      if (!isLocalReq(req)) {
+      if (!isLocalWriteReq(req)) {
         sendJson(res, 403, { error: 'this route is local-only' })
         return
       }

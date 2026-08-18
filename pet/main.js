@@ -63,7 +63,7 @@ app.whenReady().then(() => {
     },
   })
   win.setAlwaysOnTop(true, 'screen-saver')
-  win.setIgnoreMouseEvents(true, { forward: true })
+  win.setIgnoreMouseEvents(true)   // 勿加 {forward:true}：electron#48035 光标闪烁
   // 显示器参数变化（分辨率/缩放/拔插屏）：窗口跟随新主屏，渲染层 resize 自会重排
   screen.on('display-metrics-changed', () => {
     if (win === null || win.isDestroyed()) return
@@ -77,8 +77,11 @@ app.whenReady().then(() => {
   })
 
   // preload 在页面启动阶段就会调 IPC（软渲染读取/首帧光标），必须先注册再加载页面
+  // 注意：绝不能用 {forward:true}——forward 让穿透窗仍参与鼠标消息流，其覆盖下的
+  // 任何窗口光标都会在 CSS 光标与默认箭头间高速闪烁（electron#48035，v20 起未修，
+  // 43 实测仍犯）。穿透态的光标追踪由主进程 33ms OS 轮询驱动，forward 本就是冗余
   ipcMain.on('l2d-ignore', (event, ignore) => {
-    if (fromPet(event)) win.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
+    if (fromPet(event)) win.setIgnoreMouseEvents(Boolean(ignore))
   })
   ipcMain.on('l2d-quit', (event) => {
     if (fromPet(event)) app.quit()
@@ -89,6 +92,8 @@ app.whenReady().then(() => {
     if (!fromPet(event)) return
     petConfig.soft = !!on
     try { fs.writeFileSync(configFile(), JSON.stringify(petConfig)) } catch { }
+    // 先放锁再重启：新进程若在旧进程退出前启动，持锁竞争会被弹回导致桌宠回不来
+    try { app.releaseSingleInstanceLock() } catch { }
     app.relaunch()
     app.exit(0)
   })
@@ -96,6 +101,79 @@ app.whenReady().then(() => {
     if (!fromPet(event)) return null
     const p = screen.getCursorScreenPoint()
     return { x: p.x, y: p.y, bounds: win.getBounds() }
+  })
+
+  // ── 游戏卫星窗 ──
+  // 对局卡独立小窗：输入捕获范围物理上只有卡片大小，overlay 的穿透状态机不再参与；
+  // focusable:false 使点卡片永不抢前台游戏焦点。卡片与 overlay 通过 BroadcastChannel
+  // 同源互通（气泡台词转发到小人头上）。
+  let cardWin = null
+  // 卡片区域实时推送：overlay 把该区域当穿透死区——否则 overlay 压在卡片上方（screen-saver
+  // 层 > floating 层），光标在卡片上停留会触发 overlay 的模型区解锁，把卡片点击全吃掉
+  const pushCardArea = () => {
+    if (win === null || win.isDestroyed()) return
+    const b = cardWin && !cardWin.isDestroyed() ? cardWin.getBounds() : null
+    win.webContents.send('l2d-game-area', b)
+  }
+  ipcMain.handle('l2d-game-bounds', (event) => {
+    if (!fromPet(event)) return null
+    return cardWin && !cardWin.isDestroyed() ? cardWin.getBounds() : null
+  })
+  ipcMain.on('l2d-game-open', (event) => {
+    if (!fromPet(event)) return
+    if (cardWin && !cardWin.isDestroyed()) { cardWin.show(); pushCardArea(); return }
+    const disp = screen.getPrimaryDisplay().workArea
+    cardWin = new BrowserWindow({
+      width: 760,
+      height: 650,
+      x: disp.x + disp.width - 776,
+      y: disp.y + Math.round((disp.height - 650) / 2),
+      frame: false,
+      alwaysOnTop: true,
+      resizable: false,
+      skipTaskbar: true,
+      focusable: false,          // 点卡片不打断主人前台的游戏
+      backgroundColor: '#ffffff',
+      roundedCorners: true,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload-card.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        backgroundThrottling: false,
+      },
+    })
+    // 与 overlay 同级且后设置 → 压在透明 overlay 之上。卡片是不透明窗本就该在上：
+    // 否则透明穿透窗叠在不透明窗上，Windows 光标判定在夹层抖动（标题栏光标跳变病灶）
+    cardWin.setAlwaysOnTop(true, 'screen-saver')
+    cardWin.setMenu(null)
+    cardWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    cardWin.webContents.on('will-navigate', (e, target) => {
+      if (!target.startsWith(targetOrigin + '/')) e.preventDefault()
+    })
+    cardWin.on('closed', () => { cardWin = null; pushCardArea() })
+    cardWin.loadURL(new URL('/live2d/game-card.html', TARGET).href).catch(() => { })
+    pushCardArea()
+  })
+  ipcMain.on('l2d-game-close', (event) => {
+    if (cardWin && !cardWin.isDestroyed() && event.sender === cardWin.webContents) cardWin.close()
+  })
+  // 运行期焦点能力：悬停设置条放开（下拉/输入可用），点棋盘等即收回（不抢前台游戏）
+  // 切焦点能力会顺带改变任务栏可见性 → 每次重申 skipTaskbar（否则任务栏图标随悬停闪现）
+  ipcMain.on('l2d-game-focusable', (event, on) => {
+    if (cardWin && !cardWin.isDestroyed() && event.sender === cardWin.webContents) {
+      cardWin.setFocusable(!!on)
+      cardWin.setSkipTaskbar(true)
+    }
+  })
+  // IPC 移窗：app-region:drag 不可靠（吞点击/本版未生效），moveBy 是老桌宠验证方案；
+  // 卫星窗不透明，移动无透明窗的 DWM 丢帧问题
+  ipcMain.on('l2d-game-moveby', (event, dx, dy) => {
+    if (!cardWin || cardWin.isDestroyed() || event.sender !== cardWin.webContents) return
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
+    const [x, y] = cardWin.getPosition()
+    cardWin.setPosition(Math.round(x + dx), Math.round(y + dy))
+    pushCardArea()   // 死区跟随窗口移动
   })
   win.on('closed', () => { win = null })
 
@@ -112,6 +190,9 @@ app.whenReady().then(() => {
     setTimeout(reloadPage, delay)
   })
   win.webContents.on('did-finish-load', () => { loadRetries = 0 })
+  // 渲染进程崩溃/假死看门狗：直接退出释放单实例锁，比留僵尸透明窗卡死下次启动强
+  win.webContents.on('render-process-gone', () => app.quit())
+  win.webContents.on('unresponsive', () => app.quit())
   win.loadURL(TARGET).catch(() => { })
 
   let lastCursor = null

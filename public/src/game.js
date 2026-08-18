@@ -11,6 +11,7 @@ const SIZE = 15
  * @param {Object} ctx 共享上下文
  */
 export function attachGame(ctx) {
+  if (ctx.openGame) return   // 幂等：重复挂载不重复插 DOM/监听
   const style = document.createElement('style')
   style.textContent = `
 #l2d-game {
@@ -44,7 +45,7 @@ export function attachGame(ctx) {
   width: 72px; font: inherit; font-size: 12px; color: #334;
   border: 1px solid rgba(0,0,0,.14); border-radius: 8px; padding: 3px 6px; background: #fff;
 }
-#l2d-game .l2d-game-preset, #l2d-game .l2d-game-model, #l2d-game .l2d-game-mode, #l2d-game .l2d-game-diff, #l2d-game .l2d-game-think {
+#l2d-game .l2d-game-preset, #l2d-game .l2d-game-model, #l2d-game .l2d-game-mode, #l2d-game .l2d-game-diff {
   flex: 0 0 auto; max-width: 108px; font: inherit; font-size: 12px; color: #334;
   border: 1px solid rgba(0,0,0,.14); border-radius: 8px; padding: 3px 6px; background: #fff;
 }
@@ -97,10 +98,6 @@ export function attachGame(ctx) {
   </select>
   <select class="l2d-game-preset" title="对手人格：选择你的 agent 预设"></select>
   <select class="l2d-game-model" title="对手模型：来自 DSH 模型清单"></select>
-  <select class="l2d-game-think" title="思考链：默认=模型原样（深思但慢）；关闭思考=不回内心独白直接落子（小游戏推荐，秒回）">
-    <option value="default">默认思考</option>
-    <option value="off">关闭思考</option>
-  </select>
   <select class="l2d-game-diff" title="难度：在线=提示词风格注入；离线=本地 AI 强度">
     <option value="easy">简单</option>
     <option value="normal" selected>普通</option>
@@ -127,38 +124,36 @@ export function attachGame(ctx) {
   const modeSelect = card.querySelector('.l2d-game-mode')
   const diffSelect = card.querySelector('.l2d-game-diff')
   const titleInput = card.querySelector('.l2d-game-title-input')
-  const thinkSelect = card.querySelector('.l2d-game-think')
   const chipsBox = card.querySelector('.l2d-game-chips')
   const newBtn = card.querySelector('.l2d-game-new')
 
   // ── 通用偏好持久化：称呼/模式/难度跨局记住，预设与模型跟随 DSH 现状不落盘 ──
   const PREFS_KEY = 'l2d-game-prefs'
   let prefs = {}
-  try { prefs = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') } catch { }
+  try {
+    const raw = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}')
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) prefs = raw   // 防污染值（null/数字/数组）
+  } catch { }
   if (typeof prefs.userTitle === 'string') titleInput.value = prefs.userTitle
   if (prefs.mode === 'online' || prefs.mode === 'offline') modeSelect.value = prefs.mode
   if (['easy', 'normal', 'hard'].includes(prefs.difficulty)) diffSelect.value = prefs.difficulty
-  if (prefs.reasoning === 'off') thinkSelect.value = 'off'
   function savePrefs() {
     try {
       localStorage.setItem(PREFS_KEY, JSON.stringify({
         userTitle: titleInput.value.trim(),
         mode: modeSelect.value,
         difficulty: diffSelect.value,
-        reasoning: thinkSelect.value,
       }))
     } catch { }
   }
   titleInput.addEventListener('change', savePrefs)
   diffSelect.addEventListener('change', savePrefs)
-  thinkSelect.addEventListener('change', savePrefs)
 
-  // 离线=本地糯糯亲自下场：人格/模型/思考选择只对在线有意义
+  // 离线=本地糯糯亲自下场：人格/模型选择只对在线有意义
   function syncModeUI() {
     const offline = modeSelect.value === 'offline'
     presetSelect.style.display = offline ? 'none' : ''
     modelSelect.style.display = offline ? 'none' : ''
-    thinkSelect.style.display = offline ? 'none' : ''
   }
   modeSelect.addEventListener('change', () => { syncModeUI(); savePrefs() })
   syncModeUI()
@@ -183,12 +178,11 @@ export function attachGame(ctx) {
 
   /** @type {any} 最近一次服务端对局状态 */
   let state = null
-  /** 已「说出口」的解说条数：增量解说走小人气泡，存量不补播 */
-  let spokenCount = 0
 
   // ── 非模态拖动：头部即把手，拖过即自由定位（钳制防拖丢）──
   const head = card.querySelector('.l2d-game-head')
   head.addEventListener('pointerdown', (e) => {
+    if (window.__l2dCardWin) return   // 卫星窗：拖动交给 OS（app-region），DOM 内拖动禁用
     if (e.target.closest('button, select')) return
     e.preventDefault()
     const r = card.getBoundingClientRect()
@@ -204,10 +198,12 @@ export function attachGame(ctx) {
     const up = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)   // 系统抢指针（来电/手势）也要收尾
       ctx.evalIgnore?.()
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
   })
 
   // ── 解说声道：对局话语从 Live2D 小人的气泡说出（优先级 1：压状态轮播，让任务完成）。
@@ -222,31 +218,36 @@ export function attachGame(ctx) {
   /** 状态更新后，把增量 agent 解说逐条播到气泡。 */
   function speakNew(prevCount) {
     const items = state?.commentary ?? []
-    spokenCount = items.length
     for (const item of items.slice(prevCount)) {
       if (item.from === 'agent') speak(item.text)
     }
   }
 
   const px = (i) => MARGIN + CELL * i
+  /** 棋盘尺寸以下发为准（服务端未来改路数前端跟着变），缺省 15。 */
+  const boardSize = () => state?.size ?? SIZE
 
   function drawBoard() {
     const w = canvas.width
+    const size = boardSize()
     g2d.clearRect(0, 0, w, w)
     g2d.strokeStyle = 'rgba(90, 65, 25, .75)'
     g2d.lineWidth = 1
-    for (let i = 0; i < SIZE; i++) {
-      g2d.beginPath(); g2d.moveTo(px(i), px(0)); g2d.lineTo(px(i), px(SIZE - 1)); g2d.stroke()
-      g2d.beginPath(); g2d.moveTo(px(0), px(i)); g2d.lineTo(px(SIZE - 1), px(i)); g2d.stroke()
+    for (let i = 0; i < size; i++) {
+      g2d.beginPath(); g2d.moveTo(px(i), px(0)); g2d.lineTo(px(i), px(size - 1)); g2d.stroke()
+      g2d.beginPath(); g2d.moveTo(px(0), px(i)); g2d.lineTo(px(size - 1), px(i)); g2d.stroke()
     }
-    g2d.fillStyle = 'rgba(90, 65, 25, .9)'
-    for (const [sx, sy] of [[3, 3], [11, 3], [3, 11], [11, 11], [7, 7]]) {
-      g2d.beginPath(); g2d.arc(px(sx), px(sy), 3, 0, Math.PI * 2); g2d.fill()
+    // 星位仅 15 路标准盘绘制（其他尺寸画角星会错位）
+    if (size === 15) {
+      g2d.fillStyle = 'rgba(90, 65, 25, .9)'
+      for (const [sx, sy] of [[3, 3], [11, 3], [3, 11], [11, 11], [7, 7]]) {
+        g2d.beginPath(); g2d.arc(px(sx), px(sy), 3, 0, Math.PI * 2); g2d.fill()
+      }
     }
     if (!state || !state.board) return
     const last = state.moves?.[state.moves.length - 1]
-    for (let y = 0; y < SIZE; y++) {
-      for (let x = 0; x < SIZE; x++) {
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
         const c = state.board[y][x]
         if (c === 0) continue
         const cx = px(x), cy = px(y), r = CELL / 2 - 2.5
@@ -301,9 +302,13 @@ export function attachGame(ctx) {
       const r = await fetch(BASE + '/game/state', { cache: 'no-store' })
       if (r.ok) {
         state = await r.json()
-        spokenCount = state.commentary?.length ?? 0   // 存量解说不补播
+        statusEl.title = ''
+      } else if (state === null) {
+        statusEl.textContent = '宿主拒绝了状态读取（HTTP ' + r.status + '）'
       }
-    } catch { }
+    } catch {
+      if (state === null) statusEl.textContent = '与宿主失联…检查 DSH 是否在运行'
+    }
     render()
   }
 
@@ -351,14 +356,12 @@ export function attachGame(ctx) {
           model: modelSelect.value || undefined,
           mode: modeSelect.value,
           difficulty: diffSelect.value,
-          reasoning: thinkSelect.value,
           userTitle: titleInput.value.trim() || undefined,
         }),
       })
       const d = await r.json().catch(() => ({}))
       if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status)
       state = d
-      spokenCount = state.commentary?.length ?? 0
     } catch (error) {
       state = { status: 'idle', commentary: [{ from: 'system', text: '开局失败：' + error.message }] }
     }
@@ -370,11 +373,12 @@ export function attachGame(ctx) {
     const rect = canvas.getBoundingClientRect()
     const x = Math.round((e.clientX - rect.left - MARGIN) / CELL)
     const y = Math.round((e.clientY - rect.top - MARGIN) / CELL)
-    if (x < 0 || x >= SIZE || y < 0 || y >= SIZE) return
-    if (state.board[y][x] !== 0) return
-    // 先落子入画（乐观渲染），busy 防连点
+    const size = boardSize()
+    if (x < 0 || x >= size || y < 0 || y >= size) return
+    if (!state.board?.[y] || state.board[y][x] !== 0) return
+    // 先落子入画（乐观渲染），busy 防连点；服务端拒绝时必须回滚，否则幻子污染本地状态
     state.board[y][x] = 1
-    state.moves.push({ x, y, side: 1 })
+    ;(state.moves ??= []).push({ x, y, side: 1 })
     state.busy = true
     render()
     if (state.mode !== 'offline') speak(THINK_QUIPS[Math.floor(Math.random() * THINK_QUIPS.length)])
@@ -389,6 +393,10 @@ export function attachGame(ctx) {
       if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status)
       state = { ...d, busy: false }   // 响应到达=回合已结束（兼容旧宿主 busy:true 的时序 bug）
     } catch (error) {
+      // 回滚乐观落子：服务端未接受这手（位置非法/对局已变），本地不能留着幻影棋
+      if (state.board?.[y]?.[x] === 1) state.board[y][x] = 0
+      const mi = (state.moves ?? []).findLastIndex((m) => m.x === x && m.y === y && m.side === 1)
+      if (mi >= 0) state.moves.splice(mi, 1)
       state.busy = false
       state.commentary = [...(state.commentary ?? []), { from: 'system', text: '回合失败：' + error.message }]
     }
@@ -396,8 +404,21 @@ export function attachGame(ctx) {
     speakNew(prevCount)
   })
 
+  // ── 开卡期间 5s 轮询对账：宿主重启/他处开局后旧棋盘不留痕（轮询返回的是服务端真相，天然纠偏）──
+  let pollTimer = 0
+  function startPoll() {
+    clearInterval(pollTimer)
+    pollTimer = setInterval(() => {
+      // 在线回合进行中不轮询：本地乐观帧与思考态由 move 流程自持，避免 busy 闪烁
+      if (state?.busy) return
+      void refreshState()
+    }, 5000)
+  }
+
   card.querySelector('.l2d-game-close').addEventListener('click', () => {
     card.classList.remove('open')
+    clearInterval(pollTimer)
+    pollTimer = 0
     ctx.evalIgnore?.()
   })
 
@@ -409,5 +430,6 @@ export function attachGame(ctx) {
     void loadPresets()
     void loadModels()
     void refreshState()
+    startPoll()
   }
 }

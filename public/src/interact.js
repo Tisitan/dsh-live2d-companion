@@ -68,6 +68,12 @@ export function initInteract(ctx) {
   /** 指针穿透评估：UI 即时可点；模型区自动模式需停留等待，手动模式恒穿透。 */
   ctx.evalIgnore = () => {
     if (!BRIDGE || lastPointer === null || dragging) return
+    // 卫星窗死区优先于一切：光标在游戏卡窗口上时 overlay 恒穿透，点击属于卡片
+    if (inCardArea(lastPointer.x, lastPointer.y)) {
+      cancelDwell()
+      setInteractive(false)
+      return
+    }
     if (ctx.pinned) {
       cancelDwell()
       setInteractive(uiHit())
@@ -117,6 +123,7 @@ export function initInteract(ctx) {
 
   /** 点击反应：随机播放点击池动作，50% 概率搭一句吐槽。 */
   function clickReact() {
+    ctx.pokeActivity?.()   // 用户活动=唤醒+重置睡眠计时
     if (ctx.busy()) { busyBlock(); return }
     const pool = ctx.binding.clickPool
     if (pool.length > 0) {
@@ -130,6 +137,7 @@ export function initInteract(ctx) {
   let patAt = 0
   let patRestore = 0
   function tryPat(clientX, clientY) {
+    ctx.pokeActivity?.()   // 用户活动=唤醒+重置睡眠计时
     if (ctx.busy()) return
     const r = ctx.app.view.getBoundingClientRect()
     const b = ctx.modelBounds()
@@ -163,8 +171,32 @@ export function initInteract(ctx) {
   // 否则穿透模式下 ⚙/穿透 钮永远隐身再也点不到；只在迁移沿触发，防定时器被反复重置）
   let wasInside = false
 
+  // 卫星窗死区：游戏卡独立小窗的屏幕区域（主进程实时推送，开/移动/关）。
+  // overlay 是 screen-saver 层压在卡片上方——光标落在卡片区域时 overlay 必须恒穿透，
+  // 否则模型区停留解锁会把卡片的点击/拖动全吃掉（卡片想点点不动的病灶）
+  let cardArea = null       // 屏幕坐标 {x,y,width,height} | null
+  let winOrigin = { x: 0, y: 0 }   // overlay 窗原点（屏坐标），onCursor 随帧更新
+  BRIDGE?.onCardArea?.((b) => {
+    cardArea = b && typeof b === 'object' ? b : null
+    ctx.evalIgnore()
+  })
+  // 自愈重载兜底：页面重载后推送态丢失，主动拉一次（否则卡片开着而死区为空，点击又被吃）
+  BRIDGE?.getCardArea?.().then((b) => {
+    cardArea = b && typeof b === 'object' ? b : null
+    ctx.evalIgnore()
+  }).catch(() => { })
+  /** 指针（画布坐标）是否落在卫星窗死区内。 */
+  function inCardArea(x, y) {
+    if (!cardArea) return false
+    const sx = x + winOrigin.x
+    const sy = y + winOrigin.y
+    return sx >= cardArea.x && sx < cardArea.x + cardArea.width
+      && sy >= cardArea.y && sy < cardArea.y + cardArea.height
+  }
+
   if (BRIDGE && BRIDGE.onCursor) {
     BRIDGE.onCursor((data) => {
+      winOrigin = { x: data.bounds.x, y: data.bounds.y }
       ctx.lastGaze = { x: data.x - data.bounds.x, y: data.y - data.bounds.y }
       ctx.model.focus(ctx.lastGaze.x, ctx.lastGaze.y)
       lastPointer = { x: ctx.lastGaze.x, y: ctx.lastGaze.y }
@@ -189,6 +221,7 @@ export function initInteract(ctx) {
   if (!PET) {
     let drag = null
     box.addEventListener('pointerdown', (e) => {
+      ctx.pokeActivity?.()
       drag = { x: e.clientX, y: e.clientY, rect: box.getBoundingClientRect(), moved: false }
       box.setPointerCapture(e.pointerId)
     })
@@ -211,17 +244,22 @@ export function initInteract(ctx) {
         box.style.bottom = 'auto'
       }
     })
-    box.addEventListener('pointerup', () => {
+    const endDrag = () => {
       if (!drag) return
       if (drag.moved) {
         store.setPos({ x: parseFloat(box.style.left), y: parseFloat(box.style.top) })
         box.style.cursor = 'grab'
         ctx.setExpr(ctx.stateExpr())
-      } else {
-        clickReact()
       }
       drag = null
+    }
+    box.addEventListener('pointerup', () => {
+      if (drag && !drag.moved) clickReact()
+      endDrag()
     })
+    // 触屏 pointercancel / 窗口失焦也要收尾，否则 drag 悬挂成悬空拖动
+    box.addEventListener('pointercancel', endDrag)
+    window.addEventListener('blur', endDrag)
   } else if (BRIDGE) {
     let drag = null
     // overlay-pet 拖拽：桌宠窗口铺满主屏、永不移动（透明窗呈现丢帧的触发条件
@@ -262,6 +300,7 @@ export function initInteract(ctx) {
       dragging = false
     }
     box.addEventListener('pointerdown', (e) => {
+      ctx.pokeActivity?.()
       drag = { x: e.screenX, y: e.screenY, curX: e.screenX, curY: e.screenY, flushX: e.screenX, flushY: e.screenY, moved: false }
       dragging = true
       box.setPointerCapture(e.pointerId)
@@ -307,11 +346,14 @@ export function initInteract(ctx) {
   // 两道防误触：① 拖拽期间锁缩放（触控板拖动手势易夹带 wheel）
   // ② 桌宠形态仅 Ctrl+滚轮缩放（触控板滚动漂移是普通 wheel，彻底免疫；
   //    误触一旦持久化会重启沿用——闸死入口即根治）；网页挂件保留普通滚轮
+  let scaleSaveTimer = 0
   box.addEventListener('wheel', (e) => {
     e.preventDefault()
     if (dragging) return
     if (BRIDGE && !e.ctrlKey) return
     ctx.targetScale = Math.min(2.5, Math.max(0.4, ctx.targetScale * Math.exp(-e.deltaY * 0.0012)))
-    store.setScale(ctx.targetScale)
+    // 防抖落盘：一格滚轮=一串事件，逐事件写 localStorage 是写盘放大
+    clearTimeout(scaleSaveTimer)
+    scaleSaveTimer = setTimeout(() => store.setScale(ctx.targetScale), 300)
   }, { passive: false })
 }

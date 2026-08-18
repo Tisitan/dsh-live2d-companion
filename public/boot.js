@@ -7,7 +7,7 @@
  * 模块间不互相 import，全部经由共享上下文 ctx 在运行期取用彼此的能力。
  */
 
-import { BASE, PREVIEW, quip, loadQuips } from './src/config.js'
+import { BASE, PREVIEW, BRIDGE, quip, loadQuips } from './src/config.js'
 import { emptyBinding } from './src/binding.js'
 import { initUI } from './src/ui.js'
 import { initStage } from './src/stage.js'
@@ -109,6 +109,16 @@ async function main() {
     ctx,
   }
   window.__l2d = api
+
+  // 卫星窗声道：桌宠模式下游戏卡独立小窗的气泡台词经同源 BroadcastChannel 转发，
+  // 仍由 Live2D 小人头上说出（对局话语与桌宠同一声道的承诺不因拆窗而变）
+  if (BRIDGE && 'BroadcastChannel' in window) {
+    const relay = new BroadcastChannel('l2d-companion')
+    relay.onmessage = (e) => {
+      const d = e.data
+      if (d && d.type === 'bubble' && typeof d.text === 'string') ctx.showBubble?.(d.text, d.ms, d.priority)
+    }
+  }
 
   if (!PREVIEW) await loadExtensions(api)
   ctx.emit('ready', api)

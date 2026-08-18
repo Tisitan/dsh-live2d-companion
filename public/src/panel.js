@@ -424,7 +424,8 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   gameToggle.textContent = '🎮'
   gameToggle.addEventListener('pointerdown', (e) => e.stopPropagation())
   gameToggle.addEventListener('pointerup', (e) => e.stopPropagation())
-  gameToggle.addEventListener('click', (e) => { e.stopPropagation(); ctx.openGame?.() })
+  // 桌宠模式：对局卡走独立卫星窗（焦点/穿透与全屏 overlay 物理隔离）；网页挂件照旧页内浮卡
+  gameToggle.addEventListener('click', (e) => { e.stopPropagation(); if (BRIDGE) BRIDGE.openGame?.(); else ctx.openGame?.() })
   gameToggle.addEventListener('dblclick', (e) => e.stopPropagation())
   gameToggle.addEventListener('wheel', (e) => e.stopPropagation())
   ctx.box.appendChild(gameToggle)
@@ -1442,13 +1443,17 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
       viewBtn.title = '预览 ' + item.path
       viewBtn.textContent = '查看'
       viewBtn.addEventListener('click', () => openViewer(item.path))
-      const delBtn = document.createElement('button')
-      delBtn.type = 'button'
-      delBtn.className = 'l2d-model-del'
-      delBtn.title = '删除 ' + item.path + '（整个文件夹从磁盘移除）'
-      delBtn.textContent = '×'
-      delBtn.addEventListener('click', () => deleteModel(item))
-      row.append(itemBtn, viewBtn, delBtn)
+      row.append(itemBtn, viewBtn)
+      // 根级散件模型（dir=''）无独立文件夹可删，宿主必 400——不给删除钮
+      if (item.dir !== '') {
+        const delBtn = document.createElement('button')
+        delBtn.type = 'button'
+        delBtn.className = 'l2d-model-del'
+        delBtn.title = '删除 ' + item.path + '（整个文件夹从磁盘移除）'
+        delBtn.textContent = '×'
+        delBtn.addEventListener('click', () => deleteModel(item))
+        row.appendChild(delBtn)
+      }
       listEl.appendChild(row)
     }
   }
@@ -1626,22 +1631,34 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     panelBusy = true
     let model3Path = ''
     let uploaded = 0
-    try {
+    const upload = async (overwrite) => {
       for (const file of ordered) {
         const rel = (file.webkitRelativePath || file.name).replaceAll('\\', '/')
         const parts = rel.split('/')
         const filePath = parts.length > 1 ? parts.slice(1).join('/') : file.name
         if (!filePath) continue
         setStatus(`导入中 ${uploaded + 1}/${ordered.length}：${file.name}`)
-        const response = await fetch(`${BASE}/import?model=${encodeURIComponent(modelName)}&path=${encodeURIComponent(filePath)}`, {
+        const response = await fetch(`${BASE}/import?model=${encodeURIComponent(modelName)}&path=${encodeURIComponent(filePath)}${overwrite ? '&overwrite=1' : ''}`, {
           method: 'POST',
           headers: { 'content-type': 'application/octet-stream' },
           body: await file.arrayBuffer(),
         })
         const data = await response.json().catch(() => ({}))
-        if (!response.ok) throw new Error(data.error || 'HTTP ' + response.status)
+        if (!response.ok) throw Object.assign(new Error(data.error || 'HTTP ' + response.status), { status: response.status })
         uploaded += 1
         if (file.name.toLowerCase().endsWith('.model3.json')) model3Path = `${modelName}/${filePath}`
+      }
+    }
+    try {
+      try {
+        await upload(false)
+      } catch (error) {
+        // 重名防御：宿主 409 时询问后整体重传（服务端保护不被绕过，只是给确认通道）
+        if (error.status === 409 && confirm(error.message + '\n\n覆盖重传全部文件？')) {
+          uploaded = 0
+          model3Path = ''
+          await upload(true)
+        } else throw error
       }
     } catch (error) {
       panelBusy = false
@@ -1677,6 +1694,8 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   })
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return
+    // 台词编辑器的输入区按 Esc 不关背后的面板（输入行/正文都拦）
+    if (e.target instanceof HTMLElement && quipsCard.contains(e.target)) return
     if (viewer.classList.contains('open')) closeViewer()
     else closePanel()
   })

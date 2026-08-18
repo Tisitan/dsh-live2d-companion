@@ -47,6 +47,11 @@ export function initState(ctx) {
   ctx.busy = () => BUSY_STATES.includes(state)
   ctx.stateExpr = () => registry[state]?.expr ?? 'default'
   ctx.registerState = (name, def) => { registry[name] = { ...registry[name], ...def } }
+  // 用户活动戳：互动重置睡眠计时；睡梦中被摸/点/拖会唤醒回 idle（enter 自带惊喜脸衔接）
+  ctx.pokeActivity = () => {
+    idleSince = Date.now()
+    if (state === 'sleeping') ctx.enter('idle')
+  }
 
   /**
    * 切换到指定状态；同名调用为 no-op。
@@ -54,6 +59,7 @@ export function initState(ctx) {
    */
   ctx.enter = (next) => {
     if (next === state) return
+    if (!registry[next]) return   // 未知状态名（如宿主下发了新 coarse 值）不入场，灯与行为不脱节
     const prev = state
     const woke = state === 'sleeping' && next !== 'sleeping'
     state = next

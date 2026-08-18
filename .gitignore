@@ -4,5 +4,7 @@ public/vendor/live2dcubismcore.min.js
 public/quips.local.json
 public/quips-presets/
 *.log
+*.tgz
+pet/ui-*.png
 
 /model-selection.json
