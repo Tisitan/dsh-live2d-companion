@@ -27,7 +27,7 @@ dsh 宿主进程
          ├─ SSE  /live2d/state-stream    → session/event 白名单转发 + 聚合状态兜底
          ├─ exact /live2d/state|config   → 状态快照 / 模型配置
          ├─ exact /live2d/models         → 扫描 model/ 下全部模型（GET）
-         ├─ exact /live2d/model          → 切换/恢复模型并持久化（POST）
+         ├─ exact /live2d/model          → 切换/恢复/删除模型并持久化（POST）
          ├─ exact /live2d/import         → 上传模型文件（POST）
          ├─ exact /live2d/profile        → 绑定档案写/删（POST，白名单清洗）
          ├─ exact /live2d/quips          → 台词预设存/切/删（POST，写 quips-presets/）

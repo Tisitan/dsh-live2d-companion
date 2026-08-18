@@ -25,17 +25,30 @@ export function initPanel(ctx) {
 #l2d-model-toggle, #l2d-pin-toggle, #l2d-help-toggle {
   position: absolute; top: 6px; right: 6px; z-index: 20;
   width: 34px; height: 34px; padding: 0; border-radius: 50%;
-  border: 1px solid rgba(0,0,0,.12); background: rgba(255,255,255,.88);
-  color: #556; font: 16px/1 system-ui, sans-serif; cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0,0,0,.18);
-  opacity: .72; transition: opacity .25s ease, background .15s ease, color .15s ease;
+  border: 1.5px solid rgba(255,255,255,.6);
+  background: rgba(255,255,255,.4);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  color: #4a5060; font: 16px/1 system-ui, sans-serif; cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0,0,0,.14);
+  opacity: .82; transition: opacity .25s ease, border-color .3s ease, background .2s ease;
 }
-#l2d-model-toggle:hover, #l2d-pin-toggle:hover, #l2d-help-toggle:hover { opacity: 1; background: #fff; }
+#l2d-model-toggle:hover, #l2d-pin-toggle:hover, #l2d-help-toggle:hover {
+  opacity: 1; background: rgba(255,255,255,.62); border-color: rgba(255,255,255,.85);
+}
 #l2d-model-toggle.l2d-hidden, #l2d-pin-toggle.l2d-hidden, #l2d-help-toggle.l2d-hidden { opacity: 0; pointer-events: none; }
-/* 锁钮三态：绿底🔒=自动穿透中（路过不挡） / 白底🔓=停留已解锁可互动 / 蓝底🔒=手动锁定 */
-#l2d-pin-toggle.auto { opacity: .9; background: rgba(46,160,67,.85); border-color: #2ea043; color: #fff; }
-#l2d-pin-toggle.auto:hover { background: rgba(46,160,67,1); }
-#l2d-pin-toggle.on { opacity: 1; background: #4a7fb5; border-color: #4a7fb5; color: #fff; }
+/* 锁钮状态=边框呼吸灯：绿呼吸=自动穿透中 / 素玻璃=已解锁 / 蓝呼吸=手动锁定 */
+@keyframes l2d-breathe {
+  0%, 100% { box-shadow: 0 2px 10px rgba(0,0,0,.14), 0 0 3px 0 var(--glow, transparent); }
+  50% { box-shadow: 0 2px 10px rgba(0,0,0,.14), 0 0 15px 4px var(--glow, transparent); }
+}
+#l2d-pin-toggle.auto {
+  border-color: rgba(64,181,93,.85); --glow: rgba(64,181,93,.7);
+  animation: l2d-breathe 2.6s ease-in-out infinite;
+}
+#l2d-pin-toggle.on {
+  border-color: rgba(91,141,239,.9); --glow: rgba(91,141,239,.75);
+  animation: l2d-breathe 2.6s ease-in-out infinite;
+}
 #l2d-pet-menu {
   position: fixed; z-index: 100000; min-width: 112px; padding: 4px;
   background: rgba(255,255,255,.97); color: #445;
@@ -155,6 +168,11 @@ export function initPanel(ctx) {
   background: #fff; color: #556; cursor: pointer; font: 12px/1.2 inherit; padding: 4px;
 }
 .l2d-model-view:hover { background: #f0f4ff; border-color: #9db8ff; }
+.l2d-model-del {
+  flex: 0 0 30px; border: 1px solid rgba(0,0,0,.08); border-radius: 8px;
+  background: #fff; color: #aab; cursor: pointer; font: 15px/1 system-ui, sans-serif; padding: 0;
+}
+.l2d-model-del:hover { background: #fdf0ee; border-color: #c0392b; color: #c0392b; }
 .l2d-model-name { font-weight: 600; }
 .l2d-model-path { font-size: 11px; color: #889; overflow-wrap: anywhere; }
 .l2d-model-empty { padding: 14px 8px; text-align: center; color: #99a; }
@@ -311,6 +329,7 @@ body.l2d-roomy #l2d-model-panel .l2d-panel-list { gap: 8px; padding: 0 12px 10px
 body.l2d-roomy .l2d-model-item { padding: 10px 12px; border-radius: 10px; }
 body.l2d-roomy .l2d-model-path { font-size: 12px; }
 body.l2d-roomy .l2d-model-view { flex: 0 0 54px; font-size: 13px; border-radius: 10px; }
+body.l2d-roomy .l2d-model-del { flex-basis: 34px; font-size: 16px; border-radius: 10px; }
 body.l2d-roomy #l2d-model-panel .l2d-panel-status { padding: 6px 16px 10px; font-size: 13px; }
 body.l2d-roomy #l2d-model-panel .l2d-panel-actions { padding: 0 16px 14px; gap: 10px; }
 body.l2d-roomy #l2d-model-panel .l2d-panel-actions button { padding: 8px 10px; border-radius: 10px; }
@@ -471,7 +490,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   <li>✋ <b>按住拖动</b>：带咱搬家，松手就站定</li>
   <li>🔍 <b>Ctrl + 滚轮</b>：放大缩小</li>
   <li>🖱 <b>鼠标扫过</b>：默认不挡路——看剧路过不会黑屏；想互动，在咱身上停半秒就好</li>
-  <li>🔒 <b>锁头按钮</b>：绿底=自动不挡路中；点一下变蓝=彻底不响应鼠标；再点恢复</li>
+  <li>🔒 <b>锁头按钮</b>：绿圈呼吸=自动不挡路中；点一下蓝圈呼吸=彻底不响应鼠标；再点恢复</li>
   <li>⚙ <b>齿轮</b>：换模型、改台词；面板里还有帧率 / CPU渲染 / 退出</li>
   <li>💡 <b>左上小灯</b>：AI 正在干嘛；多任务会分列小灯</li>
 </ul>`
@@ -1345,8 +1364,38 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
       viewBtn.title = '预览 ' + item.path
       viewBtn.textContent = '查看'
       viewBtn.addEventListener('click', () => openViewer(item.path))
-      row.append(itemBtn, viewBtn)
+      const delBtn = document.createElement('button')
+      delBtn.type = 'button'
+      delBtn.className = 'l2d-model-del'
+      delBtn.title = '删除 ' + item.path + '（整个文件夹从磁盘移除）'
+      delBtn.textContent = '×'
+      delBtn.addEventListener('click', () => deleteModel(item))
+      row.append(itemBtn, viewBtn, delBtn)
       listEl.appendChild(row)
+    }
+  }
+
+  /** 删除模型：明确警告确认 → 宿主整个目录移除（删当前模型时宿主自动回落默认并广播） */
+  async function deleteModel(item) {
+    if (panelBusy) return
+    const warn = `删除模型「${item.dir || item.path}」？\n整个文件夹将从磁盘移除，不可恢复。`
+    if (!window.confirm(warn)) return
+    panelBusy = true
+    setStatus('正在删除…')
+    try {
+      const response = await fetch(BASE + '/model', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ delete: item.dir }),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data.error || 'HTTP ' + response.status)
+      setStatus(`已删除：${item.dir}${data.reset ? '（当前模型已回落默认）' : ''}`)
+      await refreshModels()
+    } catch (error) {
+      setStatus('删除失败：' + error.message, true)
+    } finally {
+      panelBusy = false
     }
   }
 

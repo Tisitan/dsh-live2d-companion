@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { mkdir, readdir, lstat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, normalize, sep } from 'node:path'
@@ -472,6 +472,33 @@ export function apply(ctx, config) {
             modelPath = configModel
             broadcastModel()
             sendJson(res, 200, { model: modelPath, defaultModel: configModel, reset: true })
+            return
+          }
+          // 删除模型目录：只删真模型目录（内含 .model3.json），当前在用则回落默认
+          if (typeof parsed.delete === 'string') {
+            const dir = parsed.delete
+            if (!safePathSegment(dir, 128)) {
+              sendJson(res, 400, { error: 'dir is invalid' })
+              return
+            }
+            const target = join(MODEL_DIR, dir)
+            if (!existsSync(target)) {
+              sendJson(res, 404, { error: `model dir not found: ${dir}` })
+              return
+            }
+            if (!readdirSync(target).some((f) => f.endsWith('.model3.json'))) {
+              sendJson(res, 400, { error: `${dir} does not look like a model dir` })
+              return
+            }
+            rmSync(target, { recursive: true, force: true })
+            let reset = false
+            if (modelPath.startsWith(dir + '/')) {
+              rmSync(SELECTION_FILE, { force: true })
+              modelPath = configModel
+              broadcastModel()
+              reset = true
+            }
+            sendJson(res, 200, { deleted: dir, reset })
             return
           }
           const ref = normalizeModelRef(parsed.model)
