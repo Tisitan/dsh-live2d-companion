@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { mkdir, readdir, lstat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, normalize, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { homedir } from 'node:os'
 
 export const name = 'dsh-live2d-companion'
 export const inject = ['webServer']
@@ -15,9 +16,45 @@ const SELECTION_FILE = fileURLToPath(new URL('./model-selection.json', import.me
 const DEFAULT_MODEL = 'nori/ARGNori.model3.json'
 const MAX_SELECTION_BYTES = 64 * 1024
 const MAX_IMPORT_FILE_BYTES = 128 * 1024 * 1024
+// 显示模式切换的写入目标：本 profile 的用户补丁层（热重载，改文件即重挂载本插件）
+const PATCH_FILE = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'profiles', 'web', 'cordis.patch.yml')
 
 /** 桌宠 spawn 节流：效果重挂载（如端口冲突重试）时 30 秒内不重复拉起，防 electron 生死循环。 */
 let lastPetSpawnAt = 0
+
+/** 显示模式 → config 布尔对。 */
+const DISPLAY_MODES = {
+  pet: { widget: false, pet: true },
+  widget: { widget: true, pet: false },
+  both: { widget: true, pet: true },
+}
+
+/**
+ * 文本手术改写 cordis.patch.yml 中 live2d-companion 条目的 config。
+ * 行级定位 `- id: live2d-companion` 块（止于下一个同级条目/insert 段/文件尾），
+ * 块内重写 widget/pet 两行；无 config 块则补建。找不到条目返回 undefined。
+ */
+function rewriteLive2dConfig(src, cfg) {
+  const lines = src.split('\n')
+  const idIdx = lines.findIndex((l) => /^\s*-\s*id:\s*live2d-companion\s*$/.test(l))
+  if (idIdx === -1) return undefined
+  let end = lines.length
+  for (let i = idIdx + 1; i < lines.length; i++) {
+    if (/^\s*-\s+id:/.test(lines[i]) || /^\s*-\s*insert:/.test(lines[i])) { end = i; break }
+  }
+  const block = lines.slice(idIdx, end).filter((l) => !/^\s+(widget|pet):/.test(l))
+  const widgetLine = `        widget: ${cfg.widget}`
+  const petLine = `        pet: ${cfg.pet}`
+  const configIdx = block.findIndex((l) => /^\s*config:\s*$/.test(l))
+  if (configIdx === -1) {
+    const nameIdx = block.findIndex((l) => /^\s*name:/.test(l))
+    block.splice(nameIdx === -1 ? 1 : nameIdx + 1, 0, '      config:', widgetLine, petLine)
+  } else {
+    block.splice(configIdx + 1, 0, widgetLine, petLine)
+  }
+  lines.splice(idIdx, end - idIdx, ...block)
+  return lines.join('\n')
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -423,7 +460,56 @@ export function apply(ctx, config) {
     kind: 'exact',
     path: '/live2d/config',
     handler(req, res) {
-      sendJson(res, 200, { model: modelPath, defaultModel: configModel })
+      sendJson(res, 200, {
+        model: modelPath,
+        defaultModel: configModel,
+        pet: config?.pet === true,
+        widget: config?.widget !== false,
+      })
+    },
+  }))
+
+  // 显示模式切换：改写 cordis.patch.yml 本插件 config，补丁层热重载即时重挂载。
+  // pet→ 桌宠 spawn/回收随重挂载自动发生；widget→ 挂件注入随下次 index 请求生效（前端提示刷新页面）。
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/live2d/mode',
+    handler(req, res) {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { allow: 'POST' })
+        res.end('method not allowed')
+        return
+      }
+      if (!isLocalReq(req)) {
+        sendJson(res, 403, { error: 'this route is local-only' })
+        return
+      }
+      readJsonBody(req).then(parsed => {
+        try {
+          const cfg = DISPLAY_MODES[parsed.mode]
+          if (cfg === undefined) {
+            sendJson(res, 400, { error: 'mode must be one of pet/widget/both' })
+            return
+          }
+          if (!existsSync(PATCH_FILE)) {
+            sendJson(res, 500, { error: `patch file not found: ${PATCH_FILE}` })
+            return
+          }
+          const next = rewriteLive2dConfig(readFileSync(PATCH_FILE, 'utf8'), cfg)
+          if (next === undefined) {
+            sendJson(res, 500, { error: 'live2d-companion entry not found in cordis.patch.yml' })
+            return
+          }
+          // 手动切到含桌宠的模式：解除 spawn 节流，确保热重挂载时桌宠立刻回来
+          if (cfg.pet) lastPetSpawnAt = 0
+          writeFileSync(PATCH_FILE, next)
+          sendJson(res, 200, { mode: parsed.mode, ...cfg, hotReload: true })
+        } catch (error) {
+          sendJson(res, 500, { error: `failed to switch mode: ${String(error)}` })
+        }
+      }, error => {
+        sendJson(res, 400, { error: `invalid request body: ${String(error)}` })
+      })
     },
   }))
 

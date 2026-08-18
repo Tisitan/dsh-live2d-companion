@@ -36,6 +36,11 @@ export function initPanel(ctx) {
   opacity: 1; background: rgba(255,255,255,.62); border-color: rgba(255,255,255,.85);
 }
 #l2d-model-toggle.l2d-hidden, #l2d-pin-toggle.l2d-hidden, #l2d-help-toggle.l2d-hidden { opacity: 0; pointer-events: none; }
+/* 静态排布（网页挂件用）：三钮共用 right:6 会叠罗汉；桌宠由 followButtons 内联 left 覆盖此处 */
+#l2d-pin-toggle { right: 46px; }
+#l2d-help-toggle { right: 86px; }
+/* 挂件无锁钮（display:none）：问号顶到锁位，不留空洞 */
+body.l2d-no-pin #l2d-help-toggle { right: 46px; }
 /* 锁钮状态=边框呼吸灯：绿呼吸=自动穿透中 / 素玻璃=已解锁 / 蓝呼吸=手动锁定 */
 @keyframes l2d-breathe {
   0%, 100% { box-shadow: 0 2px 10px rgba(0,0,0,.14), 0 0 3px 0 var(--glow, transparent); }
@@ -190,6 +195,14 @@ export function initPanel(ctx) {
   color: #778; font-size: 12px;
 }
 #l2d-model-panel .l2d-fps-row select {
+  flex: 1; min-width: 0; font: inherit; color: #334;
+  border: 1px solid rgba(0,0,0,.12); border-radius: 6px; padding: 3px 6px; background: #fff;
+}
+#l2d-model-panel .l2d-mode-row {
+  display: flex; align-items: center; gap: 8px; padding: 0 12px 12px;
+  color: #778; font-size: 12px;
+}
+#l2d-model-panel .l2d-mode-row select {
   flex: 1; min-width: 0; font: inherit; color: #334;
   border: 1px solid rgba(0,0,0,.12); border-radius: 6px; padding: 3px 6px; background: #fff;
 }
@@ -382,7 +395,7 @@ body.l2d-roomy #l2d-viewer .l2d-viewer-states { padding: 10px 14px; gap: 8px; }
 body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; }
 `
   document.head.appendChild(style)
-  if (BRIDGE) document.body.classList.add('l2d-roomy')   // 桌宠全屏空间充裕：扩容排版
+  document.body.classList.add('l2d-roomy')   // 全端统一扩容排版：查看器/卡片均为全视口浮层，空间同样充裕
 
   // ── 悬浮入口：挂件/桌宠右上角，静置自动隐藏 ──
   const toggle = document.createElement('button')
@@ -427,7 +440,10 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   })
   pinToggle.addEventListener('dblclick', (e) => e.stopPropagation())
   pinToggle.addEventListener('wheel', (e) => e.stopPropagation())
-  if (!BRIDGE) pinToggle.style.display = 'none'   // 网页挂件无穿透概念，藏钮
+  if (!BRIDGE) {   // 网页挂件无穿透概念，藏钮
+    pinToggle.style.display = 'none'
+    document.body.classList.add('l2d-no-pin')   // 问号顶到锁位（见 CSS）
+  }
   ctx.box.appendChild(pinToggle)
   syncPinBtn()
 
@@ -833,6 +849,14 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
       <option value="saver">省电（15/8/4 fps）</option>
     </select>
   </div>
+  <div class="l2d-mode-row">
+    <span>显示模式</span>
+    <select class="l2d-mode-select" title="桌宠/网页挂件形态切换：补丁层热重载即时生效；挂件变化需刷新 DSH 页面（Ctrl+F5）">
+      <option value="both">桌宠 + 挂件</option>
+      <option value="pet">仅桌宠</option>
+      <option value="widget">仅网页挂件</option>
+    </select>
+  </div>
   <div class="l2d-soft-row" hidden>
     <label class="l2d-soft-label" title="默认 GPU 渲染；拖动闪烁的机器开启后改走 CPU，切换后桌宠自动重启生效">
       <input type="checkbox" class="l2d-soft"> CPU 渲染模式（拖动闪烁时开启，切换后自动重启生效）
@@ -916,6 +940,34 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
       ctx.showBubble?.(`帧率已切换：${label}`, 1800)
     })
   }
+
+  // 显示模式：读宿主 config 回填；切换写 cordis.patch.yml 触发补丁层热重载。
+  // 桌宠增减随重挂载自动发生；挂件注入变化要等主人刷新 DSH 页面才可见。
+  const modeSelect = panel.querySelector('.l2d-mode-select')
+  async function refreshMode() {
+    try {
+      const r = await fetch(BASE + '/config', { cache: 'no-store' })
+      const d = await r.json().catch(() => ({}))
+      if (r.ok) modeSelect.value = d.pet && d.widget ? 'both' : d.pet ? 'pet' : 'widget'
+    } catch { }
+  }
+  modeSelect.addEventListener('change', async () => {
+    const mode = modeSelect.value
+    setStatus('正在切换显示模式…')
+    try {
+      const r = await fetch(BASE + '/mode', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      })
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status)
+      setStatus('已切换，热重载生效中' + (mode !== 'pet' ? '；挂件变化需刷新 DSH 页面（Ctrl+F5）' : ''))
+    } catch (error) {
+      setStatus('切换失败：' + error.message, true)
+      void refreshMode()
+    }
+  })
 
   // 退出桌宠：仅桌宠形态显示；双击确认防误触，道别后再退场
   const quitRow = panel.querySelector('.l2d-quit-row')
@@ -1474,6 +1526,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     ctx.evalIgnore?.()  // 面板展开后立即刷新穿透判定（面板区域纳入可交互）
     if (models.length === 0) void refreshModels()
     else renderList()
+    void refreshMode()
   }
 
   function closePanel() {
