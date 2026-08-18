@@ -15,6 +15,14 @@
   /* 头部是整条拖动把手：禁用 chip（当前游戏）不做指针孤岛，手势统一 */
   #l2d-game .l2d-game-head .l2d-game-chip:disabled { cursor: move !important; }
   #l2d-game .l2d-game-head:active, #l2d-game .l2d-game-head .l2d-game-chip:disabled:active { cursor: move !important; }
+  /* 卫星窗是固定尺寸窗口（760×650），宽度恰好踩中 PR#3 小屏响应式的 760px
+     触发线（强制 max-width+overflow:auto → 滚动条+裁切）。卫星窗不需要响应式，中和之 */
+  @media (max-width: 760px), (max-height: 620px) {
+    #l2d-game { max-width: none !important; max-height: none !important; overflow: visible !important; }
+    #l2d-game .l2d-game-body { flex-direction: row !important; }
+    #l2d-game .l2d-game-side { width: 210px !important; border-left: 1px solid rgba(0,0,0,.06) !important; border-top: 0 !important; }
+    #l2d-game canvas { width: 500px !important; height: 500px !important; }
+  }
 </style>
 <script>window.__l2dCardWin = true</script>
 </head>
