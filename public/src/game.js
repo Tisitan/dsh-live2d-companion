@@ -44,7 +44,7 @@ export function attachGame(ctx) {
   width: 72px; font: inherit; font-size: 12px; color: #334;
   border: 1px solid rgba(0,0,0,.14); border-radius: 8px; padding: 3px 6px; background: #fff;
 }
-#l2d-game .l2d-game-preset, #l2d-game .l2d-game-model, #l2d-game .l2d-game-mode, #l2d-game .l2d-game-diff {
+#l2d-game .l2d-game-preset, #l2d-game .l2d-game-model, #l2d-game .l2d-game-mode, #l2d-game .l2d-game-diff, #l2d-game .l2d-game-think {
   flex: 0 0 auto; max-width: 108px; font: inherit; font-size: 12px; color: #334;
   border: 1px solid rgba(0,0,0,.14); border-radius: 8px; padding: 3px 6px; background: #fff;
 }
@@ -103,6 +103,10 @@ export function attachGame(ctx) {
   </select>
   <select class="l2d-game-preset" title="对手人格：选择你的 agent 预设"></select>
   <select class="l2d-game-model" title="对手模型：来自 DSH 模型清单"></select>
+  <select class="l2d-game-think" title="思考链：默认=模型原样（深思但慢）；关闭思考=不回内心独白直接落子（小游戏推荐，秒回）">
+    <option value="default">默认思考</option>
+    <option value="off">关闭思考</option>
+  </select>
   <select class="l2d-game-diff" title="难度：在线=提示词风格注入；离线=本地 AI 强度">
     <option value="easy">简单</option>
     <option value="normal" selected>普通</option>
@@ -129,6 +133,7 @@ export function attachGame(ctx) {
   const modeSelect = card.querySelector('.l2d-game-mode')
   const diffSelect = card.querySelector('.l2d-game-diff')
   const titleInput = card.querySelector('.l2d-game-title-input')
+  const thinkSelect = card.querySelector('.l2d-game-think')
   const chipsBox = card.querySelector('.l2d-game-chips')
   const newBtn = card.querySelector('.l2d-game-new')
 
@@ -144,23 +149,27 @@ export function attachGame(ctx) {
     modeSelect.title = '独立版使用本地对手，不消耗模型额度'
   }
   if (['easy', 'normal', 'hard'].includes(prefs.difficulty)) diffSelect.value = prefs.difficulty
+  if (prefs.reasoning === 'off') thinkSelect.value = 'off'
   function savePrefs() {
     try {
       localStorage.setItem(PREFS_KEY, JSON.stringify({
         userTitle: titleInput.value.trim(),
         mode: modeSelect.value,
         difficulty: diffSelect.value,
+        reasoning: thinkSelect.value,
       }))
     } catch { }
   }
   titleInput.addEventListener('change', savePrefs)
   diffSelect.addEventListener('change', savePrefs)
+  thinkSelect.addEventListener('change', savePrefs)
 
-  // 离线=本地糯糯亲自下场：人格/模型选择只对在线有意义
+  // 离线=本地糯糯亲自下场：人格/模型/思考选择只对在线有意义
   function syncModeUI() {
     const offline = modeSelect.value === 'offline'
     presetSelect.style.display = offline ? 'none' : ''
     modelSelect.style.display = offline ? 'none' : ''
+    thinkSelect.style.display = offline ? 'none' : ''
   }
   modeSelect.addEventListener('change', () => { syncModeUI(); savePrefs() })
   syncModeUI()
@@ -353,6 +362,7 @@ export function attachGame(ctx) {
           model: modelSelect.value || undefined,
           mode: modeSelect.value,
           difficulty: diffSelect.value,
+          reasoning: thinkSelect.value,
           userTitle: titleInput.value.trim() || undefined,
         }),
       })
