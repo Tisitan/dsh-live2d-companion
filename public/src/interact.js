@@ -126,33 +126,35 @@ export function initInteract(ctx) {
     if (Math.random() < 0.5) ctx.showBubble(quip('click'), 1500)
   }
 
-  // ── 摸头：头部 30% 区域划过触发害羞，2 秒冷却 ──
+  // ── 摸头：仅点击头部 30% 区域触发害羞，2 秒冷却 ──
   let patAt = 0
   let patRestore = 0
   function tryPat(clientX, clientY) {
-    if (ctx.busy()) return
     const r = ctx.app.view.getBoundingClientRect()
     const b = ctx.modelBounds()
     const x = clientX - r.left
     const y = clientY - r.top
     const inHead = x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height * 0.3
+    if (!inHead) return false
+    // 忙碌时点击头部仍属于摸头，但静默忽略，不回落成普通点击提示。
+    if (ctx.busy()) return true
     const now = performance.now()
-    if (inHead && now - patAt > 2000) {
+    if (now - patAt > 2000) {
       patAt = now
       ctx.setExpr('shy')
       ctx.showBubble(quip('pat'), 1800)
       clearTimeout(patRestore)
       patRestore = setTimeout(() => ctx.setExpr(ctx.stateExpr()), 1800)
     }
+    return true
   }
 
-  // 窗口内指针：视线跟随 + 穿透评估 + 摸头判定
+  // 窗口内指针：只做视线跟随与穿透评估；悬停不触发任何互动。
   window.addEventListener('pointermove', (e) => {
     lastPointer = { x: e.clientX, y: e.clientY }
     const r = ctx.app.view.getBoundingClientRect()
     ctx.model.focus(e.clientX - r.left, e.clientY - r.top)
     ctx.evalIgnore()
-    tryPat(e.clientX, e.clientY)
   })
 
   // 桌宠全局视线：主进程轮询 OS 光标坐标，换算为窗内坐标（整屏追踪）
@@ -211,14 +213,14 @@ export function initInteract(ctx) {
         box.style.bottom = 'auto'
       }
     })
-    box.addEventListener('pointerup', () => {
+    box.addEventListener('pointerup', (e) => {
       if (!drag) return
       if (drag.moved) {
         store.setPos({ x: parseFloat(box.style.left), y: parseFloat(box.style.top) })
         box.style.cursor = 'grab'
         ctx.setExpr(ctx.stateExpr())
       } else {
-        clickReact()
+        if (!tryPat(e.clientX, e.clientY)) clickReact()
       }
       drag = null
     })
@@ -247,7 +249,7 @@ export function initInteract(ctx) {
       ctx.model.x += dx
       ctx.model.y += dy
     }
-    const endDrag = () => {
+    const endDrag = (e) => {
       if (!drag) return
       flushMove()  // 收尾冲刷：指针停在最后一帧的位移不丢
       if (drag.moved) {
@@ -255,7 +257,7 @@ export function initInteract(ctx) {
         const b = ctx.modelBounds()
         store.setPetPos({ cx: b.x + b.width / 2, cy: b.y + b.height / 2 })
         ctx.setExpr(ctx.stateExpr())
-      } else {
+      } else if (e?.type === 'pointerup' && !tryPat(e.clientX, e.clientY)) {
         clickReact()
       }
       drag = null
@@ -291,7 +293,7 @@ export function initInteract(ctx) {
       dragging = false
     })
   } else {
-    box.addEventListener('pointerup', () => clickReact())
+    box.addEventListener('pointerup', (e) => { if (!tryPat(e.clientX, e.clientY)) clickReact() })
   }
 
   // 双击：兴奋脸 + 兴奋动作卖萌
