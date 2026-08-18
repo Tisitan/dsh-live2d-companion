@@ -25,7 +25,7 @@ export function initInteract(ctx) {
   function uiHit() {
     if (lastPointer === null) return false
     const el = document.elementFromPoint(lastPointer.x, lastPointer.y)
-    return !!(el && el.closest('#l2d-model-toggle, #l2d-pin-toggle, #l2d-help-toggle, #l2d-pet-menu, #l2d-model-panel, #l2d-help-card, #l2d-viewer, #l2d-chat-toggle, #l2d-chat-panel, #l2d-quips-card'))
+    return !!(el && el.closest('#l2d-model-toggle, #l2d-pin-toggle, #l2d-help-toggle, #l2d-game-toggle, #l2d-pet-menu, #l2d-model-panel, #l2d-help-card, #l2d-viewer, #l2d-chat-toggle, #l2d-chat-panel, #l2d-quips-card, #l2d-game'))
   }
 
   // ── 穿透策略：自动（停留等待）+ 手动（穿透钮强制）──
@@ -111,7 +111,7 @@ export function initInteract(ctx) {
     const now = performance.now()
     if (now - busyQuipAt > 8000) {
       busyQuipAt = now
-      ctx.showBubble(quip('busy'), 2000)
+      ctx.showBubble(quip('busy'), 2000, 2)
     }
   }
 
@@ -119,7 +119,7 @@ export function initInteract(ctx) {
   function clickReact() {
     if (ctx.getState() === 'sleeping') {
       ctx.enter('idle')
-      ctx.showBubble('唔......你回来啦？', 2200)
+      ctx.showBubble('唔......你回来啦？', 2200, 2)
       return
     }
     if (ctx.busy()) { busyBlock(); return }
@@ -128,7 +128,7 @@ export function initInteract(ctx) {
       const [g, i] = pool[Math.floor(Math.random() * pool.length)]
       ctx.model.motion(g, i).catch(() => { })
     }
-    if (Math.random() < 0.5) ctx.showBubble(quip('click'), 1500)
+    if (Math.random() < 0.5) ctx.showBubble(quip('click'), 1500, 2)
   }
 
   // ── 摸头：仅点击头部 30% 区域触发害羞，2 秒冷却 ──
@@ -149,7 +149,7 @@ export function initInteract(ctx) {
     if (now - patAt > 2000) {
       patAt = now
       ctx.setExpr('shy')
-      ctx.showBubble(quip('pat'), 1800)
+      ctx.showBubble(quip('pat'), 1800, 2)
       clearTimeout(patRestore)
       patRestore = setTimeout(() => ctx.setExpr(ctx.stateExpr()), 1800)
     }
@@ -209,7 +209,7 @@ export function initInteract(ctx) {
         drag.moved = true
         box.style.cursor = 'grabbing'
         ctx.setExpr('shy')
-        if (Math.random() < 0.5) ctx.showBubble(quip('drag'), 1500)
+        if (Math.random() < 0.5) ctx.showBubble(quip('drag'), 1500, 2)
       }
       if (drag.moved) {
         const nx = Math.min(Math.max(drag.rect.left + dx, -BASE_W / 2), window.innerWidth - BASE_W / 3)
@@ -282,7 +282,7 @@ export function initInteract(ctx) {
       if (!drag.moved && Math.hypot(drag.curX - drag.x, drag.curY - drag.y) > 4) {
         drag.moved = true
         ctx.setExpr('shy')
-        if (Math.random() < 0.5) ctx.showBubble(quip('drag'), 1500)
+        if (Math.random() < 0.5) ctx.showBubble(quip('drag'), 1500, 2)
       }
       if (drag.moved && !movePending) {
         movePending = true
@@ -308,7 +308,7 @@ export function initInteract(ctx) {
     if (ctx.busy()) { busyBlock(); return }
     ctx.setExpr('excited')
     ctx.playMotion('excited')
-    ctx.showBubble(quip('click'), 1500)
+    ctx.showBubble(quip('click'), 1500, 2)
     setTimeout(() => ctx.setExpr(ctx.stateExpr()), 2500)
   })
 

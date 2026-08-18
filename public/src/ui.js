@@ -65,6 +65,8 @@ export function initUI(ctx) {
 
   let bubbleTimer = 0
   let lastBubbleAt = 0
+  /** 当前气泡优先级：低级不抢高级。0=状态轮播 1=对局解说/思考 2=物理互动/任务完成/报错/操作反馈 */
+  let bubblePriority = 0
 
   /** 气泡定位（钳制在可视区内）。 */
   function placeBubble(x, y) {
@@ -81,10 +83,14 @@ export function initUI(ctx) {
    * 显示气泡。空文本直接跳过。
    * @param {string} text 台词
    * @param {number} [holdMs=3500] 停留毫秒
+   * @param {number} [priority=0] 优先级：低于当前在播气泡则丢弃；同级后来者居上
+   * @returns {boolean} 是否播出
    */
-  function showBubble(text, holdMs = 3500) {
-    if (!text || !ctx.model) return
+  function showBubble(text, holdMs = 3500, priority = 0) {
+    if (!text || !ctx.model) return false
+    if (priority < bubblePriority) return false
     lastBubbleAt = performance.now()
+    bubblePriority = priority
     const b = ctx.model.getBounds()
     const clean = String(text).replace(/\s+/g, ' ').trim()
     bubble.textContent = clean.length > 180 ? clean.slice(0, 179) + '…' : clean
@@ -95,7 +101,9 @@ export function initUI(ctx) {
     bubbleTimer = setTimeout(() => {
       bubble.style.opacity = '0'
       bubble.style.transform = 'translate(-50%,-100%) scale(.8)'
+      bubblePriority = 0   // 播完回落，低级气泡恢复可播
     }, holdMs)
+    return true
   }
   ctx.showBubble = showBubble
   ctx.getLastBubbleAt = () => lastBubbleAt

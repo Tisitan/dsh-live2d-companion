@@ -77,6 +77,26 @@ async function main() {
     const config = await fetch(server.origin + '/live2d/config')
     assert.equal(config.status, 200)
 
+    const gameList = await fetch(server.origin + '/live2d/game/list')
+    assert.deepEqual(await gameList.json(), { games: [{ id: 'gomoku', name: '五子棋', available: true }] })
+    const newGame = await fetch(server.origin + '/live2d/game/new', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'offline', difficulty: 'normal', userTitle: '主人' }),
+    })
+    assert.equal(newGame.status, 200)
+    const openedGame = await newGame.json()
+    assert.equal(openedGame.status, 'playing')
+    assert.equal(openedGame.mode, 'offline')
+    const firstMove = await fetch(server.origin + '/live2d/game/move', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ x: 7, y: 7 }),
+    })
+    assert.equal(firstMove.status, 200)
+    const movedGame = await firstMove.json()
+    assert.equal(movedGame.moves.length, 2)
+    assert.deepEqual(movedGame.moves[0], { x: 7, y: 7, side: 1 })
+    assert.equal(movedGame.moves[1].side, 2)
+
     const denied = await fetch(server.origin + '/live2d/state', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ state: 'working' }),
     })

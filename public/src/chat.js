@@ -5,7 +5,7 @@ export function initChat(ctx) {
 
   const style = document.createElement('style')
   style.textContent = `
-    #l2d-chat-toggle{position:fixed;left:6px;top:6px;z-index:2147483645;width:30px;height:30px;border:1px solid rgba(178,211,255,.72);border-radius:50%;background:rgba(15,34,67,.82);color:#eaf4ff;font:18px/28px "Segoe UI",sans-serif;cursor:pointer;box-shadow:0 3px 14px rgba(0,10,35,.28);backdrop-filter:blur(8px)}
+    #l2d-chat-toggle{position:fixed;left:6px;top:6px;z-index:2147483645;display:grid;place-items:center;width:34px;height:34px;box-sizing:border-box;padding:0;border:1.5px solid rgba(178,211,255,.72);border-radius:50%;appearance:none;background:rgba(15,34,67,.82);color:#eaf4ff;font:18px/1 "Segoe UI Emoji","Segoe UI Symbol",sans-serif;text-align:center;cursor:pointer;box-shadow:0 3px 14px rgba(0,10,35,.28);backdrop-filter:blur(8px)}
     #l2d-chat-toggle:hover{background:rgba(35,70,120,.92)}
     #l2d-chat-panel{position:fixed;z-index:2147483646;left:8px;top:8px;width:min(360px,calc(100vw - 16px));box-sizing:border-box;padding:10px;border:1px solid rgba(177,211,255,.75);border-radius:14px;background:rgba(10,25,52,.94);box-shadow:0 8px 28px rgba(0,8,30,.42);color:#edf6ff;font:12px/1.4 "Segoe UI","Microsoft YaHei",sans-serif;backdrop-filter:blur(12px)}
     #l2d-chat-panel[hidden]{display:none}
@@ -41,15 +41,16 @@ export function initChat(ctx) {
   const status = panel.querySelector('#l2d-chat-status')
   const close = panel.querySelector('#l2d-chat-close')
 
-  // overlay 桌宠的窗口固定铺满屏幕，模型才是会移动的主体。聊天入口锚定
-  // 模型右上方（设置按钮下方），输入框则贴近模型并自动翻到有空间的一侧。
+  // overlay 桌宠的窗口固定铺满屏幕，模型才是会移动的主体。聊天入口与
+  // panel.js 的 🔒❓⚙️🎮 共用右侧竖列，固定占第 5 格；输入框贴近模型并自动翻边。
   let followX = null
   let followY = null
   function followChat() {
     const b = ctx.modelBounds?.()
     if (b && b.width > 0) {
-      const targetX = Math.min(Math.max(b.x + b.width + 10, 6), Math.max(6, window.innerWidth - 36))
-      const targetY = Math.min(Math.max(b.y + 44, 6), Math.max(6, window.innerHeight - 36))
+      const targetX = Math.min(Math.max(b.x + b.width + 8, 6), Math.max(6, window.innerWidth - 42))
+      const columnTop = Math.min(Math.max(b.y + 4, 6), Math.max(6, window.innerHeight - 216))
+      const targetY = columnTop + 160
       if (followX === null) { followX = targetX; followY = targetY }
       followX += (targetX - followX) * 0.3
       followY += (targetY - followY) * 0.3
@@ -110,7 +111,7 @@ export function initChat(ctx) {
     send.disabled = true
     closeChat()
     ctx.enter('thinking')
-    ctx.showBubble('唔......Nori想一下。', 90000)
+    ctx.showBubble('唔......Nori想一下。', 90000, 1)
     try {
       const response = await fetch(BASE + '/chat', {
         method: 'POST',
@@ -122,7 +123,7 @@ export function initChat(ctx) {
       input.value = ''
       ctx.enter('done')
       const holdMs = Math.max(6500, Math.min(15000, String(data.reply).length * 85))
-      ctx.showBubble(data.reply, holdMs)
+      ctx.showBubble(data.reply, holdMs, 2)
     } catch (error) {
       ctx.enter('error')
       const text = error.status === 503
@@ -130,7 +131,7 @@ export function initChat(ctx) {
         : error.status === 504
           ? '等了好久也没收到回答......再问Nori一次吧。'
           : '唔......这次没能接上OpenCode。'
-      ctx.showBubble(text, 8500)
+      ctx.showBubble(text, 8500, 2)
     } finally {
       input.disabled = false
       send.disabled = false

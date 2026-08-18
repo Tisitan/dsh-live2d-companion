@@ -6,8 +6,9 @@
  * 鼠标悬停模型区域时重新出现（面板打开时保持显示）。
  */
 
-import { BASE, PREVIEW, BRIDGE, loadQuips, store } from './config.js'
+import { BASE, PREVIEW, BRIDGE, STANDALONE, loadQuips, store } from './config.js'
 import { resolveBinding, extractInventory } from './binding.js'
+import { attachGame } from './game.js'
 
 /** 面板宽度上限（px）；窄窗口（如桌宠）下由 CSS min() 收缩，钳制用实测宽度。 */
 const PANEL_WIDTH = 280
@@ -22,7 +23,7 @@ export function initPanel(ctx) {
 
   const style = document.createElement('style')
   style.textContent = `
-#l2d-model-toggle, #l2d-pin-toggle, #l2d-help-toggle {
+#l2d-model-toggle, #l2d-pin-toggle, #l2d-help-toggle, #l2d-game-toggle {
   position: absolute; top: 6px; right: 6px; z-index: 20;
   width: 34px; height: 34px; padding: 0; border-radius: 50%;
   border: 1.5px solid rgba(255,255,255,.6);
@@ -32,15 +33,18 @@ export function initPanel(ctx) {
   box-shadow: 0 2px 10px rgba(0,0,0,.14);
   opacity: .82; transition: opacity .25s ease, border-color .3s ease, background .2s ease;
 }
-#l2d-model-toggle:hover, #l2d-pin-toggle:hover, #l2d-help-toggle:hover {
+#l2d-model-toggle:hover, #l2d-pin-toggle:hover, #l2d-help-toggle:hover, #l2d-game-toggle:hover {
   opacity: 1; background: rgba(255,255,255,.62); border-color: rgba(255,255,255,.85);
 }
-#l2d-model-toggle.l2d-hidden, #l2d-pin-toggle.l2d-hidden, #l2d-help-toggle.l2d-hidden { opacity: 0; pointer-events: none; }
-/* 静态排布（网页挂件用）：三钮共用 right:6 会叠罗汉；桌宠由 followButtons 内联 left 覆盖此处 */
-#l2d-pin-toggle { right: 46px; }
-#l2d-help-toggle { right: 86px; }
-/* 挂件无锁钮（display:none）：问号顶到锁位，不留空洞 */
-body.l2d-no-pin #l2d-help-toggle { right: 46px; }
+#l2d-model-toggle.l2d-hidden, #l2d-pin-toggle.l2d-hidden, #l2d-help-toggle.l2d-hidden, #l2d-game-toggle.l2d-hidden { opacity: 0; pointer-events: none; }
+/* 静态排布（网页挂件用）：竖列自上而下 🔒❓⚙️🎮；桌宠由 followButtons 内联 left/top 覆盖此处 */
+#l2d-help-toggle { top: 46px; }
+#l2d-model-toggle { top: 86px; }
+#l2d-game-toggle { top: 126px; }
+/* 挂件无锁钮（display:none）：下方三钮逐位顶上，不留空洞 */
+body.l2d-no-pin #l2d-help-toggle { top: 6px; }
+body.l2d-no-pin #l2d-model-toggle { top: 46px; }
+body.l2d-no-pin #l2d-game-toggle { top: 86px; }
 /* 锁钮状态=边框呼吸灯：绿呼吸=自动穿透中 / 素玻璃=已解锁 / 蓝呼吸=手动锁定 */
 @keyframes l2d-breathe {
   0%, 100% { box-shadow: 0 2px 10px rgba(0,0,0,.14), 0 0 3px 0 var(--glow, transparent); }
@@ -397,19 +401,33 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   document.head.appendChild(style)
   document.body.classList.add('l2d-roomy')   // 全端统一扩容排版：查看器/卡片均为全视口浮层，空间同样充裕
 
-  // ── 悬浮入口：挂件/桌宠右上角，静置自动隐藏 ──
+  // ── 悬浮入口：挂件/桌宠右上角，静置自动隐藏。图标全 emoji 统一风格 ──
   const toggle = document.createElement('button')
   toggle.id = 'l2d-model-toggle'
   toggle.type = 'button'
   toggle.title = '设置'
   toggle.setAttribute('aria-label', '设置')
-  toggle.textContent = '⚙'
+  toggle.textContent = '⚙️'
   toggle.addEventListener('pointerdown', (e) => e.stopPropagation())
   toggle.addEventListener('pointerup', (e) => e.stopPropagation())
   toggle.addEventListener('click', (e) => { e.stopPropagation(); toggleMenu() })
   toggle.addEventListener('dblclick', (e) => e.stopPropagation())
   toggle.addEventListener('wheel', (e) => e.stopPropagation())
   ctx.box.appendChild(toggle)
+
+  // ── 游戏钮：⚙ 左边的独立功能入口，直达对局卡 ──
+  const gameToggle = document.createElement('button')
+  gameToggle.id = 'l2d-game-toggle'
+  gameToggle.type = 'button'
+  gameToggle.title = '五子棋对局'
+  gameToggle.setAttribute('aria-label', '五子棋对局')
+  gameToggle.textContent = '🎮'
+  gameToggle.addEventListener('pointerdown', (e) => e.stopPropagation())
+  gameToggle.addEventListener('pointerup', (e) => e.stopPropagation())
+  gameToggle.addEventListener('click', (e) => { e.stopPropagation(); ctx.openGame?.() })
+  gameToggle.addEventListener('dblclick', (e) => e.stopPropagation())
+  gameToggle.addEventListener('wheel', (e) => e.stopPropagation())
+  ctx.box.appendChild(gameToggle)
 
   // ── 穿透钮：⚙ 左边的独立开关。平时自动（路过穿透、停留即互动），
   // 按下=强制穿透（模型不响应鼠标，UI 保留可点），再按恢复自动。
@@ -436,7 +454,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     syncPinBtn()
     if (ctx.pinned) pinToggle.classList.remove('l2d-hidden')   // 锁定时必须现身——它是「不响应」的常驻告示
     scheduleHide()
-    ctx.showBubble?.(ctx.pinned ? '锁定：咱不挡路啦' : '解锁：恢复自动', 1800)
+    ctx.showBubble?.(ctx.pinned ? '锁定：咱不挡路啦' : '解锁：恢复自动', 1800, 2)
   })
   pinToggle.addEventListener('dblclick', (e) => e.stopPropagation())
   pinToggle.addEventListener('wheel', (e) => e.stopPropagation())
@@ -453,7 +471,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   helpToggle.type = 'button'
   helpToggle.title = '基本操作'
   helpToggle.setAttribute('aria-label', '基本操作')
-  helpToggle.textContent = '?'
+  helpToggle.textContent = '❓'
   helpToggle.addEventListener('pointerdown', (e) => e.stopPropagation())
   helpToggle.addEventListener('pointerup', (e) => e.stopPropagation())
   helpToggle.addEventListener('click', (e) => { e.stopPropagation(); toggleHelp() })
@@ -540,9 +558,11 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     click: '点击反应', pat: '摸头', drag: '拖拽', greet: '见面问候',
     greet_morning: '早安问候', greet_night: '深夜问候',
   }
-  // ── 桌宠 UI 跟随：桌宠窗铺满全屏（overlay），⚙/🔒/? 按钮锚定模型右侧而非窗口角落 ──
+  // ── 桌宠 UI 跟随：桌宠窗铺满全屏（overlay），🔒/❓/⚙️/🎮 按钮锚定模型右侧。
+  // 独立聊天按钮占用同列第 5 格，因此整列按 5×40px 钳制，靠近屏幕底边也不会相互重叠。──
   if (BRIDGE) {
     toggle.style.right = 'auto'
+    gameToggle.style.right = 'auto'
     pinToggle.style.right = 'auto'
     helpToggle.style.right = 'auto'
     let fx = null
@@ -551,16 +571,19 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
       const b = ctx.modelBounds?.()
       if (b && b.width > 0) {
         const tx = Math.min(Math.max(b.x + b.width + 8, 6), Math.max(6, window.innerWidth - 42))
-        const ty = Math.min(Math.max(b.y + 4, 6), Math.max(6, window.innerHeight - 48))
+        // 竖列 5×40px（🔒❓⚙️🎮💬 自上而下）：锚点钳制保证整列不出底边
+        const ty = Math.min(Math.max(b.y + 4, 6), Math.max(6, window.innerHeight - 216))
         if (fx === null) { fx = tx; fy = ty }
         fx += (tx - fx) * 0.3
         fy += (ty - fy) * 0.3
-        toggle.style.left = Math.round(fx) + 'px'
-        toggle.style.top = Math.round(fy) + 'px'
-        pinToggle.style.left = Math.round(fx - 40) + 'px'
+        pinToggle.style.left = Math.round(fx) + 'px'
         pinToggle.style.top = Math.round(fy) + 'px'
-        helpToggle.style.left = Math.round(fx - 80) + 'px'
-        helpToggle.style.top = Math.round(fy) + 'px'
+        helpToggle.style.left = Math.round(fx) + 'px'
+        helpToggle.style.top = Math.round(fy + 40) + 'px'
+        toggle.style.left = Math.round(fx) + 'px'
+        toggle.style.top = Math.round(fy + 80) + 'px'
+        gameToggle.style.left = Math.round(fx) + 'px'
+        gameToggle.style.top = Math.round(fy + 120) + 'px'
       }
       requestAnimationFrame(followButtons)
     }
@@ -751,7 +774,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
       buildQuipsOptions()
       renderQuipsPool()
       setQuipsStatus(`已保存到「${name}」并生效`)
-      ctx.showBubble?.('台词更新好啦~', 2500)
+      ctx.showBubble?.('台词更新好啦~', 2500, 2)
     } catch {
       setQuipsStatus('保存失败，请重试', true)
     }
@@ -937,14 +960,16 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     fpsSelect.addEventListener('change', () => {
       ctx.setFpsMode(fpsSelect.value)
       const label = fpsSelect.selectedOptions[0]?.textContent ?? fpsSelect.value
-      ctx.showBubble?.(`帧率已切换：${label}`, 1800)
+      ctx.showBubble?.(`帧率已切换：${label}`, 1800, 2)
     })
   }
 
   // 显示模式：读宿主 config 回填；切换写 cordis.patch.yml 触发补丁层热重载。
   // 桌宠增减随重挂载自动发生；挂件注入变化要等主人刷新 DSH 页面才可见。
   const modeSelect = panel.querySelector('.l2d-mode-select')
+  if (STANDALONE) panel.querySelector('.l2d-mode-row').hidden = true
   async function refreshMode() {
+    if (STANDALONE) return
     try {
       const r = await fetch(BASE + '/config', { cache: 'no-store' })
       const d = await r.json().catch(() => ({}))
@@ -952,6 +977,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     } catch { }
   }
   modeSelect.addEventListener('change', async () => {
+    if (STANDALONE) return
     const mode = modeSelect.value
     setStatus('正在切换显示模式…')
     try {
@@ -979,7 +1005,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     softRow.hidden = false
     BRIDGE.getSoft().then((v) => { softCheck.checked = !!v }).catch(() => { })
     softCheck.addEventListener('change', () => {
-      ctx.showBubble?.(softCheck.checked ? '切换 CPU 渲染，咱马上回来…' : '切回 GPU 渲染，咱马上回来…', 1500)
+      ctx.showBubble?.(softCheck.checked ? '切换 CPU 渲染，咱马上回来…' : '切回 GPU 渲染，咱马上回来…', 1500, 2)
       setTimeout(() => BRIDGE.setSoft(softCheck.checked), 800)
     })
   }
@@ -989,7 +1015,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     quitBtn.addEventListener('click', () => {
       const now = Date.now()
       if (armedAt !== 0 && now - armedAt < 3000) {
-        ctx.showBubble?.('晚安主人，咱先退下啦…', 1500)
+        ctx.showBubble?.('晚安主人，咱先退下啦…', 1500, 2)
         setTimeout(() => BRIDGE.quit(), 900)
         return
       }
@@ -1303,6 +1329,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   function showToggle() {
     clearTimeout(hideTimer)
     toggle.classList.remove('l2d-hidden')
+    gameToggle.classList.remove('l2d-hidden')
     pinToggle.classList.remove('l2d-hidden')
     helpToggle.classList.remove('l2d-hidden')
   }
@@ -1314,6 +1341,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
         menuOpen = false
         menu.classList.remove('open')
         toggle.classList.add('l2d-hidden')
+        gameToggle.classList.add('l2d-hidden')
         helpToggle.classList.add('l2d-hidden')
         pinToggle.classList.add('l2d-hidden')
       }, 1200)
@@ -1321,6 +1349,8 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   }
   showToggle()
   scheduleHide()
+  // 五子棋对局卡：挂载即就绪（ctx.openGame 由 🎮 独立功能钮调用）
+  attachGame(ctx)
   // 挂件：box 即小窗，指针进出直接驱动显隐。
   // 桌宠：box 铺满全屏，任何鼠标移动都会触发——显隐改由 interact 光标轮询
   // 按「指针是否靠近模型」驱动（迁移沿触发），路过屏幕别处不惊动按钮。

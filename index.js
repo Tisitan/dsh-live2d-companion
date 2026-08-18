@@ -4,9 +4,10 @@ import { mkdir, readdir, lstat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, normalize, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
+import { createGomoku, createLocalAI, BLACK, WHITE } from './game-engine.mjs'
 
 export const name = 'dsh-live2d-companion'
-export const inject = ['webServer']
+export const inject = ['webServer', 'agentPresets', 'agentLoop', 'agentDefaultModel', 'settings', 'llm']
 
 const PUBLIC_DIR = normalize(fileURLToPath(new URL('./public', import.meta.url)))
 const MODEL_DIR = join(PUBLIC_DIR, 'model')
@@ -610,6 +611,366 @@ export function apply(ctx, config) {
       })
     },
   }))
+
+  // ══ 五子棋对局：玩家(黑) vs 玩家自己的 agent(白)。引擎本地裁决，agent 通过工具落子 ══
+  // 架构要点（探针验证过的原语）：
+  // - 路由：ctx.agentDefaultModel.currentSelection() 继承用户 GUI 默认模型，换模型自动跟随
+  // - 预设：玩家任选（meta.agentPreset 机制），挂载失败裸跑兜底；人格即对手
+  // - 工具：手搓 ToolDefinition（等价 defineTool 产物）注册进 agent 作用域，
+  //   工具处理器即引擎——非法落子返回 ok:false，agent loop 同回合自纠，无需重试脚手架
+  // - 解说：工具调用后模型的收尾文本，从 assistant/message 事件提取
+  /** 当前对局（单局制）。ref 间接层让工具处理器永远作用于当前局。 */
+  const gameRef = { current: null }
+  // game = { engine, handle, agent, presetId, busy, commentary: [{from, text}], createdAt }
+
+  function gameStateJson() {
+    const g = gameRef.current
+    if (!g) return { status: 'idle' }
+    return {
+      status: g.engine.winner !== 0 ? 'over' : 'playing',
+      size: g.engine.size,
+      board: g.engine.matrix(),
+      moves: g.engine.moves,
+      winner: g.engine.winner,   // 1=玩家胜 2=agent胜 -1=平局
+      busy: g.busy,
+      mode: g.mode,
+      difficulty: g.difficulty,
+      presetId: g.presetId,
+      commentary: g.commentary.slice(-20),
+      createdAt: g.createdAt,
+    }
+  }
+
+  async function disposeGame() {
+    const g = gameRef.current
+    gameRef.current = null
+    if (g) { try { await g.handle?.dispose() } catch { } }
+  }
+  // 插件重挂载/卸载时拆除对局 agent，防孤儿会话
+  ctx.effect(() => () => { void disposeGame() })
+
+  /** 对局工具：闭包咬住 gameRef，handler 即裁判。 */
+  function gomokuTools() {
+    const boardTool = {
+      name: 'get_board',
+      description: '查看五子棋当前局面（文本棋盘：B=黑=对手，W=白=你）与最近几手。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      output: {
+        schema: { type: 'object', properties: { board: { type: 'string' }, moves: { type: 'integer' } }, additionalProperties: true },
+        render: (args, value) => [{ type: 'text', text: value.board }],
+      },
+      async execute() {
+        const g = gameRef.current
+        if (!g) return { board: '对局已结束', moves: 0 }
+        return { board: g.engine.renderText(6), moves: g.engine.moveCount }
+      },
+    }
+    const stoneTool = {
+      name: 'place_stone',
+      description: '在五子棋棋盘落白子（你的棋子）。x=列 y=行，0 起。落子前应先 get_board 观察局面。',
+      parameters: {
+        type: 'object',
+        properties: {
+          x: { type: 'integer', description: '列坐标 0~14' },
+          y: { type: 'integer', description: '行坐标 0~14' },
+        },
+        required: ['x', 'y'],
+        additionalProperties: false,
+      },
+      output: {
+        schema: { type: 'object', properties: { ok: { type: 'boolean' }, reason: { type: 'string' }, win: { type: 'boolean' }, draw: { type: 'boolean' }, board: { type: 'string' } }, additionalProperties: true },
+        render: (args, value) => [{ type: 'text', text: value.ok ? `落子 (${args.x},${args.y}) 成功${value.win ? '，你赢了！' : ''}` : `落子失败：${value.reason}` }],
+      },
+      async execute(args) {
+        const g = gameRef.current
+        if (!g) return { ok: false, reason: '对局已结束' }
+        const r = g.engine.place(args.x, args.y, WHITE)
+        if (!r.ok) return { ok: false, reason: r.reason }
+        return { ok: true, win: r.win, draw: r.draw, board: g.engine.renderText(4) }
+      },
+    }
+    return [boardTool, stoneTool]
+  }
+
+  /** 规则简报按称呼构造（称呼=玩家在游戏中心设置的头衔，落子通告与解说同步使用）。 */
+  const gameRulesBrief = (title) => `你正在和${title}下五子棋（15x15 棋盘）。${title}执黑先手，你执白后手。`
+    + `对局中称呼对方为「${title}」。`
+    + '规则：轮流落子，横/竖/斜任意方向先连成 5 子者胜。'
+    + '每回合你的行动方式：先调用 get_board 查看局面，思考后调用 place_stone(x, y) 落子（坐标 0~14），'
+    + '最后用一句话点评战局（不超过 25 字，语气按你自己的人格）。'
+    + '若 place_stone 返回 ok:false 说明该位置不合法，换个位置重试。'
+
+  /** 称呼消毒：1~12 个文字/数字/常见符号，拒绝控制字符与提示词注入面。 */
+  const sanitizeTitle = (raw) => (typeof raw === 'string' && /^[\p{L}\p{N} _\-~·]{1,12}$/u.test(raw.trim())) ? raw.trim() : '主人'
+
+  /** 在线难度提示注入（附加在首回合简报后）。 */
+  const DIFFICULTY_LINES = {
+    easy: '对局风格：你是温柔的陪练，下手轻一些，不必每步都选最强着，让主人玩得开心最重要。',
+    normal: '',
+    hard: '对局风格：你全力以赴争胜，每一步都选你认为最强的着法，毫不留情。',
+  }
+
+  /** 离线本地解说（糯糯亲自下场的场地音，随情境抽取）。 */
+  const OFFLINE_QUIPS = {
+    normal: ['嗯……就这里！', '这步如何？', '轮到主人啦~', '咱想想……有了！', '这里这里！'],
+    block: ['嘿嘿，堵上咯~', '此路不通！', '主人这手咱可看见了', '想连四？没门~'],
+    win: ['赢啦赢啦！主人承让承让~', '五子连珠！咱厉害吧~'],
+  }
+  const pickQuip = (arr) => arr[Math.floor(Math.random() * arr.length)]
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/live2d/game/list',
+    handler(req, res) {
+      // 游戏目录：游戏中心卡片的统一入口数据源。新游戏在此登记即可出现在 hub 里。
+      sendJson(res, 200, { games: [{ id: 'gomoku', name: '五子棋', available: true }] })
+    },
+  }))
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/live2d/game/models',
+    async handler(req, res) {
+      const sel = ctx.agentDefaultModel.currentSelection()
+      const list = []
+      // 首选：适配器实时发现的网关模型目录（GUI 模型选择器的数据源）
+      try {
+        for (const m of await ctx.llm.listModels(sel.provider)) {
+          if (m && typeof m.id === 'string') list.push({ id: m.id, name: typeof m.name === 'string' ? m.name : m.id })
+        }
+      } catch { }
+      // 兜底：settings 的 models 命名空间（部分部署不注册该命名空间）
+      if (list.length === 0) {
+        try {
+          const raw = ctx.settings?.get?.(/** @type {any} */ ('models'))
+          if (Array.isArray(raw)) {
+            for (const m of raw) {
+              if (m && typeof m.id === 'string') list.push({ id: m.id, name: typeof m.name === 'string' ? m.name : m.id })
+            }
+          }
+        } catch { }
+      }
+      if (!list.some((m) => m.id === sel.model)) list.unshift({ id: sel.model, name: sel.model })
+      sendJson(res, 200, { defaultModel: sel.model, provider: sel.provider, models: list })
+    },
+  }))
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/live2d/game/presets',
+    async handler(req, res) {
+      try {
+        const presets = await ctx.agentPresets.list()
+        sendJson(res, 200, {
+          presets: presets.map((p) => ({ id: p.id, name: p.metadata?.name ?? p.id })),
+          defaultId: ctx.agentPresets.defaultId,
+        })
+      } catch (error) {
+        sendJson(res, 500, { error: String(error) })
+      }
+    },
+  }))
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/live2d/game/state',
+    handler(req, res) {
+      sendJson(res, 200, gameStateJson())
+    },
+  }))
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/live2d/game/new',
+    handler(req, res) {
+      if (req.method !== 'POST') { res.writeHead(405, { allow: 'POST' }); res.end('method not allowed'); return }
+      if (!isLocalReq(req)) { sendJson(res, 403, { error: 'this route is local-only' }); return }
+      readJsonBody(req).then(async (parsed) => {
+        try {
+          await disposeGame()
+          const engine = createGomoku(15)
+          const mode = parsed.mode === 'offline' ? 'offline' : 'online'
+          const difficulty = ['easy', 'normal', 'hard'].includes(parsed.difficulty) ? parsed.difficulty : 'normal'
+          const userTitle = sanitizeTitle(parsed.userTitle)
+          // 离线模式：糯糯亲自下场（本地启发式 AI），不建 agent，秒回不耗 token
+          if (mode === 'offline') {
+            gameRef.current = {
+              engine,
+              handle: null,
+              agent: null,
+              ai: createLocalAI(difficulty),
+              mode,
+              difficulty,
+              userTitle,
+              presetId: null,
+              busy: false,
+              commentary: [{ from: 'system', text: `对局开始（咱亲自下场·${{ easy: '简单', normal: '普通', hard: '困难' }[difficulty]}）：你执黑先手。` }],
+              createdAt: new Date().toISOString(),
+            }
+            sendJson(res, 200, gameStateJson())
+            return
+          }
+          const sel = ctx.agentDefaultModel.currentSelection()
+          // 模型自选：前端从 /game/models 清单选择；缺省跟随 GUI 默认。宽松校验防注入。
+          const chosenModel = typeof parsed.model === 'string' && /^[\w.:-]{1,80}$/.test(parsed.model) ? parsed.model : sel.model
+          const presetId = typeof parsed.preset === 'string' && parsed.preset !== '' ? parsed.preset : undefined
+          // 极速模式：小游戏无需长考，关思考链换取秒回（官方 agent/request 瀑布注入 reasoningEffort:'off'）
+          const noThink = parsed.reasoning === 'off'
+          const sessionId = /** @type {any} */ (`l2d-gomoku-${Date.now()}`)
+          const handle = await ctx.agentLoop.createAgent(ctx, {
+            sessionId,
+            meta: { cwd: 'C:\\Users\\Tisitan\\Desktop' },
+            agentOptions: /** @type {any} */ ({ provider: sel.provider, model: chosenModel }),
+            setup: async (agentCtx) => {
+              // 预设=人格：挂载失败裸跑兜底（对手变通用语气，游戏不受影响）
+              try {
+                await ctx.agentPresets.mount(agentCtx, presetId)
+              } catch (e) {
+                ctx.logger.warn(`live2d game: preset mount failed, bare agent fallback: ${String(e).slice(0, 200)}`)
+              }
+              // 瘦身：deny 全局 MCP 工具花名册（裁剪 prompt 体积）；名单失效时静默跳过不炸 setup
+              try {
+                const roster = agentCtx.tools.schemas().map((s) => s.name)
+                if (roster.length > 0) agentCtx.tools.restrict({ deny: roster })
+              } catch { }
+              for (const tool of gomokuTools()) agentCtx.tools.register(tool)
+              if (noThink) {
+                // 能力闸门缓存成 Promise：同一 agent 的多次请求只查一次模型元数据。
+                // 模型不支持 off 档则原样放行（resolveCallFor 对未知档位直接抛错，必须先验证）。
+                let offCapable = null
+                agentCtx.on('agent/request', /** @type {any} */ (async (_payload, next) => {
+                  const resolved = await next()
+                  try {
+                    offCapable ??= ctx.llm.resolveModelInfo(resolved.provider, resolved.model)
+                      .then((info) => (info.reasoning?.efforts ?? []).some((e) => e.id === 'off'))
+                      .catch(() => false)
+                    if (await offCapable) return { ...resolved, reasoningEffort: 'off' }
+                  } catch { }
+                  return resolved
+                }))
+              }
+            },
+          })
+          gameRef.current = {
+            engine,
+            handle,
+            agent: handle.agent,
+            ai: null,
+            mode,
+            difficulty,
+            userTitle,
+            presetId: presetId ?? ctx.agentPresets.defaultId,
+            busy: false,
+            commentary: [{ from: 'system', text: '对局开始：你执黑先手，点击棋盘落子。' }],
+            createdAt: new Date().toISOString(),
+          }
+          sendJson(res, 200, gameStateJson())
+        } catch (error) {
+          sendJson(res, 500, { error: `开局失败：${String(error)}` })
+        }
+      }, error => {
+        sendJson(res, 400, { error: `invalid request body: ${String(error)}` })
+      })
+    },
+  }))
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/live2d/game/move',
+    handler(req, res) {
+      if (req.method !== 'POST') { res.writeHead(405, { allow: 'POST' }); res.end('method not allowed'); return }
+      if (!isLocalReq(req)) { sendJson(res, 403, { error: 'this route is local-only' }); return }
+      readJsonBody(req).then(async (parsed) => {
+        const g = gameRef.current
+        try {
+          if (!g) { sendJson(res, 409, { error: '尚未开局' }); return }
+          if (g.busy) { sendJson(res, 409, { error: '思考中，请稍候' }); return }
+          const { x, y } = parsed
+          const placed = g.engine.place(x, y, BLACK)
+          if (!placed.ok) { sendJson(res, 400, { error: placed.reason }); return }
+          if (placed.win || placed.draw) {
+            g.commentary.push({ from: 'system', text: placed.win ? '你赢了！五子连珠，漂亮！' : '棋盘已满，平局收场。' })
+            sendJson(res, 200, gameStateJson())
+            return
+          }
+          // 离线回合：本地 AI 同步落子，秒回；解说走本地池（糯糯场地音，称呼随设置替换）
+          if (g.mode === 'offline') {
+            const mv = g.ai.pickMove(g.engine)
+            const aiPlaced = g.engine.place(mv.x, mv.y, WHITE)
+            g.lastAgentMove = { x: mv.x, y: mv.y }
+            if (aiPlaced.ok) {
+              const raw = aiPlaced.win ? pickQuip(OFFLINE_QUIPS.win) : mv.blocked ? pickQuip(OFFLINE_QUIPS.block) : pickQuip(OFFLINE_QUIPS.normal)
+              g.commentary.push({ from: 'agent', text: raw.replaceAll('主人', g.userTitle ?? '主人') })
+            }
+            if (g.engine.winner === WHITE) g.commentary.push({ from: 'system', text: '白棋五子连珠，对局结束。' })
+            else if (g.engine.winner === -1) g.commentary.push({ from: 'system', text: '棋盘已满，平局收场。' })
+            sendJson(res, 200, { ...gameStateJson(), agentMove: g.lastAgentMove })
+            return
+          }
+          // agent 回合：每回合无状态重发指令+落点；首手附完整规则简报
+          g.busy = true
+          const seqBefore = g.agent.session.seq
+          const isFirst = g.engine.moveCount === 1
+          const diffLine = DIFFICULTY_LINES[g.difficulty] ?? ''
+          const brief = isFirst ? gameRulesBrief(g.userTitle ?? '主人') + (diffLine ? diffLine : '') + '\n' : ''
+          g.agent.followup(/** @type {any} */ ({
+            id: `game-${Date.now()}`,
+            role: 'user',
+            content: [{ type: 'text', text: `${brief}${g.userTitle ?? '主人'}(黑)落在 (${x},${y})。轮到你(白)了：先 get_board 看局面，再 place_stone 落子。` }],
+            source: { kind: 'plugin', plugin: 'dsh-live2d-companion' },
+          }))
+          try {
+            await Promise.race([
+              g.agent.whenIdle(),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('对手思考超时(120s)')), 120000)),
+            ])
+          } catch (idleError) {
+            g.commentary.push({ from: 'system', text: `对手走神了：${String(idleError).slice(0, 80)}` })
+          }
+          // 从本回合事件提取：agent 落子（工具已在 execute 中应用）+ 解说文本
+          const turnEvents = g.agent.session.events.slice(seqBefore)
+          const stoneCalls = turnEvents.filter((e) => e.type === 'tool/call' && e.data?.name === 'place_stone')
+          if (stoneCalls.length > 0) {
+            const last = stoneCalls[stoneCalls.length - 1]
+            try {
+              const args = JSON.parse(last.data.arguments)
+              g.lastAgentMove = { x: args.x, y: args.y }
+            } catch { }
+          } else if (g.engine.winner === 0) {
+            // agent 没落子（走神/超时）→ 本地随机代打，对局不卡死
+            const empty = []
+            for (let cy = 0; cy < g.engine.size; cy++) for (let cx = 0; cx < g.engine.size; cx++) {
+              if (g.engine.at(cx, cy) === 0) empty.push([cx, cy])
+            }
+            if (empty.length > 0) {
+              const [rx, ry] = empty[Math.floor(Math.random() * empty.length)]
+              g.engine.place(rx, ry, WHITE)
+              g.lastAgentMove = { x: rx, y: ry }
+              g.commentary.push({ from: 'system', text: '（对手没反应过来，本地代下一手）' })
+            }
+          }
+          for (const e of turnEvents) {
+            if (e.type === 'assistant/message') {
+              const text = (e.data?.message?.content ?? [])
+                .filter((b) => b.type === 'text').map((b) => b.text).join('').trim()
+              if (text) g.commentary.push({ from: 'agent', text })
+            }
+          }
+          if (g.engine.winner === WHITE) g.commentary.push({ from: 'system', text: '对手五子连珠，这局它拿下了。' })
+          else if (g.engine.winner === -1) g.commentary.push({ from: 'system', text: '棋盘已满，平局收场。' })
+          g.busy = false   // 必须在 sendJson 前清：响应即回合终态，前端按 busy 渲染思考态
+          sendJson(res, 200, { ...gameStateJson(), agentMove: g.lastAgentMove ?? null })
+        } catch (error) {
+          sendJson(res, 500, { error: `回合失败：${String(error)}` })
+        } finally {
+          if (g) g.busy = false
+        }
+      }, error => {
+        sendJson(res, 400, { error: `invalid request body: ${String(error)}` })
+      })
+    },
+  }))
+
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
