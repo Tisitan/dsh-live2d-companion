@@ -7,4 +7,7 @@ contextBridge.exposeInMainWorld('__petBridge', {
   quit: () => ipcRenderer.send('l2d-quit'),
   getSoft: () => ipcRenderer.invoke('l2d-soft-get'),
   setSoft: (on) => ipcRenderer.send('l2d-soft-set', on),
+  openGame: (gameId = 'gomoku') => ipcRenderer.send('l2d-game-open', gameId),
+  onCardArea: (cb) => ipcRenderer.on('l2d-game-area', (_e, bounds) => cb(bounds)),
+  getCardArea: () => ipcRenderer.invoke('l2d-game-bounds'),
 })

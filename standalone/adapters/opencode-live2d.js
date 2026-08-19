@@ -66,6 +66,11 @@ function replyText(result) {
     .map(part => part.text.trim()).filter(Boolean).join('\n').trim().slice(0, 1000)
 }
 
+function invalidGameReply(value) {
+  const text = String(value || '')
+  return /最大步骤|步骤数已达到|剩余任务|当前工作|工作总结|推荐的后续|等待.*指令|无法继续操作|maximum[_\s-]*(?:number[_\s-]*of[_\s-]*)?steps?|steps?[_\s-]*(?:limit[_\s-]*)?reached|remaining[_\s-]*tasks?|summari[sz](?:e|ing|ation).*(?:work|tasks?)/i.test(text)
+}
+
 function toolText(name) {
   const value = String(name || '').toLowerCase()
   if (value === 'bash' || value.includes('shell')) return 'Nori正在运行命令哦。'
@@ -77,6 +82,7 @@ function toolText(name) {
 export const Live2DCompanion = async ({ client } = {}) => {
   const lastText = new Map()
   let noriSessionId = ''
+  let gameSessionId = ''
   let polling = false
 
   async function sendChatReply(id, payload) {
@@ -88,22 +94,32 @@ export const Live2DCompanion = async ({ client } = {}) => {
   }
 
   async function answerChat(job) {
+    const gameChannel = job.channel === 'game'
     try {
       if (!client?.session) throw new Error('OpenCode client is unavailable')
-      if (!noriSessionId) {
-        const created = await client.session.create({ body: { title: 'Nori 桌宠聊天' } })
-        noriSessionId = String(responseData(created)?.id || '')
-        if (!noriSessionId) throw new Error('could not create Nori session')
+      let targetSession = gameChannel ? gameSessionId : noriSessionId
+      if (!targetSession) {
+        const created = await client.session.create({
+          body: { title: gameChannel ? 'Nori 游戏解说' : 'Nori 桌宠聊天' },
+        })
+        targetSession = String(responseData(created)?.id || '')
+        if (!targetSession) throw new Error('could not create Nori session')
+        if (gameChannel) gameSessionId = targetSession
+        else noriSessionId = targetSession
       }
       const result = await client.session.prompt({
-        path: { id: noriSessionId },
+        path: { id: targetSession },
         body: { agent: 'nori', parts: [{ type: 'text', text: job.message }] },
       })
-      const text = replyText(result)
+      const rawText = replyText(result)
+      const text = gameChannel && invalidGameReply(rawText) ? '' : rawText
       await sendChatReply(job.id, text ? { text } : { error: 'Nori没有生成文字回复。' })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      if (/session|not found|404/i.test(message)) noriSessionId = ''
+      if (/session|not found|404/i.test(message)) {
+        if (gameChannel) gameSessionId = ''
+        else noriSessionId = ''
+      }
       try { await sendChatReply(job.id, { error: compactText(message, 'OpenCode回答失败了。') }) } catch { }
     }
   }
@@ -138,7 +154,7 @@ export const Live2DCompanion = async ({ client } = {}) => {
     },
     event: async ({ event }) => {
       const id = sessionId(event)
-      if (id === noriSessionId) return
+      if (id === noriSessionId || id === gameSessionId) return
       const p = event?.properties ?? {}
       if (event?.type === 'message.part.updated') {
         const part = p.part ?? p

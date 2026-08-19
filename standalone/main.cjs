@@ -4,6 +4,9 @@ const path = require('node:path')
 const { createStandaloneServer } = require('./server.cjs')
 
 let win = null
+let cardWin = null
+let cardGameId = ''
+let cardExpectedSize = null
 let tray = null
 let standalone = null
 
@@ -106,6 +109,9 @@ async function createWindow() {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   // 锁视觉缩放：捏合手势误判会把整页放大导致命中坐标系错位（同 pet/main.js）
   win.webContents.setVisualZoomLevelLimits(1, 1).catch(() => { })
+  win.webContents.on('did-finish-load', () => {
+    win?.webContents.setVisualZoomLevelLimits(1, 1).catch(() => { })
+  })
   win.webContents.on('will-navigate', (event, target) => {
     if (!target.startsWith(standalone.origin + '/')) event.preventDefault()
   })
@@ -132,7 +138,124 @@ async function createWindow() {
     const point = screen.getCursorScreenPoint()
     return { x: point.x, y: point.y, bounds: win.getBounds() }
   })
+
+  // 游戏卫星窗：复杂游戏 UI 与透明 overlay 物理隔离，避免穿透、焦点和拖动互抢。
+  // gameId 作为通用入口保留；当前 game-card 只有五子棋，后续可按查询参数切换其他游戏。
+  const pushCardArea = () => {
+    if (win === null || win.isDestroyed()) return
+    const bounds = cardWin && !cardWin.isDestroyed() ? cardWin.getBounds() : null
+    win.webContents.send('l2d-game-area', bounds)
+  }
+  ipcMain.handle('l2d-game-bounds', event => {
+    if (!fromPet(event)) return null
+    return cardWin && !cardWin.isDestroyed() ? cardWin.getBounds() : null
+  })
+  ipcMain.on('l2d-game-open', (event, requestedGame = 'gomoku') => {
+    if (!fromPet(event)) return
+    const gameId = typeof requestedGame === 'string' && /^[a-z0-9-]{1,40}$/i.test(requestedGame)
+      ? requestedGame : 'gomoku'
+    if (cardWin && !cardWin.isDestroyed()) {
+      if (cardGameId !== gameId) {
+        cardGameId = gameId
+        const nextUrl = new URL('/live2d/game-card.html', standalone.origin)
+        nextUrl.searchParams.set('game', gameId)
+        cardWin.loadURL(nextUrl.href).catch(() => { })
+      }
+      cardWin.show()
+      pushCardArea()
+      return
+    }
+    const area = screen.getPrimaryDisplay().workArea
+    cardWin = new BrowserWindow({
+      width: 760, height: 650,
+      useContentSize: true,
+      x: area.x + area.width - 776,
+      y: area.y + Math.round((area.height - 650) / 2),
+      frame: false, alwaysOnTop: true, resizable: false,
+      skipTaskbar: true, focusable: true,
+      backgroundColor: '#ffffff', hasShadow: false,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload-card.cjs'),
+        contextIsolation: true, nodeIntegration: false, sandbox: true,
+        backgroundThrottling: false,
+      },
+    })
+    cardWin.setAlwaysOnTop(true, 'screen-saver')
+    cardWin.setMenu(null)
+    cardWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    cardWin.webContents.setVisualZoomLevelLimits(1, 1).catch(() => { })
+    cardWin.webContents.on('did-finish-load', () => {
+      cardWin?.webContents.setVisualZoomLevelLimits(1, 1).catch(() => { })
+      cardExpectedSize = cardWin && !cardWin.isDestroyed() ? cardWin.getSize() : null
+    })
+    cardWin.webContents.on('will-navigate', (navEvent, target) => {
+      if (!target.startsWith(standalone.origin + '/')) navEvent.preventDefault()
+    })
+    let cardSizeGuardTimer = null
+    cardWin.on('resize', () => {
+      clearTimeout(cardSizeGuardTimer)
+      cardSizeGuardTimer = setTimeout(() => {
+        if (!cardWin || cardWin.isDestroyed() || !cardExpectedSize) return
+        const size = cardWin.getSize()
+        if (size[0] !== cardExpectedSize[0] || size[1] !== cardExpectedSize[1]) {
+          cardWin.setSize(cardExpectedSize[0], cardExpectedSize[1])
+        }
+      }, 80)
+    })
+    cardWin.on('closed', () => {
+      clearTimeout(cardSizeGuardTimer)
+      cardWin = null
+      cardGameId = ''
+      cardExpectedSize = null
+      pushCardArea()
+    })
+    const gameUrl = new URL('/live2d/game-card.html', standalone.origin)
+    gameUrl.searchParams.set('game', gameId)
+    cardGameId = gameId
+    cardWin.loadURL(gameUrl.href).catch(() => { })
+    pushCardArea()
+  })
+  ipcMain.on('l2d-game-close', event => {
+    if (cardWin && !cardWin.isDestroyed() && event.sender === cardWin.webContents) cardWin.close()
+  })
+  // 分数 DPI 下切换 WS_EX_NOACTIVATE 会扰动窗口框架，保持创建态 focusable:true。
+  ipcMain.on('l2d-game-focusable', () => { })
+  ipcMain.on('l2d-game-moveby', (event, dx, dy) => {
+    if (!cardWin || cardWin.isDestroyed() || event.sender !== cardWin.webContents) return
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
+    const [x, y] = cardWin.getPosition()
+    if (cardExpectedSize) {
+      cardWin.setBounds({
+        x: Math.round(x + dx), y: Math.round(y + dy),
+        width: cardExpectedSize[0], height: cardExpectedSize[1],
+      })
+    } else {
+      cardWin.setPosition(Math.round(x + dx), Math.round(y + dy))
+    }
+    pushCardArea()
+  })
   await win.loadURL(standalone.target + modelQuery)
+
+  if (process.env.L2D_SATELLITE_TEST === '1') {
+    await win.webContents.executeJavaScript("window.__petBridge.openGame('gomoku')")
+    const deadline = Date.now() + 15000
+    while (Date.now() < deadline) {
+      if (cardWin && !cardWin.isDestroyed()) {
+        const ready = await cardWin.webContents.executeJavaScript(
+          "Boolean(document.querySelector('#l2d-game.open canvas'))",
+        ).catch(() => false)
+        if (ready) {
+          console.log('Live2D satellite game test: ready')
+          app.exit(0)
+          return
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, 200))
+    }
+    console.error('Live2D satellite game test: timed out')
+    app.exit(3)
+    return
+  }
 
   win.on('closed', () => { win = null })
   let lastCursor = null

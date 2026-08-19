@@ -4,8 +4,10 @@
 import { attachGame } from './src/game.js'
 
 const bc = 'BroadcastChannel' in window ? new BroadcastChannel('l2d-companion') : null
+const requestedGame = new URLSearchParams(location.search).get('game') || 'gomoku'
 
 const ctx = {
+  gameId: requestedGame,
   showBubble: (text, ms, priority) => bc?.postMessage({ type: 'bubble', text, ms, priority }),
   evalIgnore: () => { },   // 独立小窗无穿透状态机
 }

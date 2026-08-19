@@ -183,7 +183,7 @@ async function createStandaloneServer({ publicDir, dataDir }) {
       ...game.def.snapshot(game.engine),
       winner: over.winner,
       busy: false,
-      mode: 'offline',
+      mode: game.mode,
       difficulty: game.difficulty,
       presetId: null,
       commentary: game.commentary.slice(-20),
@@ -262,8 +262,49 @@ async function createStandaloneServer({ publicDir, dataDir }) {
     return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ').trim().slice(0, maxLength)
   }
 
+  function cleanGameCommentary(value) {
+    const text = cleanChatText(value, 240).replace(/\s+/g, ' ').trim()
+    if (!text || /最大步骤|步骤数已达到|剩余任务|当前工作|工作总结|推荐的后续|等待.*指令|无法继续操作|maximum[_\s-]*(?:number[_\s-]*of[_\s-]*)?steps?|steps?[_\s-]*(?:limit[_\s-]*)?reached|remaining[_\s-]*tasks?|summari[sz](?:e|ing|ation).*(?:work|tasks?)/i.test(text)) return ''
+    const firstLine = text.split(/(?<=[。！？!?])\s*/)[0] || text
+    return firstLine.length > 40 ? `${firstLine.slice(0, 39)}…` : firstLine
+  }
+
   function openCodeConnected() {
     return Date.now() - lastOpenCodeHeartbeat < 15000
+  }
+
+  function removeChatJob(id) {
+    const job = chatJobs.get(id)
+    if (!job) return null
+    clearTimeout(job.timer)
+    chatJobs.delete(id)
+    const queueIndex = chatQueue.indexOf(id)
+    if (queueIndex >= 0) chatQueue.splice(queueIndex, 1)
+    return job
+  }
+
+  /** 向 OpenCode Nori 队列提交内部任务；游戏解说与普通聊天共用传输、分会话处理。 */
+  function requestOpenCode(message, channel = 'game', timeoutMs = 25000) {
+    if (!openCodeConnected() || chatJobs.size >= 3) return Promise.resolve('')
+    const id = crypto.randomUUID()
+    return new Promise(resolve => {
+      const timer = setTimeout(() => {
+        if (!removeChatJob(id)) return
+        resolve('')
+      }, timeoutMs)
+      chatJobs.set(id, { id, message, channel, timer, claimed: false, resolve })
+      chatQueue.push(id)
+    })
+  }
+
+  async function gameCommentary(placed, aiDone = null, outcome = '') {
+    if (!game || game.mode !== 'online') return ''
+    const turn = [placed?.desc, aiDone?.desc].filter(Boolean).join('；')
+    const prompt = `${game.def.commentatorBrief(game.userTitle)}\n`
+      + `本回合：${turn || '对局刚刚结束'}。${outcome ? `结果：${outcome}。` : ''}\n`
+      + `当前局面：\n${game.def.boardText(game.engine)}\n`
+      + '只回复一句此刻脱口而出的对局台词，不要解释规则，不要复述坐标，不超过40字。'
+    return cleanGameCommentary(await requestOpenCode(prompt, 'game', 25000))
   }
 
   function sessionSnapshot() {
@@ -389,7 +430,7 @@ async function createStandaloneServer({ publicDir, dataDir }) {
         return
       }
       job.claimed = true
-      json(res, 200, { id, message: job.message })
+      json(res, 200, { id, message: job.message, channel: job.channel || 'chat' })
       return
     }
     if (pathname === '/live2d/chat/reply' && method === 'POST') {
@@ -406,12 +447,14 @@ async function createStandaloneServer({ publicDir, dataDir }) {
           json(res, 404, { error: 'chat job not found' })
           return
         }
-        clearTimeout(job.timer)
-        chatJobs.delete(id)
-        if (!job.browserRes.writableEnded) {
-          const reply = cleanChatText(parsed.text)
+        removeChatJob(id)
+        const reply = cleanChatText(parsed.text)
+        const replyError = cleanChatText(parsed.error, 240) || 'OpenCode did not return a reply'
+        if (typeof job.resolve === 'function') {
+          job.resolve(reply)
+        } else if (!job.browserRes.writableEnded) {
           if (reply) json(job.browserRes, 200, { reply })
-          else json(job.browserRes, 502, { error: cleanChatText(parsed.error, 240) || 'OpenCode did not return a reply' })
+          else json(job.browserRes, 502, { error: replyError })
         }
         json(res, 200, { accepted: true })
       } catch (error) {
@@ -444,22 +487,16 @@ async function createStandaloneServer({ publicDir, dataDir }) {
         if (!message) throw new Error('message is empty')
         const id = crypto.randomUUID()
         const timer = setTimeout(() => {
-          const job = chatJobs.get(id)
+          const job = removeChatJob(id)
           if (!job) return
-          chatJobs.delete(id)
-          const queueIndex = chatQueue.indexOf(id)
-          if (queueIndex >= 0) chatQueue.splice(queueIndex, 1)
           if (!job.browserRes.writableEnded) json(job.browserRes, 504, { error: 'OpenCode reply timed out' })
         }, 90000)
-        const job = { id, message, browserRes: res, timer, claimed: false }
+        const job = { id, message, channel: 'chat', browserRes: res, timer, claimed: false }
         chatJobs.set(id, job)
         chatQueue.push(id)
         res.on('close', () => {
           if (res.writableEnded) return
-          clearTimeout(timer)
-          chatJobs.delete(id)
-          const queueIndex = chatQueue.indexOf(id)
-          if (queueIndex >= 0) chatQueue.splice(queueIndex, 1)
+          removeChatJob(id)
         })
       } catch (error) {
         json(res, error.message === 'body too large' ? 413 : 400, { error: error.message })
@@ -527,17 +564,23 @@ async function createStandaloneServer({ publicDir, dataDir }) {
           json(res, 400, { error: `unknown game: ${String(gameId).slice(0, 40)}` })
           return
         }
-        // 独立版无 LLM：阿尔法狗（LLM 亲自执子）在此映射为困难本地 AI
+        // 独立版的在线模式由 OpenCode Nori 解说；棋力仍由本地 AI 决定。
+        // 阿尔法狗（LLM 亲自执子）暂映射为困难本地 AI，避免模型乱答拖死棋局。
         const difficulty = parsed.difficulty === 'alphago' ? 'hard'
           : ['easy', 'normal', 'hard'].includes(parsed.difficulty) ? parsed.difficulty : 'normal'
+        const mode = parsed.mode === 'online' ? 'online' : 'offline'
         game = {
           def,
           engine: def.createEngine(),
           ai: def.createAI(difficulty),
+          mode,
           difficulty,
           userTitle: sanitizeTitle(parsed.userTitle),
-          commentary: [{ from: 'system', text: def.startLine?.(difficulty, 'offline') ?? `对局开始（独立版离线·${DIFF_NAME[difficulty]}）。` }],
+          commentary: [{ from: 'system', text: def.startLine?.(difficulty, mode) ?? `对局开始（独立版·${DIFF_NAME[difficulty]}）。` }],
           createdAt: new Date().toISOString(),
+        }
+        if (mode === 'online' && !openCodeConnected()) {
+          game.commentary.push({ from: 'system', text: 'OpenCode 暂未连接，本局会自动使用本地台词；连接后下一手即可启用模型解说。' })
         }
         json(res, 200, gameSnapshot())
       } catch (error) {
@@ -559,8 +602,12 @@ async function createStandaloneServer({ publicDir, dataDir }) {
           return
         }
         if (game.def.isOver(game.engine).over) {
-          // 玩家制胜手终局：服输台词先行（离线池 lose），再系统播报——不许静默收场
-          if (game.def.isOver(game.engine).winner === 1 && game.def.quips.lose) {
+          // 玩家制胜手终局：在线优先让 OpenCode Nori 服输；失败再落回本地 lose 池。
+          const over = game.def.isOver(game.engine)
+          const lines = game.def.outcomeLines(game.engine)
+          const said = await gameCommentary(placed, null, over.winner === 1 ? lines.playerWin : lines.draw)
+          if (said) game.commentary.push({ from: 'agent', text: said })
+          else if (over.winner === 1 && game.def.quips.lose) {
             game.commentary.push({ from: 'agent', text: pickGameQuip(game.def.quips.lose).replaceAll('主人', game.userTitle) })
           }
           pushGameOutcome()
@@ -578,10 +625,16 @@ async function createStandaloneServer({ publicDir, dataDir }) {
           return
         }
         const over = game.def.isOver(game.engine)
-        // 本地台词池（独立版无 LLM 解说）：按描述符情境选池，称呼替换
+        // 在线模式让 OpenCode Nori 解说；未连接/超时/报错时无缝回退本地台词池。
         const key = (game.def.pickQuipKey ?? defaultQuipKey)(mv, { win: over.over && over.winner === 2 })
         const pool = game.def.quips[key] ?? game.def.quips.normal
-        game.commentary.push({ from: 'agent', text: pickGameQuip(pool).replaceAll('主人', game.userTitle) })
+        const lines = over.over ? game.def.outcomeLines(game.engine) : null
+        const outcome = over.over ? (over.winner === 2 ? lines.aiWin : lines.draw) : ''
+        const said = await gameCommentary(placed, aiDone, outcome)
+        game.commentary.push({
+          from: 'agent',
+          text: said || pickGameQuip(pool).replaceAll('主人', game.userTitle),
+        })
         if (game.commentary.length > 60) game.commentary.splice(0, game.commentary.length - 60)
         if (over.over) pushGameOutcome()
         json(res, 200, { ...gameSnapshot(), aiMove: mv })
@@ -728,7 +781,8 @@ async function createStandaloneServer({ publicDir, dataDir }) {
       for (const timer of settleTimers.values()) clearTimeout(timer)
       for (const job of chatJobs.values()) {
         clearTimeout(job.timer)
-        if (!job.browserRes.writableEnded) json(job.browserRes, 503, { error: 'companion is closing' })
+        if (typeof job.resolve === 'function') job.resolve('')
+        else if (!job.browserRes.writableEnded) json(job.browserRes, 503, { error: 'companion is closing' })
       }
       chatJobs.clear()
       chatQueue.length = 0
