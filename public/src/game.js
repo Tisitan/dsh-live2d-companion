@@ -178,7 +178,9 @@ export function attachGame(ctx) {
   modeSelect.addEventListener('change', () => {
     if (modeSelect.value === 'offline' && diffSelect.value === 'alphago') diffSelect.value = 'normal'
   })
-  let selectedGame = typeof prefs.game === 'string' ? prefs.game : 'gomoku'
+  // 宿主显式指定（卫星窗 URL ?game= 经 game-card.js 传入 ctx.gameId）优先于本地偏好
+  let selectedGame = typeof ctx.gameId === 'string' && /^[a-z0-9-]{1,40}$/i.test(ctx.gameId) ? ctx.gameId
+    : typeof prefs.game === 'string' ? prefs.game : 'gomoku'
   function savePrefs() {
     try {
       localStorage.setItem(PREFS_KEY, JSON.stringify({
