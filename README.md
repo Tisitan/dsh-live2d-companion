@@ -336,6 +336,12 @@ export default function apply(api) {
 
 > 「CPU 渲染模式」（面板勾选，或 `L2D_SOFT=1` 临时测试）仅对 GPU 光栅化路径类异常有效，对上述呈现层丢帧无效——拖动闪烁请直接升级到此版本。
 
+### 卫星窗：分数 DPI 尺寸稳定化
+
+游戏卡片卫星窗在 Windows **分数缩放（125%/150%，含 RDP 会话）**下曾出现「窗口持续自动变大」：根因是 Chromium↔Windows 的框架度量对账在分数 DPI 下被窗口操作触发后**自激滚雪球**（实测每 5ms 一次 resize，760×650 起步疯长突破 2000px；与页面缩放/捏合缩放/拖拽代码均无关，探针证据：`zoomFactor=1`、`visualViewport.scale=1`、窗口物理 bounds 自增）。
+
+治疗组合（缺一不可的链条 + 一道兜底）：`hasShadow:false`（切除 DWM 阴影隐形边框——对账误差主要来源，同款配置的全屏 overlay 窗从不自激）+ 拖拽全程 `setBounds` **钉死加载完成时的实测尺寸**（`setPosition` 是对账循环的触发器）+ 冻结运行期 `setFocusable` 切换（WS_EX_NOACTIVATE 样式变更同属框架扰动源，创建态 `focusable:true` 让下拉/输入原生可用）+ **80ms 尺寸看门狗**（残留 ±1px 级抽搐的零容忍矫正）。底层 1px 对账抽搐是 Electron/Windows 深水区行为，用户态无法根除，但正反馈链已断。
+
 ## 许可
 
 - 本仓库代码：MIT（见 LICENSE）

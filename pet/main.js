@@ -74,6 +74,10 @@ app.whenReady().then(() => {
   // 锁视觉缩放：overlay 铺满全屏，捏合手势一旦触发页面缩放，命中判定坐标系
   // 会整体错位（点不准小人）；桌宠自带的 Ctrl+滚轮模型缩放走应用层，不受影响
   win.webContents.setVisualZoomLevelLimits(1, 1).catch(() => { })
+  // 渲染器就绪后重锁：创建前设置可能被首个导航丢弃（与卫星窗同病理）
+  win.webContents.on('did-finish-load', () => {
+    win?.webContents.setVisualZoomLevelLimits(1, 1).catch(() => { })
+  })
   const targetOrigin = new URL(TARGET).origin
   win.webContents.on('will-navigate', (event, target) => {
     if (!target.startsWith(targetOrigin + '/')) event.preventDefault()
@@ -111,6 +115,7 @@ app.whenReady().then(() => {
   // focusable:false 使点卡片永不抢前台游戏焦点。卡片与 overlay 通过 BroadcastChannel
   // 同源互通（气泡台词转发到小人头上）。
   let cardWin = null
+  let cardExpectedSize = null   // 加载完成时的实测尺寸：拖拽期钉死，防对账循环改尺寸
   // 卡片区域实时推送：overlay 把该区域当穿透死区——否则 overlay 压在卡片上方（screen-saver
   // 层 > floating 层），光标在卡片上停留会触发 overlay 的模型区解锁，把卡片点击全吃掉
   const pushCardArea = () => {
@@ -129,15 +134,18 @@ app.whenReady().then(() => {
     cardWin = new BrowserWindow({
       width: 760,
       height: 650,
+      useContentSize: true,   // 尺寸语义=内容区：减少客户区↔框架换算面（分数 DPI 对账稳定化）
       x: disp.x + disp.width - 776,
       y: disp.y + Math.round((disp.height - 650) / 2),
       frame: false,
       alwaysOnTop: true,
       resizable: false,
       skipTaskbar: true,
-      focusable: false,          // 点卡片不打断主人前台的游戏
+      focusable: true,           // 恒 true：setFocusable 切换在分数 DPI 下有窗口管理副作用
       backgroundColor: '#ffffff',
-      roundedCorners: true,
+      hasShadow: false,          // DWM 阴影的隐形边框是分数 DPI 框架对账误差来源（overlay 窗同款配置从不自激）
+      // roundedCorners 保持关闭：自激 resize 案中圆角非元凶，但排查后保留——
+      // 尽量减少 DWM 框架度量参与面，分数 DPI 下对账更稳
       webPreferences: {
         preload: path.join(__dirname, 'preload-card.js'),
         contextIsolation: true,
@@ -155,8 +163,27 @@ app.whenReady().then(() => {
     // Chromium 默认视觉缩放会把整页放大（"一拖动就放大"的嫌疑路径）；
     // 卫星窗没有任何需要页面级缩放的场景，锁死 1:1
     cardWin.webContents.setVisualZoomLevelLimits(1, 1).catch(() => { })
+    // 渲染器就绪后重锁：webContents 创建前设置的视觉缩放锁可能被首个导航静默丢弃
+    cardWin.webContents.on('did-finish-load', () => {
+      cardWin?.webContents.setVisualZoomLevelLimits(1, 1).catch(() => { })
+      cardExpectedSize = cardWin && !cardWin.isDestroyed() ? cardWin.getSize() : null
+    })
     cardWin.webContents.on('will-navigate', (e, target) => {
       if (!target.startsWith(targetOrigin + '/')) e.preventDefault()
+    })
+    // 尺寸看门狗：分数 DPI 下 Chromium↔Windows 的框架对账会残留 ±1px 级抽搐
+    // （雪崩已被 hasShadow:false + 拖拽钉尺寸打断），任何路径引起的尺寸偏移
+    // 80ms 平息后一律钉回实测尺寸——窗口设计上固定尺寸，视觉层零容忍
+    let cardSizeGuardTimer = null
+    cardWin.on('resize', () => {
+      clearTimeout(cardSizeGuardTimer)
+      cardSizeGuardTimer = setTimeout(() => {
+        if (!cardWin || cardWin.isDestroyed() || !cardExpectedSize) return
+        const s = cardWin.getSize()
+        if (s[0] !== cardExpectedSize[0] || s[1] !== cardExpectedSize[1]) {
+          cardWin.setSize(cardExpectedSize[0], cardExpectedSize[1])
+        }
+      }, 80)
     })
     cardWin.on('closed', () => { cardWin = null; pushCardArea() })
     cardWin.loadURL(new URL('/live2d/game-card.html', TARGET).href).catch(() => { })
@@ -165,21 +192,24 @@ app.whenReady().then(() => {
   ipcMain.on('l2d-game-close', (event) => {
     if (cardWin && !cardWin.isDestroyed() && event.sender === cardWin.webContents) cardWin.close()
   })
-  // 运行期焦点能力：悬停设置条放开（下拉/输入可用），点棋盘等即收回（不抢前台游戏）
-  // 切焦点能力会顺带改变任务栏可见性 → 每次重申 skipTaskbar（否则任务栏图标随悬停闪现）
-  ipcMain.on('l2d-game-focusable', (event, on) => {
-    if (cardWin && !cardWin.isDestroyed() && event.sender === cardWin.webContents) {
-      cardWin.setFocusable(!!on)
-      cardWin.setSkipTaskbar(true)
-    }
-  })
+  // 运行期焦点能力切换【禁用】：setFocusable 切 WS_EX_NOACTIVATE 会触发 Windows
+  // 重算窗口框架——分数 DPI（RDP 150%）下属于窗口尺寸对账的扰动源（自激 resize
+  // 案排查期冻结）。创建态 focusable:true 让下拉/输入原生可用，编排层不再需要；
+  // 页面请求照常接收但忽略。
+  ipcMain.on('l2d-game-focusable', () => { })
   // IPC 移窗：app-region:drag 不可靠（吞点击/本版未生效），moveBy 是老桌宠验证方案；
-  // 卫星窗不透明，移动无透明窗的 DWM 丢帧问题
+  // 卫星窗不透明，移动无透明窗的 DWM 丢帧问题。
+  // 分数 DPI 下纯 setPosition 会触发 Chromium↔Windows 尺寸对账循环（窗口疯长），
+  // 故拖拽全程用 setBounds 把尺寸钉死在加载完成时的实测值——位置照动、尺寸免谈。
   ipcMain.on('l2d-game-moveby', (event, dx, dy) => {
     if (!cardWin || cardWin.isDestroyed() || event.sender !== cardWin.webContents) return
     if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
     const [x, y] = cardWin.getPosition()
-    cardWin.setPosition(Math.round(x + dx), Math.round(y + dy))
+    if (cardExpectedSize) {
+      cardWin.setBounds({ x: Math.round(x + dx), y: Math.round(y + dy), width: cardExpectedSize[0], height: cardExpectedSize[1] })
+    } else {
+      cardWin.setPosition(Math.round(x + dx), Math.round(y + dy))
+    }
     pushCardArea()   // 死区跟随窗口移动
   })
   win.on('closed', () => { win = null })
