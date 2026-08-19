@@ -11,7 +11,11 @@
   },
   "files": [
     "index.js",
-    "game-engine.mjs",
+    "games/registry.mjs",
+    "games/gomoku",
+    "games/chess/engine.mjs",
+    "games/chess/ai.mjs",
+    "games/chess/index.mjs",
     "public/boot.js",
     "public/game-card.html",
     "public/game-card.js",

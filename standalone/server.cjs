@@ -151,8 +151,11 @@ async function createStandaloneServer({ publicDir, dataDir }) {
   const selectionFile = path.join(dataDir, 'model-selection.json')
   const adapterFile = path.join(dataDir, 'adapter.json')
   await fsp.mkdir(modelDir, { recursive: true })
-  const gameModuleUrl = pathToFileURL(path.join(publicDir, '..', 'game-engine.mjs')).href
-  const { createGomoku, createLocalAI, BLACK, WHITE } = await import(gameModuleUrl)
+  // 游戏注册表（与宿主同一套 games/ 描述符）：新游戏登记即接入独立版
+  const gamesBase = path.join(publicDir, '..', 'games')
+  const { registerGame, getGame, listGames, defaultQuipKey } = await import(pathToFileURL(path.join(gamesBase, 'registry.mjs')).href)
+  registerGame((await import(pathToFileURL(path.join(gamesBase, 'gomoku', 'index.mjs')).href)).default)
+  registerGame((await import(pathToFileURL(path.join(gamesBase, 'chess', 'index.mjs')).href)).default)
 
   const modelRoots = [modelDir, bundledModelDir]
   const clients = new Set()
@@ -167,21 +170,18 @@ async function createStandaloneServer({ publicDir, dataDir }) {
   let game = null
 
   const sanitizeTitle = raw => typeof raw === 'string' && /^[\p{L}\p{N} _\-~·]{1,12}$/u.test(raw.trim()) ? raw.trim() : '主人'
-  const gameQuips = {
-    normal: ['嗯……就这里！', '这步如何？', '轮到主人啦~', '咱想想……有了！', '这里这里！'],
-    block: ['嘿嘿，堵上咯~', '此路不通！', '主人这手咱可看见了', '想连四？没门~'],
-    win: ['赢啦赢啦！主人承让承让~', '五子连珠！咱厉害吧~'],
-  }
   const pickGameQuip = list => list[Math.floor(Math.random() * list.length)]
+  const DIFF_NAME = { easy: '简单', normal: '普通', hard: '困难' }
 
+  // game = { def: 描述符, engine, ai, difficulty, userTitle, commentary, createdAt }
   function gameSnapshot() {
     if (!game) return { status: 'idle' }
+    const over = game.def.isOver(game.engine)
     return {
-      status: game.engine.winner !== 0 ? 'over' : 'playing',
-      size: game.engine.size,
-      board: game.engine.matrix(),
-      moves: game.engine.moves,
-      winner: game.engine.winner,
+      status: over.over ? 'over' : 'playing',
+      game: game.def.id,
+      ...game.def.snapshot(game.engine),
+      winner: over.winner,
       busy: false,
       mode: 'offline',
       difficulty: game.difficulty,
@@ -189,6 +189,14 @@ async function createStandaloneServer({ publicDir, dataDir }) {
       commentary: game.commentary.slice(-20),
       createdAt: game.createdAt,
     }
+  }
+
+  /** 终局系统播报（与宿主同口径）。 */
+  function pushGameOutcome() {
+    const over = game.def.isOver(game.engine)
+    if (!over.over) return
+    const lines = game.def.outcomeLines(game.engine)
+    game.commentary.push({ from: 'system', text: over.winner === 1 ? lines.playerWin : over.winner === 2 ? lines.aiWin : lines.draw })
   }
 
   function resolveModel(ref) {
@@ -491,7 +499,7 @@ async function createStandaloneServer({ publicDir, dataDir }) {
     }
 
     if (pathname === '/live2d/game/list' && method === 'GET') {
-      json(res, 200, { games: [{ id: 'gomoku', name: '五子棋', available: true }] })
+      json(res, 200, { games: listGames() })
       return
     }
 
@@ -513,13 +521,22 @@ async function createStandaloneServer({ publicDir, dataDir }) {
     if (pathname === '/live2d/game/new' && method === 'POST') {
       try {
         const parsed = JSON.parse((await readBody(req, MAX_JSON_BYTES)).toString('utf8') || '{}')
-        const difficulty = ['easy', 'normal', 'hard'].includes(parsed.difficulty) ? parsed.difficulty : 'normal'
+        const gameId = typeof parsed.game === 'string' ? parsed.game : 'gomoku'
+        const def = getGame(gameId)
+        if (!def) {
+          json(res, 400, { error: `unknown game: ${String(gameId).slice(0, 40)}` })
+          return
+        }
+        // 独立版无 LLM：阿尔法狗（LLM 亲自执子）在此映射为困难本地 AI
+        const difficulty = parsed.difficulty === 'alphago' ? 'hard'
+          : ['easy', 'normal', 'hard'].includes(parsed.difficulty) ? parsed.difficulty : 'normal'
         game = {
-          engine: createGomoku(15),
-          ai: createLocalAI(difficulty),
+          def,
+          engine: def.createEngine(),
+          ai: def.createAI(difficulty),
           difficulty,
           userTitle: sanitizeTitle(parsed.userTitle),
-          commentary: [{ from: 'system', text: `对局开始（独立版离线·${{ easy: '简单', normal: '普通', hard: '困难' }[difficulty]}）：你执黑先手。` }],
+          commentary: [{ from: 'system', text: def.startLine?.(difficulty, 'offline') ?? `对局开始（独立版离线·${DIFF_NAME[difficulty]}）。` }],
           createdAt: new Date().toISOString(),
         }
         json(res, 200, gameSnapshot())
@@ -536,25 +553,38 @@ async function createStandaloneServer({ publicDir, dataDir }) {
           return
         }
         const parsed = JSON.parse((await readBody(req, MAX_JSON_BYTES)).toString('utf8') || '{}')
-        const placed = game.engine.place(parsed.x, parsed.y, BLACK)
+        const placed = game.def.playerMove(game.engine, parsed)
         if (!placed.ok) {
           json(res, 400, { error: placed.reason })
           return
         }
-        if (placed.win || placed.draw) {
-          game.commentary.push({ from: 'system', text: placed.win ? '你赢了！五子连珠，漂亮！' : '棋盘已满，平局收场。' })
-          json(res, 200, gameSnapshot())
+        if (game.def.isOver(game.engine).over) {
+          // 玩家制胜手终局：服输台词先行（离线池 lose），再系统播报——不许静默收场
+          if (game.def.isOver(game.engine).winner === 1 && game.def.quips.lose) {
+            game.commentary.push({ from: 'agent', text: pickGameQuip(game.def.quips.lose).replaceAll('主人', game.userTitle) })
+          }
+          pushGameOutcome()
+          json(res, 200, { ...gameSnapshot(), aiMove: null })
           return
         }
-        const move = game.ai.pickMove(game.engine)
-        const aiPlaced = game.engine.place(move.x, move.y, WHITE)
-        if (aiPlaced.ok) {
-          const raw = aiPlaced.win ? pickGameQuip(gameQuips.win) : move.blocked ? pickGameQuip(gameQuips.block) : pickGameQuip(gameQuips.normal)
-          game.commentary.push({ from: 'agent', text: raw.replaceAll('主人', game.userTitle) })
+        const mv = await game.ai.pickMove(game.engine)
+        if (!mv) {
+          json(res, 200, { ...gameSnapshot(), aiMove: null })
+          return
         }
-        if (game.engine.winner === WHITE) game.commentary.push({ from: 'system', text: '白棋五子连珠，对局结束。' })
-        else if (game.engine.winner === -1) game.commentary.push({ from: 'system', text: '棋盘已满，平局收场。' })
-        json(res, 200, { ...gameSnapshot(), agentMove: { x: move.x, y: move.y } })
+        const aiDone = game.def.aiMove(game.engine, mv)
+        if (!aiDone.ok) {
+          json(res, 200, { ...gameSnapshot(), aiMove: null })
+          return
+        }
+        const over = game.def.isOver(game.engine)
+        // 本地台词池（独立版无 LLM 解说）：按描述符情境选池，称呼替换
+        const key = (game.def.pickQuipKey ?? defaultQuipKey)(mv, { win: over.over && over.winner === 2 })
+        const pool = game.def.quips[key] ?? game.def.quips.normal
+        game.commentary.push({ from: 'agent', text: pickGameQuip(pool).replaceAll('主人', game.userTitle) })
+        if (game.commentary.length > 60) game.commentary.splice(0, game.commentary.length - 60)
+        if (over.over) pushGameOutcome()
+        json(res, 200, { ...gameSnapshot(), aiMove: mv })
       } catch (error) {
         json(res, error.message === 'body too large' ? 413 : 400, { error: error.message })
       }

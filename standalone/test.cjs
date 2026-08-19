@@ -78,15 +78,18 @@ async function main() {
     assert.equal(config.status, 200)
 
     const gameList = await fetch(server.origin + '/live2d/game/list')
-    assert.deepEqual(await gameList.json(), { games: [{ id: 'gomoku', name: '五子棋', available: true }] })
+    assert.deepEqual(await gameList.json(), {
+      games: [{ id: 'gomoku', name: '五子棋', available: true }, { id: 'chess', name: '国际象棋', available: true }],
+    })
     const newGame = await fetch(server.origin + '/live2d/game/new', {
       method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
-      body: JSON.stringify({ mode: 'offline', difficulty: 'normal', userTitle: '主人' }),
+      body: JSON.stringify({ game: 'gomoku', mode: 'offline', difficulty: 'normal', userTitle: '主人' }),
     })
     assert.equal(newGame.status, 200)
     const openedGame = await newGame.json()
     assert.equal(openedGame.status, 'playing')
     assert.equal(openedGame.mode, 'offline')
+    assert.equal(openedGame.game, 'gomoku')
     const firstMove = await fetch(server.origin + '/live2d/game/move', {
       method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
       body: JSON.stringify({ x: 7, y: 7 }),
@@ -96,6 +99,32 @@ async function main() {
     assert.equal(movedGame.moves.length, 2)
     assert.deepEqual(movedGame.moves[0], { x: 7, y: 7, side: 1 })
     assert.equal(movedGame.moves[1].side, 2)
+    assert.ok(movedGame.aiMove && typeof movedGame.aiMove.x === 'number')
+
+    // 国际象棋离线冒烟：开局 → e2e4 → AI 应手 → 合法走子下发
+    const newChess = await fetch(server.origin + '/live2d/game/new', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ game: 'chess', mode: 'offline', difficulty: 'normal', userTitle: '主人' }),
+    })
+    assert.equal(newChess.status, 200)
+    const openedChess = await newChess.json()
+    assert.equal(openedChess.status, 'playing')
+    assert.equal(openedChess.game, 'chess')
+    assert.equal(openedChess.turn, 'w')
+    assert.equal(openedChess.legal.length, 20)   // 初始 20 手
+    const chessMove = await fetch(server.origin + '/live2d/game/move', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ from: { x: 4, y: 6 }, to: { x: 4, y: 4 } }),   // e2e4
+    })
+    assert.equal(chessMove.status, 200)
+    const movedChess = await chessMove.json()
+    assert.equal(movedChess.turn, 'w')           // AI 黑方已应手，又轮到白
+    assert.ok(movedChess.aiMove?.from && movedChess.aiMove?.to)
+    const illegalChess = await fetch(server.origin + '/live2d/game/move', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ from: { x: 4, y: 6 }, to: { x: 4, y: 2 } }),   // e2e5 非法（e2 已无兵）
+    })
+    assert.equal(illegalChess.status, 400)
 
     const denied = await fetch(server.origin + '/live2d/state', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ state: 'working' }),
