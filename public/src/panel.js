@@ -433,8 +433,13 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   gameToggle.textContent = '🎮'
   gameToggle.addEventListener('pointerdown', (e) => e.stopPropagation())
   gameToggle.addEventListener('pointerup', (e) => e.stopPropagation())
-  // 桌宠模式：对局卡走独立卫星窗（焦点/穿透与全屏 overlay 物理隔离）；网页挂件照旧页内浮卡
-  gameToggle.addEventListener('click', (e) => { e.stopPropagation(); if (BRIDGE) BRIDGE.openGame?.(); else ctx.openGame?.() })
+  // DSH 桌宠提供 openGame 时走独立卫星窗；独立版虽也有桌面桥，但没有该接口，
+  // 必须回退到页内浮卡，否则可选调用会静默结束，表现为游戏按钮点不开。
+  gameToggle.addEventListener('click', (e) => {
+    e.stopPropagation()
+    if (typeof BRIDGE?.openGame === 'function') BRIDGE.openGame('gomoku')
+    else ctx.openGame?.()
+  })
   gameToggle.addEventListener('dblclick', (e) => e.stopPropagation())
   gameToggle.addEventListener('wheel', (e) => e.stopPropagation())
   ctx.box.appendChild(gameToggle)

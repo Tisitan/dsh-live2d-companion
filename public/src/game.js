@@ -137,7 +137,9 @@ export function attachGame(ctx) {
   const CFG_HINTS = [
     [chipsBox, '玩什么点这里。切换对下一局生效（当前这盘不受打扰）。'],
     [titleInput, '小人下棋时怎么叫你——解说、狠话、认输台词里都用这个名字。'],
-    [modeSelect, '在线对弈=本地AI执子+你的模型边下边聊（每手多等几秒，有戏）；难度选阿尔法狗时模型直接亲自执子对抗。离线速玩=本地AI+本地台词秒回，不耗模型额度。'],
+    [modeSelect, STANDALONE
+      ? 'OpenCode 解说=本地AI执子，OpenCode 的 Nori 每手说一句；未连接或超时自动回退本地台词。离线速玩完全不耗模型额度。'
+      : '在线对弈=本地AI执子+你的模型边下边聊（每手多等几秒，有戏）；难度选阿尔法狗时模型直接亲自执子对抗。离线速玩=本地AI+本地台词秒回，不耗模型额度。'],
     [presetSelect, '选谁来陪你下棋——语气人格来自这个预设，只影响说话风格，不影响棋力。'],
     [modelSelect, '解说/阿尔法狗用的模型，清单来自你的 DSH 模型配置。'],
     [diffSelect, '简单/普通/困难=本地AI强度（真实分档）；阿尔法狗=你的模型亲自执子对抗（仅在线可用，走子最慢但最有戏——它超时或乱答时本地困难AI会悄悄兜底，不会卡死）。'],
@@ -161,10 +163,13 @@ export function attachGame(ctx) {
   if (typeof prefs.userTitle === 'string') titleInput.value = prefs.userTitle
   if (prefs.mode === 'online' || prefs.mode === 'offline') modeSelect.value = prefs.mode
   if (STANDALONE) {
-    modeSelect.value = 'offline'
-    modeSelect.replaceChildren(new Option('离线速玩（独立版）', 'offline'))
-    modeSelect.title = '独立版使用本地对手，不消耗模型额度'
-    // 独立版无 LLM：移除阿尔法狗档（服务端也会把它映射为困难，双保险）
+    modeSelect.replaceChildren(
+      new Option('OpenCode 解说', 'online'),
+      new Option('离线速玩', 'offline'),
+    )
+    modeSelect.value = prefs.mode === 'online' ? 'online' : 'offline'
+    modeSelect.title = '本地 AI 负责合法落子；在线时由 OpenCode Nori 解说，失败自动回退本地台词'
+    // 独立版暂不开放模型亲自执子的阿尔法狗档；OpenCode 只做解说。
     diffSelect.querySelector('option[value="alphago"]')?.remove()
   }
   if (['easy', 'normal', 'hard', 'alphago'].includes(prefs.difficulty)) diffSelect.value = prefs.difficulty
@@ -190,8 +195,8 @@ export function attachGame(ctx) {
   // 离线=纯本地：人格/模型选择只对在线解说有意义
   function syncModeUI() {
     const offline = modeSelect.value === 'offline'
-    presetSelect.style.display = offline ? 'none' : ''
-    modelSelect.style.display = offline ? 'none' : ''
+    presetSelect.style.display = STANDALONE || offline ? 'none' : ''
+    modelSelect.style.display = STANDALONE || offline ? 'none' : ''
   }
   modeSelect.addEventListener('change', () => { syncModeUI(); savePrefs() })
   syncModeUI()

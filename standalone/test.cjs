@@ -20,6 +20,20 @@ function runHook(script, input, env) {
 }
 
 async function main() {
+  const mainSource = fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8')
+  const preloadSource = fs.readFileSync(path.join(__dirname, 'preload.cjs'), 'utf8')
+  const cardPreloadSource = fs.readFileSync(path.join(__dirname, 'preload-card.cjs'), 'utf8')
+  assert.match(mainSource, /l2d-game-open/)
+  assert.match(mainSource, /cardGameId/)
+  assert.match(mainSource, /cardExpectedSize/)
+  assert.match(mainSource, /useContentSize:\s*true/)
+  assert.match(mainSource, /hasShadow:\s*false/)
+  assert.match(mainSource, /cardWin\.setBounds/)
+  assert.match(preloadSource, /openGame/)
+  assert.match(preloadSource, /getCardArea/)
+  assert.match(cardPreloadSource, /l2d-game-close/)
+  assert.match(cardPreloadSource, /l2d-game-moveby/)
+
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'l2d-standalone-test-'))
   const publicDir = path.resolve(__dirname, '..', 'public')
   const server = await createStandaloneServer({ publicDir, dataDir })
@@ -35,6 +49,11 @@ async function main() {
     const cookie = page.headers.get('set-cookie')
     assert.ok(cookie?.includes('l2d_standalone_token='))
     const browserAuth = { cookie: cookie.split(';')[0] }
+    const gameCardPage = await fetch(server.origin + '/live2d/game-card.html')
+    assert.equal(gameCardPage.status, 200)
+    const gameCardScript = await fetch(server.origin + '/live2d/game-card.js')
+    assert.equal(gameCardScript.status, 200)
+    assert.match(await gameCardScript.text(), /requestedGame/)
 
     const chatStatusBefore = await fetch(server.origin + '/live2d/chat/status')
     assert.deepEqual(await chatStatusBefore.json(), { connected: false })
@@ -170,9 +189,13 @@ async function main() {
     process.env.L2D_ADAPTER_FILE = adapterFile
     const pluginModule = await import(pathToFileURL(path.join(__dirname, 'adapters', 'opencode-live2d.js')).href)
     const mockCalls = []
+    let mockPromptText = 'Nori收到啦。'
     const plugin = await pluginModule.Live2DCompanion({ client: { session: {
-      create: async (input) => { mockCalls.push(['create', input]); return { data: { id: 'nori-chat-session' } } },
-      prompt: async (input) => { mockCalls.push(['prompt', input]); return { data: { parts: [{ type: 'text', text: 'Nori收到啦。' }] } } },
+      create: async (input) => {
+        mockCalls.push(['create', input])
+        return { data: { id: input.body.title.includes('游戏') ? 'nori-game-session' : 'nori-chat-session' } }
+      },
+      prompt: async (input) => { mockCalls.push(['prompt', input]); return { data: { parts: [{ type: 'text', text: mockPromptText }] } } },
     } } })
     await plugin.event({ event: { type: 'session.created', properties: { sessionID: 'oc1' } } })
     const afterOpenCodeStart = await fetch(server.origin + '/live2d/state')
@@ -197,6 +220,53 @@ async function main() {
     assert.equal(mockCalls[1][0], 'prompt')
     assert.equal(mockCalls[1][1].body.agent, 'nori')
     assert.equal(mockCalls[1][1].body.parts[0].text, '测试插件聊天')
+
+    // 独立版 OpenCode 解说：本地 AI 走子，独立 Nori 游戏会话只返回人格化台词。
+    const onlineGame = await fetch(server.origin + '/live2d/game/new', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ game: 'gomoku', mode: 'online', difficulty: 'normal', userTitle: '主人' }),
+    })
+    assert.equal(onlineGame.status, 200)
+    assert.equal((await onlineGame.json()).mode, 'online')
+    const onlineMove = await Promise.race([
+      fetch(server.origin + '/live2d/game/move', {
+        method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+        body: JSON.stringify({ x: 7, y: 7 }),
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('OpenCode game commentary timed out')), 5000)),
+    ])
+    assert.equal(onlineMove.status, 200)
+    const commentedGame = await onlineMove.json()
+    assert.equal(commentedGame.commentary.at(-1).text, 'Nori收到啦。')
+    assert.equal(mockCalls[2][0], 'create')
+    assert.equal(mockCalls[2][1].body.title, 'Nori 游戏解说')
+    assert.equal(mockCalls[3][0], 'prompt')
+    assert.equal(mockCalls[3][1].path.id, 'nori-game-session')
+    assert.equal(mockCalls[3][1].body.agent, 'nori')
+    assert.match(mockCalls[3][1].body.parts[0].text, /只回复一句/)
+
+    // 游戏台词由程序强制限制为一句、40 字；OpenCode 内部步骤总结必须被丢弃并回退本地台词。
+    const emptyPoint = () => {
+      const used = new Set(commentedGame.moves.map(move => `${move.x},${move.y}`))
+      for (let y = 0; y < 15; y++) for (let x = 0; x < 15; x++) if (!used.has(`${x},${y}`)) return { x, y }
+      throw new Error('no empty point')
+    }
+    mockPromptText = '这是一句故意写得特别特别特别特别特别特别特别特别特别特别特别特别长的游戏台词。后面这句不该显示。'
+    const longMove = await fetch(server.origin + '/live2d/game/move', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' }, body: JSON.stringify(emptyPoint()),
+    })
+    assert.equal(longMove.status, 200)
+    const longCommentedGame = await longMove.json()
+    assert.ok(longCommentedGame.commentary.at(-1).text.length <= 40)
+    assert.doesNotMatch(longCommentedGame.commentary.at(-1).text, /后面这句/)
+    commentedGame.moves = longCommentedGame.moves
+    mockPromptText = 'CRITICAL - MAXIMUM STEPS REACHED. Summarize current work and remaining tasks. 最大步骤数已达到。'
+    const filteredMove = await fetch(server.origin + '/live2d/game/move', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' }, body: JSON.stringify(emptyPoint()),
+    })
+    assert.equal(filteredMove.status, 200)
+    const filteredGame = await filteredMove.json()
+    assert.doesNotMatch(filteredGame.commentary.at(-1).text, /最大步骤|剩余任务|当前工作/)
     if (oldAdapterFile === undefined) delete process.env.L2D_ADAPTER_FILE
     else process.env.L2D_ADAPTER_FILE = oldAdapterFile
 
