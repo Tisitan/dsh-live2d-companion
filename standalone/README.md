@@ -17,7 +17,7 @@ The local server binds to a random `127.0.0.1` port. Mutating browser routes use
 
 ## Codex and OpenCode
 
-With the standalone pet running, launch `连接Codex和OpenCode.cmd`, then restart Codex and OpenCode. The installer adds lifecycle hooks, the local OpenCode plugin, and a minimal chat-only Nori agent. The agent denies tool permissions; replace its prompt locally if you have permission to use a different character prompt.
+With the standalone pet running, launch `连接Codex和OpenCode.cmd`, then restart Codex and OpenCode. The installer adds lifecycle hooks, the local OpenCode plugin, and a minimal chat-only companion agent. The agent denies tool permissions; replace its prompt locally if you have permission to use a different character prompt.
 
 The chat button is enabled only for `?standalone=1`, so existing DSH widget and pet behavior is unchanged.
 
