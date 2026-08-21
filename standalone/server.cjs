@@ -6,6 +6,7 @@ const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 
 const MAX_JSON_BYTES = 64 * 1024
+const MAX_DIARY_BYTES = 256 * 1024
 const MAX_IMPORT_BYTES = 128 * 1024 * 1024
 const ALLOWED_STATES = new Set(['idle', 'thinking', 'working', 'waiting', 'error', 'done', 'sleeping', 'offline'])
 const ADAPTER_SOURCES = new Set(['codex', 'opencode', 'test'])
@@ -142,7 +143,7 @@ async function serveFile(res, root, parts, extraHeaders = {}) {
   return true
 }
 
-async function createStandaloneServer({ publicDir, dataDir }) {
+async function createStandaloneServer({ publicDir, dataDir, getDiaryConfig = () => ({ dir: '' }) }) {
   const token = crypto.randomBytes(32).toString('hex')
   const adapterToken = crypto.randomBytes(32).toString('hex')
   const cookieName = 'l2d_standalone_token'
@@ -262,15 +263,52 @@ async function createStandaloneServer({ publicDir, dataDir }) {
     return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ').trim().slice(0, maxLength)
   }
 
+  function invalidAgentText(value) {
+    return /最大步骤|步骤数已达到|剩余任务|当前工作|工作总结|推荐的后续|等待.*指令|无法继续操作|maximum[_\s-]*(?:number[_\s-]*of[_\s-]*)?steps?|steps?[_\s-]*(?:limit[_\s-]*)?reached|remaining[_\s-]*tasks?|summari[sz](?:e|ing|ation).*(?:work|tasks?)/i.test(String(value || ''))
+  }
+
   function cleanGameCommentary(value) {
     const text = cleanChatText(value, 240).replace(/\s+/g, ' ').trim()
-    if (!text || /最大步骤|步骤数已达到|剩余任务|当前工作|工作总结|推荐的后续|等待.*指令|无法继续操作|maximum[_\s-]*(?:number[_\s-]*of[_\s-]*)?steps?|steps?[_\s-]*(?:limit[_\s-]*)?reached|remaining[_\s-]*tasks?|summari[sz](?:e|ing|ation).*(?:work|tasks?)/i.test(text)) return ''
+    if (!text || invalidAgentText(text)) return ''
     const firstLine = text.split(/(?<=[。！？!?])\s*/)[0] || text
     return firstLine.length > 40 ? `${firstLine.slice(0, 39)}…` : firstLine
   }
 
   function openCodeConnected() {
     return Date.now() - lastOpenCodeHeartbeat < 15000
+  }
+
+  async function loadDiaryMemory() {
+    try {
+      const configured = getDiaryConfig?.()
+      const dir = typeof configured?.dir === 'string' && configured.dir ? path.resolve(configured.dir) : ''
+      if (!dir) return ''
+      const entries = await fsp.readdir(dir, { withFileTypes: true })
+      const candidates = []
+      for (const entry of entries) {
+        if (!entry.isFile() || !/\.md$/i.test(entry.name)) continue
+        if (entry.name !== 'Nori记忆.md' && !/^Nori日记-/i.test(entry.name)) continue
+        const target = path.join(dir, entry.name)
+        const stat = await fsp.stat(target).catch(() => null)
+        if (stat && stat.size <= MAX_DIARY_BYTES) candidates.push({ name: entry.name, target, mtime: stat.mtimeMs })
+      }
+      const longTerm = candidates.find(item => item.name === 'Nori记忆.md')
+      const recent = candidates.filter(item => item !== longTerm).sort((a, b) => b.mtime - a.mtime).slice(0, 7)
+      const chunks = []
+      if (longTerm) {
+        const text = cleanChatText(await fsp.readFile(longTerm.target, 'utf8'), 1800)
+        if (text) chunks.push(`【长期记忆】\n${text}`)
+      }
+      for (const item of recent) {
+        const remaining = 4000 - chunks.join('\n\n').length
+        if (remaining <= 120) break
+        const text = cleanChatText(await fsp.readFile(item.target, 'utf8'), Math.min(1400, remaining))
+        if (text) chunks.push(`【${item.name.replace(/\.md$/i, '')}】\n${text}`)
+      }
+      return chunks.join('\n\n').slice(0, 4000)
+    } catch {
+      return ''
+    }
   }
 
   function removeChatJob(id) {
@@ -309,6 +347,7 @@ async function createStandaloneServer({ publicDir, dataDir }) {
 
   function sessionSnapshot() {
     return [...sessions.values()]
+      .filter(item => item.hidden !== true)
       .sort((a, b) => a.n - b.n)
       .map(({ n, source, state: sessionState }) => ({ n, source, state: sessionState }))
   }
@@ -351,8 +390,11 @@ async function createStandaloneServer({ publicDir, dataDir }) {
 
     if (!ALLOWED_STATES.has(input.state)) throw new Error('invalid state')
     const prior = sessions.get(key)
+    const hidden = input.hidden === true || prior?.hidden === true
     sessions.set(key, {
-      n: prior?.n ?? nextSessionNumber++, source, state: input.state, updatedAt: Date.now(),
+      n: prior?.n ?? (hidden ? 0 : nextSessionNumber++), source, state: input.state,
+      hidden,
+      updatedAt: Date.now(),
     })
     const text = cleanText(input.text)
     const holdMs = Number.isFinite(input.holdMs) ? Math.max(1200, Math.min(15000, Math.round(input.holdMs))) : 6000
@@ -430,7 +472,7 @@ async function createStandaloneServer({ publicDir, dataDir }) {
         return
       }
       job.claimed = true
-      json(res, 200, { id, message: job.message, channel: job.channel || 'chat' })
+      json(res, 200, { id, message: job.message, channel: job.channel || 'chat', memory: job.memory || '' })
       return
     }
     if (pathname === '/live2d/chat/reply' && method === 'POST') {
@@ -472,6 +514,37 @@ async function createStandaloneServer({ publicDir, dataDir }) {
       return
     }
 
+    if (pathname === '/live2d/diary/summarize' && method === 'POST') {
+      try {
+        if (!openCodeConnected()) {
+          json(res, 503, { error: 'OpenCode is not connected' })
+          return
+        }
+        const parsed = JSON.parse((await readBody(req, MAX_DIARY_BYTES)).toString('utf8') || '{}')
+        const messages = Array.isArray(parsed.messages) ? parsed.messages.slice(-200) : []
+        const lines = messages.map(item => {
+          const role = item?.role === 'user' ? '你' : 'Nori'
+          const text = cleanChatText(item?.text, 1200)
+          return text ? `${role}：${text}` : ''
+        }).filter(Boolean)
+        if (!lines.length) throw new Error('没有可以写进日记的聊天')
+        const transcript = lines.join('\n').slice(-14000)
+        const prompt = `请以 Nori 第一人称，把下面这次聊天整理成一篇简短日记。\n`
+          + `保留确实发生的事情、对方表达的喜好或约定，以及 Nori 当时的感受；不要虚构。\n`
+          + `使用自然的 Markdown 段落，最多 600 字，不要写任务总结、系统提示或保存说明。\n\n`
+          + `<conversation>\n${transcript}\n</conversation>`
+        const summary = cleanChatText(await requestOpenCode(prompt, 'diary', 45000), 6000)
+        if (!summary || invalidAgentText(summary)) {
+          json(res, 502, { error: 'Nori没有生成可保存的日记' })
+          return
+        }
+        json(res, 200, { summary })
+      } catch (error) {
+        json(res, error.message === 'body too large' ? 413 : 400, { error: error.message })
+      }
+      return
+    }
+
     if (pathname === '/live2d/chat' && method === 'POST') {
       try {
         if (!openCodeConnected()) {
@@ -491,7 +564,8 @@ async function createStandaloneServer({ publicDir, dataDir }) {
           if (!job) return
           if (!job.browserRes.writableEnded) json(job.browserRes, 504, { error: 'OpenCode reply timed out' })
         }, 90000)
-        const job = { id, message, channel: 'chat', browserRes: res, timer, claimed: false }
+        const memory = await loadDiaryMemory()
+        const job = { id, message, memory, channel: 'chat', browserRes: res, timer, claimed: false }
         chatJobs.set(id, job)
         chatQueue.push(id)
         res.on('close', () => {

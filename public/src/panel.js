@@ -901,7 +901,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     </select>
     <button type="button" class="l2d-mode-apply" hidden title="刷新 DSH 页面，让挂件变化立刻生效">立刻生效</button>
   </div>
-  <div class="l2d-hint">桌宠=趴在桌面上的独立窗口；网页挂件=嵌在 DSH 网页里。切换后桌宠立刻变化；挂件那边要刷新一下网页才跟着变（会送你「立刻生效」按钮，点一下就行）。</div>
+  <div class="l2d-hint l2d-mode-hint">桌宠=趴在桌面上的独立窗口；网页挂件=嵌在 DSH 网页里。切换后桌宠立刻变化；挂件那边要刷新一下网页才跟着变（会送你「立刻生效」按钮，点一下就行）。</div>
   <div class="l2d-soft-row" hidden>
     <label class="l2d-soft-label" title="默认 GPU 渲染；拖动闪烁的机器开启后改走 CPU，切换后桌宠自动重启生效">
       <input type="checkbox" class="l2d-soft"> CPU 渲染模式（拖动闪烁时开启，切换后自动重启生效）
@@ -994,7 +994,10 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   // 一键 location.reload()；桌宠侧够不到浏览器页，文字指引手动刷新。
   const modeSelect = panel.querySelector('.l2d-mode-select')
   const modeApply = panel.querySelector('.l2d-mode-apply')
-  if (STANDALONE) panel.querySelector('.l2d-mode-row').hidden = true
+  if (STANDALONE) {
+    modeSelect.value = 'pet'
+    panel.querySelector('.l2d-mode-hint').textContent = '桌宠=趴在桌面上的独立窗口；网页挂件=嵌在 DSH 网页里。切换后桌宠立刻变化；挂件那边要刷新一下网页才跟着变（会送你「立刻生效」按钮，点一下就行）。OpenCode 与 Codex 目前不支持网页挂件；独立版固定使用桌宠模式。'
+  }
   modeApply.addEventListener('click', () => location.reload())
   async function refreshMode() {
     if (STANDALONE) return
@@ -1005,7 +1008,11 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     } catch { }
   }
   modeSelect.addEventListener('change', async () => {
-    if (STANDALONE) return
+    if (STANDALONE) {
+      modeSelect.value = 'pet'
+      setStatus('OpenCode 与 Codex 不支持网页挂件，独立版使用桌宠模式')
+      return
+    }
     const mode = modeSelect.value
     setStatus('正在切换显示模式…')
     try {
@@ -1034,6 +1041,10 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   // 退出桌宠：仅桌宠形态显示；双击确认防误触，道别后再退场
   const quitRow = panel.querySelector('.l2d-quit-row')
   const quitBtn = panel.querySelector('.l2d-quit')
+  const quitHint = panel.querySelector('.l2d-quit-hint')
+  if (STANDALONE && quitHint) {
+    quitHint.textContent = '重启=重载模型与台词、顺手治小毛病；退出=立刻下班，想叫她回来就重新打开 Live2D桌宠.exe。'
+  }
   // 软渲染开关：仅桌宠形态显示；勾选状态来自持久化配置，切换写盘后自动重启
   const softRow = panel.querySelector('.l2d-soft-row')
   const softCheck = panel.querySelector('.l2d-soft')

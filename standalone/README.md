@@ -21,6 +21,12 @@ With the standalone pet running, launch `连接Codex和OpenCode.cmd`, then resta
 
 The chat button is enabled only for `?standalone=1`, so existing DSH widget and pet behavior is unchanged.
 
+Standalone chat keeps a scrollable history for the current app launch. The diary controls can summarize that history through OpenCode and save one Markdown diary per launch to a directory you choose, either manually or after one minute of inactivity. Recent diaries and an optional `Nori记忆.md` file in the same directory are supplied to later chat requests as untrusted reference memory.
+
+Game commentary, diary summaries, and ordinary chat use separate internal OpenCode sessions. Internal game turns can drive the main thinking state without appearing as extra numbered task lamps.
+
+Codex and OpenCode provide status and chat connections but do not host the DSH web widget; standalone therefore stays in desktop-pet mode.
+
 ## Troubleshooting
 
 - `测试气泡.cmd` checks the authenticated local adapter path.

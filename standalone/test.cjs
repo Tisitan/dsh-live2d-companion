@@ -23,20 +23,46 @@ async function main() {
   const mainSource = fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8')
   const preloadSource = fs.readFileSync(path.join(__dirname, 'preload.cjs'), 'utf8')
   const cardPreloadSource = fs.readFileSync(path.join(__dirname, 'preload-card.cjs'), 'utf8')
+  const chatSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'src', 'chat.js'), 'utf8')
+  const interactSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'src', 'interact.js'), 'utf8')
+  const stageSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'src', 'stage.js'), 'utf8')
+  const stateSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'src', 'state.js'), 'utf8')
   assert.match(mainSource, /l2d-game-open/)
   assert.match(mainSource, /cardGameId/)
   assert.match(mainSource, /cardExpectedSize/)
   assert.match(mainSource, /useContentSize:\s*true/)
   assert.match(mainSource, /hasShadow:\s*false/)
   assert.match(mainSource, /cardWin\.setBounds/)
+  assert.match(mainSource, /l2d-restart/)
   assert.match(preloadSource, /openGame/)
   assert.match(preloadSource, /getCardArea/)
+  assert.match(preloadSource, /getDiaryConfig/)
+  assert.match(preloadSource, /chooseDiaryDir/)
+  assert.match(preloadSource, /saveDiary/)
   assert.match(cardPreloadSource, /l2d-game-close/)
   assert.match(cardPreloadSource, /l2d-game-moveby/)
+  assert.match(chatSource, /l2d-chat-history/)
+  assert.match(chatSource, /appendHistory\('user'/)
+  assert.match(chatSource, /appendHistory\('nori'/)
+  assert.match(chatSource, /diary\/summarize/)
+  assert.match(chatSource, /60000/)
+  assert.match(mainSource, /l2d-diary-save/)
+  assert.match(interactSource, /wokeFromSleep/)
+  assert.match(interactSource, /clickReact\(true\)/)
+  assert.match(interactSource, /你回来啦/)
+  assert.match(stageSource, /setEyeBlinkEnabled/)
+  assert.match(stageSource, /blink\.setParameterIds/)
+  assert.match(stageSource, /guardIdlePool/)
+  assert.match(stateSource, /setEyeBlinkEnabled\?\.\(next !== 'sleeping'\)/)
+  assert.match(stateSource, /if \(woke\) ctx\.stopMotions\?\.\(\)/)
+  assert.match(preloadSource, /restart/)
 
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'l2d-standalone-test-'))
+  const diaryDir = path.join(dataDir, 'diaries')
+  fs.mkdirSync(diaryDir, { recursive: true })
+  fs.writeFileSync(path.join(diaryDir, 'Nori日记-2026-08-19-1200.md'), '# Nori 日记\n\n今天一起下了棋。\n')
   const publicDir = path.resolve(__dirname, '..', 'public')
-  const server = await createStandaloneServer({ publicDir, dataDir })
+  const server = await createStandaloneServer({ publicDir, dataDir, getDiaryConfig: () => ({ dir: diaryDir }) })
   const adapterFile = path.join(dataDir, 'adapter.json')
   try {
     assert.match(server.origin, /^http:\/\/127\.0\.0\.1:\d+$/)
@@ -83,6 +109,7 @@ async function main() {
     assert.equal(chatJobResponse.status, 200)
     const chatJob = await chatJobResponse.json()
     assert.equal(chatJob.message, 'Nori，在吗？')
+    assert.match(chatJob.memory, /今天一起下了棋/)
     const chatReply = await fetch(server.origin + '/live2d/chat/reply', {
       method: 'POST',
       headers: { ...adapterAuth, 'content-type': 'application/json' },
@@ -173,6 +200,20 @@ async function main() {
       body: JSON.stringify({ source: 'codex', sessionId: 's1', remove: true }),
     })
 
+    const hiddenThinking = await fetch(adapter.endpoint, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${adapter.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'opencode', sessionId: 'hidden-game-turn', state: 'thinking', hidden: true }),
+    })
+    assert.equal(hiddenThinking.status, 200)
+    const hiddenFrame = await hiddenThinking.json()
+    assert.equal(hiddenFrame.state, 'thinking')
+    assert.deepEqual(hiddenFrame.sessions, [])
+    await fetch(adapter.endpoint, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${adapter.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'opencode', sessionId: 'hidden-game-turn', remove: true }),
+    })
     const hookOutput = await runHook(path.join(__dirname, 'adapters', 'codex-hook.cjs'), {
       hook_event_name: 'Stop', session_id: 'hook-session', last_assistant_message: '**已经完成**\n```js\nsecret code\n```',
     }, { L2D_ADAPTER_FILE: adapterFile })
@@ -219,7 +260,8 @@ async function main() {
     assert.equal(mockCalls[0][0], 'create')
     assert.equal(mockCalls[1][0], 'prompt')
     assert.equal(mockCalls[1][1].body.agent, 'nori')
-    assert.equal(mockCalls[1][1].body.parts[0].text, '测试插件聊天')
+    assert.match(mockCalls[1][1].body.parts[0].text, /今天一起下了棋/)
+    assert.match(mockCalls[1][1].body.parts[0].text, /用户现在说：测试插件聊天/)
 
     // 独立版 OpenCode 解说：本地 AI 走子，独立 Nori 游戏会话只返回人格化台词。
     const onlineGame = await fetch(server.origin + '/live2d/game/new', {
@@ -244,6 +286,12 @@ async function main() {
     assert.equal(mockCalls[3][1].path.id, 'nori-game-session')
     assert.equal(mockCalls[3][1].body.agent, 'nori')
     assert.match(mockCalls[3][1].body.parts[0].text, /只回复一句/)
+    let afterGameTurnState = 'thinking'
+    for (let attempt = 0; attempt < 20 && afterGameTurnState === 'thinking'; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+      afterGameTurnState = (await (await fetch(server.origin + '/live2d/state')).json()).state
+    }
+    assert.equal(afterGameTurnState, 'done')
 
     // 游戏台词由程序强制限制为一句、40 字；OpenCode 内部步骤总结必须被丢弃并回退本地台词。
     const emptyPoint = () => {
@@ -267,6 +315,22 @@ async function main() {
     assert.equal(filteredMove.status, 200)
     const filteredGame = await filteredMove.json()
     assert.doesNotMatch(filteredGame.commentary.at(-1).text, /最大步骤|剩余任务|当前工作/)
+
+    mockPromptText = 'Nori收到啦。'
+    const diarySummary = await Promise.race([
+      fetch(server.origin + '/live2d/diary/summarize', {
+        method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+        body: JSON.stringify({ messages: [{ role: 'user', text: '今天一起下棋了' }, { role: 'nori', text: 'Nori玩得很开心。' }] }),
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('OpenCode diary summary timed out')), 5000)),
+    ])
+    assert.equal(diarySummary.status, 200)
+    assert.equal((await diarySummary.json()).summary, 'Nori收到啦。')
+    assert.equal(mockCalls[6][0], 'create')
+    assert.equal(mockCalls[6][1].body.title, 'Nori 日记整理')
+    assert.equal(mockCalls[7][0], 'prompt')
+    assert.equal(mockCalls[7][1].body.agent, 'nori')
+    assert.match(mockCalls[7][1].body.parts[0].text, /今天一起下棋了/)
     if (oldAdapterFile === undefined) delete process.env.L2D_ADAPTER_FILE
     else process.env.L2D_ADAPTER_FILE = oldAdapterFile
 

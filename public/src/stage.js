@@ -253,16 +253,32 @@ export async function initStage(ctx) {
     try { ctx.model.expression(name) } catch { }
   }
 
+  // 睡眠时暂停 Cubism 自动眨眼，避免 eyeBlink 在睡眠动作之后重新写入开眼值。
+  // 参数列表按 eyeBlink 实例缓存；切换模型后会为新实例单独记录并恢复。
+  const eyeBlinkIds = new WeakMap()
+  ctx.setEyeBlinkEnabled = (enabled) => {
+    const blink = ctx.model?.internalModel?.eyeBlink
+    if (!blink || typeof blink.setParameterIds !== 'function') return
+    if (!eyeBlinkIds.has(blink)) {
+      const ids = typeof blink.getParameterIds === 'function' ? blink.getParameterIds() : blink._parameterIds
+      eyeBlinkIds.set(blink, Array.isArray(ids) ? ids.slice() : [])
+    }
+    blink.setParameterIds(enabled ? eyeBlinkIds.get(blink).slice() : [])
+  }
+
   /**
    * 播放动作槽位；槽位未绑定时静默跳过。
    * 强制抢占语义：先清残存动作队列再以最高优先级立即播放，
    * 避免快速连切状态时旧动作排队滞留、几秒后错位播放。
    * @param {?string} slot 槽位名（见 binding.js）
    */
+  ctx.stopMotions = () => {
+    try { ctx.model.internalModel.motionManager.stopAllMotions() } catch { }
+  }
   ctx.playMotion = (slot) => {
     const m = slot ? ctx.binding.motion[slot] : undefined
     if (!m) return
-    try { ctx.model.internalModel.motionManager.stopAllMotions() } catch { }
+    ctx.stopMotions()
     ctx.model.motion(m[0], m[1], 3).catch(() => { }) // 3 = MotionPriority.FORCE
   }
 
@@ -332,6 +348,7 @@ export async function initStage(ctx) {
       clampModelIntoView()
     }
     ctx.setExpr(ctx.stateExpr?.() ?? 'default')
+    ctx.setEyeBlinkEnabled(ctx.getState?.() !== 'sleeping')
     ctx.emit?.('model', nextPath)
     return true
   }
