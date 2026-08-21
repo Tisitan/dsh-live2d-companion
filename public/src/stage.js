@@ -266,6 +266,30 @@ export async function initStage(ctx) {
     ctx.model.motion(m[0], m[1], 3).catch(() => { }) // 3 = MotionPriority.FORCE
   }
 
+  // Idle 组托管修正：运行时无动作时会从 Idle 组随机自动回放，而睡眠动作
+  // 就躺在 Idle 组里（ARGNori: Idle[1]=sleep_Loop）——睡眠态会被随机回放的
+  // 站立 idle 顶开（睁眼起身"诈尸"），清醒时也可能随机打瞌睡。包住选择器：
+  // 睡眠态只回放睡眠动作，其余状态把睡眠剔出随机池。显式按序号播放不受影响。
+  const guardIdlePool = () => {
+    const mm = ctx.model?.internalModel?.motionManager
+    const sleepRef = ctx.binding?.motion?.sleep
+    if (!mm || !sleepRef || mm.__idleGuarded) return
+    const [sleepGroup, sleepIndex] = sleepRef
+    if (sleepGroup !== mm.groups?.idle) return   // 睡眠不在待机池的模型无需修正
+    const origRandom = mm.startRandomMotion.bind(mm)
+    mm.startRandomMotion = (group, priority) => {
+      const pool = mm.definitions?.[group]
+      if (group !== sleepGroup || !Array.isArray(pool) || pool.length < 2
+        || sleepIndex < 0 || sleepIndex >= pool.length) return origRandom(group, priority)
+      if (ctx.getState?.() === 'sleeping') return mm.startMotion(sleepGroup, sleepIndex, priority)
+      let idx = sleepIndex
+      while (idx === sleepIndex) idx = Math.floor(Math.random() * pool.length)
+      return mm.startMotion(sleepGroup, idx, priority)
+    }
+    mm.__idleGuarded = true
+  }
+  guardIdlePool()
+
   // 模型热切换令牌：只允许最后一次请求生效，避免并发切换互相覆盖
   let switchToken = 0
 
@@ -298,6 +322,7 @@ export async function initStage(ctx) {
     app.stage.addChild(nextModel)
     ctx.binding = nextBinding
     modelPath = nextPath
+    guardIdlePool()   // 新模型的动作管理器要重新装托管修正
     naturalW = nextModel.internalModel.originalWidth
     naturalH = nextModel.internalModel.originalHeight
     ctx.layout(true)  // 换模型：标称尺寸变了，同窗口尺寸也要强制重排
