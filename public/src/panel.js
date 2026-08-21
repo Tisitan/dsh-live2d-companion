@@ -218,15 +218,17 @@ body.l2d-no-pin #l2d-game-toggle { top: 86px; }
 #l2d-model-panel .l2d-hint {
   padding: 0 12px 10px; margin-top: -6px; color: #99a; font-size: 11px; line-height: 1.5;
 }
-#l2d-model-panel .l2d-quit-row { padding: 0 12px 12px; }
+#l2d-model-panel .l2d-quit-row { padding: 0 12px 12px; display: flex; gap: 8px; }
 #l2d-model-panel .l2d-soft-row { padding: 0 12px 10px; }
 #l2d-model-panel .l2d-soft-label { display: flex; align-items: center; gap: 6px; color: #778; font-size: 12px; cursor: pointer; }
 #l2d-model-panel .l2d-quit-row button {
-  width: 100%; padding: 6px 8px; border: 1px solid rgba(192,57,43,.35); border-radius: 8px;
+  flex: 1; padding: 6px 8px; border: 1px solid rgba(192,57,43,.35); border-radius: 8px;
   background: #fff; color: #c0392b; cursor: pointer; font: inherit; font-size: 12px;
 }
 #l2d-model-panel .l2d-quit-row button:hover { background: #fdf0ee; }
 #l2d-model-panel .l2d-quit-row button.arm { background: #c0392b; color: #fff; }
+#l2d-model-panel .l2d-quit-row .l2d-restart { border-color: rgba(70,120,180,.35); color: #4678b4; }
+#l2d-model-panel .l2d-quit-row .l2d-restart:hover { background: #eef4fb; }
 #l2d-viewer {
   position: fixed; inset: 0; z-index: 100001; display: none; padding: 16px;
   align-items: center; justify-content: center; background: rgba(24,29,40,.55);
@@ -907,9 +909,10 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   </div>
   <div class="l2d-hint l2d-soft-hint" hidden>只有拖动桌宠时画面闪烁/撕裂才需要开。开启后改用 CPU 渲染、桌宠自动重启，会稍微多吃一点性能。</div>
   <div class="l2d-quit-row" hidden>
+    <button type="button" class="l2d-restart">重启桌宠</button>
     <button type="button" class="l2d-quit">退出桌宠</button>
   </div>
-  <div class="l2d-hint l2d-quit-hint" hidden>让桌宠立刻下班（不影响网页挂件）。想叫它回来：把显示模式切一下，或重启 DSH。</div>
+  <div class="l2d-hint l2d-quit-hint" hidden>重启=重载模型与台词、顺手治小毛病（不影响网页挂件）；退出=立刻下班，想叫它回来：把显示模式切一下，或重启 DSH。</div>
 </div>`
   document.body.appendChild(panel)
   // 分页签切换
@@ -1042,6 +1045,16 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
       ctx.showBubble?.(softCheck.checked ? '切换 CPU 渲染，咱马上回来…' : '切回 GPU 渲染，咱马上回来…', 1500, 2)
       setTimeout(() => BRIDGE.setSoft(softCheck.checked), 800)
     })
+  }
+  // 重启桌宠：仅桌宠形态显示；非破坏性（配置/位置都在盘上），单击即走无需确认
+  const restartBtn = panel.querySelector('.l2d-restart')
+  if (restartBtn && BRIDGE?.restart) {
+    restartBtn.addEventListener('click', () => {
+      ctx.showBubble?.('咱去洗把脸，马上回来～', 1500, 2)
+      setTimeout(() => BRIDGE.restart(), 800)
+    })
+  } else if (restartBtn) {
+    restartBtn.hidden = true   // 旧桥没有 restart 接口：藏按钮，让退出独占整行
   }
   if (quitRow && quitBtn && BRIDGE) {
     quitRow.hidden = false

@@ -93,6 +93,13 @@ app.whenReady().then(() => {
   ipcMain.on('l2d-quit', (event) => {
     if (fromPet(event)) app.quit()
   })
+  // 手动重启：与软渲染切换同一条「放锁→relaunch→exit」路径
+  ipcMain.on('l2d-restart', (event) => {
+    if (!fromPet(event)) return
+    try { app.releaseSingleInstanceLock() } catch { }
+    app.relaunch()
+    app.exit(0)
+  })
   // 软渲染开关：disableHardwareAcceleration 只能在启动前生效 → 写盘后整体重启
   ipcMain.handle('l2d-soft-get', (event) => (fromPet(event) ? petConfig.soft === true : false))
   ipcMain.on('l2d-soft-set', (event, on) => {

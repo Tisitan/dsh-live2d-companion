@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('__petBridge', {
   onCursor: (cb) => ipcRenderer.on('l2d-cursor', (_e, data) => cb(data)),
   getCursor: () => ipcRenderer.invoke('l2d-cursor-get'),
   quit: () => ipcRenderer.send('l2d-quit'),
+  restart: () => ipcRenderer.send('l2d-restart'),
   getSoft: () => ipcRenderer.invoke('l2d-soft-get'),
   setSoft: (on) => ipcRenderer.send('l2d-soft-set', on),
   openGame: (gameId = 'gomoku') => ipcRenderer.send('l2d-game-open', gameId),
