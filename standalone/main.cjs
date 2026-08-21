@@ -9,6 +9,7 @@ let cardGameId = ''
 let cardExpectedSize = null
 let tray = null
 let standalone = null
+let diaryFileName = ''
 
 if (process.env.L2D_DEBUG === '1') app.commandLine.appendSwitch('remote-debugging-port', '9222')
 
@@ -19,6 +20,9 @@ function configFile() {
 }
 let petConfig = {}
 try { petConfig = JSON.parse(fs.readFileSync(configFile(), 'utf8')) } catch { }
+function savePetConfig() {
+  try { fs.writeFileSync(configFile(), JSON.stringify(petConfig, null, 2) + '\n') } catch { }
+}
 if (process.env.L2D_SOFT === '1' || petConfig.soft === true) app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 
@@ -75,7 +79,11 @@ function createTray() {
 
 async function createWindow() {
   const publicDir = path.join(__dirname, '..', 'public')
-  standalone = await createStandaloneServer({ publicDir, dataDir: app.getPath('userData') })
+  standalone = await createStandaloneServer({
+    publicDir,
+    dataDir: app.getPath('userData'),
+    getDiaryConfig: () => ({ dir: typeof petConfig.diaryDir === 'string' ? petConfig.diaryDir : '' }),
+  })
   if (process.env.L2D_SMOKE_TEST === '1') {
     await standalone.close()
     standalone = null
@@ -135,9 +143,49 @@ async function createWindow() {
   ipcMain.on('l2d-soft-set', (event, on) => {
     if (!fromPet(event)) return
     petConfig.soft = Boolean(on)
-    try { fs.writeFileSync(configFile(), JSON.stringify(petConfig, null, 2) + '\n') } catch { }
+    savePetConfig()
     app.relaunch()
     app.exit(0)
+  })
+  ipcMain.handle('l2d-diary-config-get', event => {
+    if (!fromPet(event)) return null
+    return { dir: typeof petConfig.diaryDir === 'string' ? petConfig.diaryDir : '', auto: petConfig.diaryAuto === true }
+  })
+  ipcMain.handle('l2d-diary-dir-choose', async event => {
+    if (!fromPet(event)) return null
+    const result = await dialog.showOpenDialog(win, {
+      title: '选择 Nori 日记保存位置',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (result.canceled || !result.filePaths[0]) return null
+    petConfig.diaryDir = path.resolve(result.filePaths[0])
+    savePetConfig()
+    return { dir: petConfig.diaryDir, auto: petConfig.diaryAuto === true }
+  })
+  ipcMain.handle('l2d-diary-auto-set', (event, on) => {
+    if (!fromPet(event)) return null
+    petConfig.diaryAuto = Boolean(on)
+    savePetConfig()
+    return { dir: typeof petConfig.diaryDir === 'string' ? petConfig.diaryDir : '', auto: petConfig.diaryAuto }
+  })
+  ipcMain.handle('l2d-diary-save', async (event, entry) => {
+    if (!fromPet(event)) throw new Error('forbidden')
+    const diaryDir = typeof petConfig.diaryDir === 'string' ? path.resolve(petConfig.diaryDir) : ''
+    if (!diaryDir) throw new Error('请先选择日记保存位置')
+    const summary = typeof entry?.summary === 'string'
+      ? entry.summary.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trim().slice(0, 12000)
+      : ''
+    if (!summary) throw new Error('日记内容为空')
+    await fs.promises.mkdir(diaryDir, { recursive: true })
+    if (!diaryFileName) {
+      const now = new Date()
+      const pad = value => String(value).padStart(2, '0')
+      diaryFileName = `Nori日记-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.md`
+    }
+    const target = path.join(diaryDir, diaryFileName)
+    const generated = new Date().toLocaleString('zh-CN', { hour12: false })
+    await fs.promises.writeFile(target, `# Nori 日记\n\n> 更新于 ${generated}\n\n${summary}\n`, 'utf8')
+    return { ok: true, path: target, file: diaryFileName }
   })
   ipcMain.handle('l2d-cursor-get', event => {
     if (!fromPet(event)) return null

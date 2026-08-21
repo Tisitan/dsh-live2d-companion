@@ -11,4 +11,8 @@ contextBridge.exposeInMainWorld('__petBridge', {
   openGame: (gameId = 'gomoku') => ipcRenderer.send('l2d-game-open', gameId),
   onCardArea: (cb) => ipcRenderer.on('l2d-game-area', (_e, bounds) => cb(bounds)),
   getCardArea: () => ipcRenderer.invoke('l2d-game-bounds'),
+  getDiaryConfig: () => ipcRenderer.invoke('l2d-diary-config-get'),
+  chooseDiaryDir: () => ipcRenderer.invoke('l2d-diary-dir-choose'),
+  setDiaryAuto: (on) => ipcRenderer.invoke('l2d-diary-auto-set', on),
+  saveDiary: (entry) => ipcRenderer.invoke('l2d-diary-save', entry),
 })
