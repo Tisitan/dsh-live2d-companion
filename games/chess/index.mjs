@@ -31,10 +31,11 @@ export default {
     const r = engine.move(input)
     if (!r.ok) return { ok: false, reason: r.reason }
     // desc 即取：AI 走子后 lastMove 就被覆盖了
-    return { ok: true, win: r.flags.mate, draw: engine.status().draw, move: { from: input.from, to: input.to }, desc: describe(engine, '对方(白)') }
+    return { ok: true, win: r.flags.mate, draw: engine.status().draw, move: { from: input.from, to: input.to, promotion: engine.lastMove?.promotion }, desc: describe(engine, '对方(白)') }
   },
 
   aiMove(engine, move) {
+    if (!move) return { ok: false, win: false, draw: false, desc: '' }   // 契约允许 pickMove 返回 null
     const r = engine.move({ from: move.from, to: move.to, promotion: move.promotion })
     if (!r.ok) return { ok: false, win: false, draw: false, desc: '' }
     return { ok: true, win: r.flags.mate, draw: engine.status().draw, desc: describe(engine, '你(黑)') }

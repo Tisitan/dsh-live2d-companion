@@ -13,7 +13,10 @@ if (process.env.L2D_DEBUG === '1') {
 // 代价：渲染吃 CPU（默认小窗无感，大缩放窗口下线性上涨），笔记本略费电。
 const configFile = () => path.join(app.getPath('userData'), 'pet-config.json')
 let petConfig = {}
-try { petConfig = JSON.parse(fs.readFileSync(configFile(), 'utf8')) } catch { }
+try {
+  const raw = JSON.parse(fs.readFileSync(configFile(), 'utf8'))
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) petConfig = raw   // 合法 JSON 的 null/数组也是坏配置
+} catch { }
 if (process.env.L2D_SOFT === '1' || petConfig.soft === true) {
   app.disableHardwareAcceleration()
 }

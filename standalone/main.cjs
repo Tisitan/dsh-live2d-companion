@@ -18,7 +18,10 @@ function configFile() {
   return path.join(app.getPath('userData'), 'pet-config.json')
 }
 let petConfig = {}
-try { petConfig = JSON.parse(fs.readFileSync(configFile(), 'utf8')) } catch { }
+try {
+  const raw = JSON.parse(fs.readFileSync(configFile(), 'utf8'))
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) petConfig = raw   // 合法 JSON 的 null/数组也是坏配置
+} catch { }
 if (process.env.L2D_SOFT === '1' || petConfig.soft === true) app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 
@@ -115,12 +118,16 @@ async function createWindow() {
   win.webContents.on('will-navigate', (event, target) => {
     if (!target.startsWith(standalone.origin + '/')) event.preventDefault()
   })
+  // 渲染进程崩溃/假死看门狗：直接退出释放单实例锁，比留僵尸全屏透明窗卡死下次启动强（同 pet/main.js）
+  win.webContents.on('render-process-gone', () => app.quit())
+  win.webContents.on('unresponsive', () => app.quit())
   const modelQuery = process.env.L2D_MODEL ? `&model=${encodeURIComponent(process.env.L2D_MODEL)}` : ''
 
   // 所有 preload 会在页面启动阶段调用的 IPC 都必须先注册，再加载页面。
   // 否则 CPU 模式和首帧光标读取会因“尚无处理器”而静默失败。
   ipcMain.on('l2d-ignore', (event, ignore) => {
-    if (fromPet(event)) win.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
+    // 勿加 {forward:true}：electron#48035 光标闪烁铁律（pet/main.js 有载），穿透态光标由主进程轮询驱动
+    if (fromPet(event)) win.setIgnoreMouseEvents(Boolean(ignore))
   })
   ipcMain.on('l2d-quit', event => {
     if (fromPet(event)) app.quit()
@@ -128,6 +135,8 @@ async function createWindow() {
   // 手动重启：与软渲染切换同一条 relaunch→exit 路径
   ipcMain.on('l2d-restart', event => {
     if (!fromPet(event)) return
+    // 先放锁再重启：新进程若在旧进程退出前启动，持锁竞争会被弹回导致桌宠回不来
+    try { app.releaseSingleInstanceLock() } catch { }
     app.relaunch()
     app.exit(0)
   })
@@ -136,6 +145,7 @@ async function createWindow() {
     if (!fromPet(event)) return
     petConfig.soft = Boolean(on)
     try { fs.writeFileSync(configFile(), JSON.stringify(petConfig, null, 2) + '\n') } catch { }
+    try { app.releaseSingleInstanceLock() } catch { }   // 同上：放锁先于 relaunch
     app.relaunch()
     app.exit(0)
   })

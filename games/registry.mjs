@@ -40,7 +40,7 @@ export function registerGame(descriptor) {
   const required = ['id', 'name', 'createEngine', 'createAI', 'playerMove', 'aiMove',
     'snapshot', 'isOver', 'outcomeLines', 'boardText', 'commentatorBrief', 'quips']
   for (const key of required) {
-    if (descriptor?.[key] === undefined) throw new Error(`game descriptor missing: ${key}`)
+    if (descriptor?.[key] == null) throw new Error(`game descriptor missing: ${key}`)
   }
   games.set(descriptor.id, descriptor)
 }

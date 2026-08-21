@@ -40,6 +40,7 @@ export default {
   },
 
   aiMove(engine, move) {
+    if (!move) return { ok: false, win: false, draw: false, desc: '' }   // 契约允许 pickMove 返回 null
     const r = engine.place(move.x, move.y, WHITE)
     return { ok: r.ok, win: !!r.win, draw: !!r.draw, desc: `你(白)落在 (${move.x},${move.y})${threatLine(engine, move.x, move.y, WHITE)}` }
   },

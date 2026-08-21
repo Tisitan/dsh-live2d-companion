@@ -250,10 +250,16 @@ export function attachGame(ctx) {
     renderStatus()
     renderLog()
     newBtn.disabled = !!state?.busy
-    if (activeRenderer && state) {
-      const animating = activeRenderer.draw(g2d, canvas, state, fx)
-      if (animating) rafId = requestAnimationFrame(render)
-      else fx = null
+    // 两道保险：①state.game 与活跃渲染器错配（切游戏的异步窗口）直接跳帧等就位；
+    // ②draw 全程隔离——渲染器画崩绝不能带走走子闸/轮询（曾致卡片硬死需重开）
+    if (activeRenderer && state && (!state.game || state.game === activeGameId)) {
+      try {
+        const animating = activeRenderer.draw(g2d, canvas, state, fx)
+        if (animating) rafId = requestAnimationFrame(render)
+        else fx = null
+      } catch (error) {
+        console.warn('[l2d-game] draw failed, frame skipped:', error)
+      }
     }
   }
 
@@ -457,11 +463,14 @@ export function attachGame(ctx) {
     moveInFlight = true   // 在途闸：响应到达前轮询快照不得覆盖本地
     render()
     if (state.mode !== 'offline') speak(THINK_QUIPS[Math.floor(Math.random() * THINK_QUIPS.length)])
+    const ctrl = new AbortController()
+    const timeout = setTimeout(() => ctrl.abort(), 60000)   // 阿尔法狗双问答最坏 ~40s+，60s 防闸永锁
     try {
       const res = await fetch(BASE + '/game/move', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(move),
+        signal: ctrl.signal,
       })
       const d = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(d.error || 'HTTP ' + res.status)
@@ -471,9 +480,11 @@ export function attachGame(ctx) {
     } catch (error) {
       if (activeRenderer.rollbackOptimistic) activeRenderer.rollbackOptimistic(state, move)
       state.busy = false
-      state.commentary = [...(state.commentary ?? []), { from: 'system', text: '回合失败：' + error.message }]
+      const msg = error?.name === 'AbortError' ? '回合超时：宿主 60 秒无响应' : error.message
+      state.commentary = [...(state.commentary ?? []), { from: 'system', text: '回合失败：' + msg }]
       fx = null
     }
+    clearTimeout(timeout)
     moveInFlight = false   // 收闸：之后轮询恢复对账
     render()
     speakNew()

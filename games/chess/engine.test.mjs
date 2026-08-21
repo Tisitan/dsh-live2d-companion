@@ -102,5 +102,21 @@ const mv = (from, to, promotion) => ({ from: sq(from), to: sq(to), promotion })
   assert(s.over === false && s.check === false && s.draw === false, 'status 形状：初始')
 }
 
+// ── 畸形输入（非整数坐标不得崩引擎；board[y] 对浮点 y 是 undefined 炸点）──
+{
+  const e = createChess()
+  const snap = e.snapshot()
+  assert(!e.move({ from: { x: 4, y: 1.5 }, to: { x: 4, y: 3 } }).ok, '畸形: 浮点 from.y 拒收')
+  assert(!e.move({ from: { x: 4, y: '6' }, to: { x: 4, y: 4 } }).ok, '畸形: 字符串坐标拒收')
+  assert(!e.move({ from: { x: 4, y: true }, to: { x: 4, y: 4 } }).ok, '畸形: 布尔坐标拒收')
+  assert(!e.move({ from: null, to: { x: 4, y: 4 } }).ok && !e.move({}).ok, '畸形: 缺 from/to 拒收')
+  const after = e.snapshot()
+  assert(JSON.stringify(snap.board) === JSON.stringify(after.board) && after.turn === snap.turn,
+    '畸形: 拒收后局面零污染')
+}
+
+// K+N vs K+N 不自动判和（FIDE 存在配合杀）无 FEN 注入口，残局路径太长不构造——
+// 该修复经代码审验：insufficientMaterial 的 all-n 分支已删，同色格双象分支保留。
+
 console.log(`\nchess engine: ${passed} passed, ${failed} failed`)
 process.exit(failed > 0 ? 1 : 0)

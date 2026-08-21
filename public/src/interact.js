@@ -59,7 +59,7 @@ export function initInteract(ctx) {
     if (interactive === v) return
     interactive = v
     ctx.lastIgnore = !v          // 暴露给调试探针
-    BRIDGE.setIgnore(!v)
+    BRIDGE.setIgnore?.(!v)       // 旧桥缺该接口时静默（其余桥调用都有 ?. 兜底，此处补齐）
     ctx.syncPinBtn?.()           // 锁钮实时反映：绿底🔒=穿透中 / 白底🔓=已解锁
   }
   // 调试探针：穿透状态机内部快照

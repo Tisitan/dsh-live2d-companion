@@ -36,6 +36,7 @@ function safeSegment(value, maxLength = 255) {
     && value !== '..'
     && !value.startsWith('.')
     && !/[\\/:\0]/.test(value)
+    && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(value)   // Windows 保留名（对齐 index.js）
 }
 
 function splitSafePath(value) {
@@ -182,7 +183,7 @@ async function createStandaloneServer({ publicDir, dataDir }) {
       game: game.def.id,
       ...game.def.snapshot(game.engine),
       winner: over.winner,
-      busy: false,
+      busy: game.busy === true,
       mode: game.mode,
       difficulty: game.difficulty,
       presetId: null,
@@ -372,10 +373,21 @@ async function createStandaloneServer({ publicDir, dataDir }) {
     return payload
   }
 
+  // SSE 写帧：半开连接 write 可抛 ERR_STREAM_DESTROYED（宿主版 index.js 已实证会崩进程），
+  // 吞掉并剔除死客户端，绝不上抛主进程
+  function sseSend(client, frame) {
+    try { client.write(frame) } catch { clients.delete(client) }
+  }
+
   function broadcast(payload) {
     const frame = `data: ${JSON.stringify(payload)}\n\n`
-    for (const client of clients) client.write(frame)
+    for (const client of clients) sseSend(client, frame)
   }
+
+  // SSE 心跳：25 秒注释帧。客户端被杀死而 TCP 未 RST 的半开连接会在写失败时被剔除
+  const sseHeartbeat = setInterval(() => {
+    for (const client of clients) sseSend(client, ': ka\n\n')
+  }, 25000)
 
   const server = http.createServer(async (req, res) => {
     res.setHeader('x-content-type-options', 'nosniff')
@@ -575,6 +587,7 @@ async function createStandaloneServer({ publicDir, dataDir }) {
           ai: def.createAI(difficulty),
           mode,
           difficulty,
+          busy: false,
           userTitle: sanitizeTitle(parsed.userTitle),
           commentary: [{ from: 'system', text: def.startLine?.(difficulty, mode) ?? `对局开始（独立版·${DIFF_NAME[difficulty]}）。` }],
           createdAt: new Date().toISOString(),
@@ -590,55 +603,73 @@ async function createStandaloneServer({ publicDir, dataDir }) {
     }
 
     if (pathname === '/live2d/game/move' && method === 'POST') {
+      // 回合串行闸 + 代际校验（对齐宿主版 index.js）：解说 await 期间开新局，
+      // 旧句不得写进新局 commentary；闸防并发双击把引擎走乱
+      let g = null
       try {
         if (!game) {
           json(res, 409, { error: '尚未开局' })
           return
         }
+        if (game.busy) {
+          json(res, 409, { error: '思考中，请稍候' })
+          return
+        }
+        game.busy = true
+        g = game
         const parsed = JSON.parse((await readBody(req, MAX_JSON_BYTES)).toString('utf8') || '{}')
-        const placed = game.def.playerMove(game.engine, parsed)
+        const placed = g.def.playerMove(g.engine, parsed)
         if (!placed.ok) {
+          g.busy = false
           json(res, 400, { error: placed.reason })
           return
         }
-        if (game.def.isOver(game.engine).over) {
+        if (g.def.isOver(g.engine).over) {
           // 玩家制胜手终局：在线优先让 OpenCode Nori 服输；失败再落回本地 lose 池。
-          const over = game.def.isOver(game.engine)
-          const lines = game.def.outcomeLines(game.engine)
+          const over = g.def.isOver(g.engine)
+          const lines = g.def.outcomeLines(g.engine)
           const said = await gameCommentary(placed, null, over.winner === 1 ? lines.playerWin : lines.draw)
-          if (said) game.commentary.push({ from: 'agent', text: said })
-          else if (over.winner === 1 && game.def.quips.lose) {
-            game.commentary.push({ from: 'agent', text: pickGameQuip(game.def.quips.lose).replaceAll('主人', game.userTitle) })
+          if (game !== g) { json(res, 409, { error: '对局已更换，请以最新局面为准' }); return }
+          if (said) g.commentary.push({ from: 'agent', text: said })
+          else if (over.winner === 1 && g.def.quips.lose) {
+            g.commentary.push({ from: 'agent', text: pickGameQuip(g.def.quips.lose).replaceAll('主人', g.userTitle) })
           }
           pushGameOutcome()
+          g.busy = false
           json(res, 200, { ...gameSnapshot(), aiMove: null })
           return
         }
-        const mv = await game.ai.pickMove(game.engine)
+        const mv = await g.ai.pickMove(g.engine)
+        if (game !== g) { json(res, 409, { error: '对局已更换，请以最新局面为准' }); return }
         if (!mv) {
+          g.busy = false
           json(res, 200, { ...gameSnapshot(), aiMove: null })
           return
         }
-        const aiDone = game.def.aiMove(game.engine, mv)
+        const aiDone = g.def.aiMove(g.engine, mv)
         if (!aiDone.ok) {
+          g.busy = false
           json(res, 200, { ...gameSnapshot(), aiMove: null })
           return
         }
-        const over = game.def.isOver(game.engine)
+        const over = g.def.isOver(g.engine)
         // 在线模式让 OpenCode Nori 解说；未连接/超时/报错时无缝回退本地台词池。
-        const key = (game.def.pickQuipKey ?? defaultQuipKey)(mv, { win: over.over && over.winner === 2 })
-        const pool = game.def.quips[key] ?? game.def.quips.normal
-        const lines = over.over ? game.def.outcomeLines(game.engine) : null
+        const key = (g.def.pickQuipKey ?? defaultQuipKey)(mv, { win: over.over && over.winner === 2 })
+        const pool = g.def.quips[key] ?? g.def.quips.normal
+        const lines = over.over ? g.def.outcomeLines(g.engine) : null
         const outcome = over.over ? (over.winner === 2 ? lines.aiWin : lines.draw) : ''
         const said = await gameCommentary(placed, aiDone, outcome)
-        game.commentary.push({
+        if (game !== g) { json(res, 409, { error: '对局已更换，请以最新局面为准' }); return }
+        g.commentary.push({
           from: 'agent',
-          text: said || pickGameQuip(pool).replaceAll('主人', game.userTitle),
+          text: said || pickGameQuip(pool).replaceAll('主人', g.userTitle),
         })
-        if (game.commentary.length > 60) game.commentary.splice(0, game.commentary.length - 60)
+        if (g.commentary.length > 60) g.commentary.splice(0, g.commentary.length - 60)
         if (over.over) pushGameOutcome()
+        g.busy = false   // 必须在 json 前清：响应即回合终态，前端按 busy 渲染思考态
         json(res, 200, { ...gameSnapshot(), aiMove: mv })
       } catch (error) {
+        if (g && game === g) g.busy = false
         json(res, error.message === 'body too large' ? 413 : 400, { error: error.message })
       }
       return
@@ -777,7 +808,12 @@ async function createStandaloneServer({ publicDir, dataDir }) {
       broadcast({ state })
       return true
     },
-    close: () => new Promise(resolve => server.close(async () => {
+    close: () => new Promise(resolve => {
+      clearInterval(sseHeartbeat)
+      // SSE 长连接会吊住 server.close 的回调永不触发：先主动收尾再关
+      for (const client of clients) { try { client.end() } catch { } }
+      clients.clear()
+      server.close(async () => {
       for (const timer of settleTimers.values()) clearTimeout(timer)
       for (const job of chatJobs.values()) {
         clearTimeout(job.timer)
@@ -791,7 +827,8 @@ async function createStandaloneServer({ publicDir, dataDir }) {
         if (current.token === adapterToken) await fsp.rm(adapterFile, { force: true })
       } catch { }
       resolve()
-    })),
+      })
+    }),
   }
 }
 

@@ -234,9 +234,9 @@ export function createChess() {
     }
     if (pieces.length === 0) return true
     if (pieces.length === 1 && (pieces[0].t === 'b' || pieces[0].t === 'n')) return true
-    // 双方各一象且同色格 / 双方各一马：均死局（同一方的双子不算——那是真实子力）
+    // 双方各一象且同色格=死局（同一方的双子不算——那是真实子力）。
+    // 注意 K+N vs K+N 不算：FIDE 下该子力存在合法将杀局面（配合杀），自动判和是规则错判
     if (pieces.length === 2 && pieces[0].c !== pieces[1].c) {
-      if (pieces.every((p) => p.t === 'n')) return true
       if (pieces.every((p) => p.t === 'b')) {
         return ((pieces[0].x + pieces[0].y) % 2) === ((pieces[1].x + pieces[1].y) % 2)
       }
@@ -271,7 +271,11 @@ export function createChess() {
   function move(input) {
     if (gameOver) return { ok: false, reason: '本局已结束' }
     const from = input?.from, to = input?.to
-    if (!from || !to || !inBoard(from.x, from.y) || !inBoard(to.x, to.y)) return { ok: false, reason: '坐标无效' }
+    // 整数闸先于 inBoard：浮点 y 能滑过范围检查后让 board[y] 变 undefined 崩掉（五子棋同款防御）
+    if (!from || !to
+      || !Number.isInteger(from.x) || !Number.isInteger(from.y)
+      || !Number.isInteger(to.x) || !Number.isInteger(to.y)
+      || !inBoard(from.x, from.y) || !inBoard(to.x, to.y)) return { ok: false, reason: '坐标无效' }
     const piece = board[from.y][from.x]
     if (!piece) return { ok: false, reason: '起点没有棋子' }
     if (piece.c !== turn) return { ok: false, reason: turn === 'w' ? '现在是白方走' : '现在是黑方走' }

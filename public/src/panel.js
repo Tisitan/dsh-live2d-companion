@@ -619,7 +619,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   <button class="l2d-quips-del" type="button" title="删除当前预设">删除</button>
 </div>
 <div class="l2d-quips-row l2d-quips-namerow" hidden>
-  <input class="l2d-quips-name" type="text" maxlength="64" placeholder="新预设名称（如：Nori人设）">
+  <input class="l2d-quips-name" type="text" maxlength="64" placeholder="新预设名称（如：温柔人设）">
   <button class="l2d-quips-nameok" type="button">确定</button>
   <button class="l2d-quips-namecancel" type="button">取消</button>
 </div>
@@ -1432,11 +1432,13 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
       const up = () => {
         window.removeEventListener('pointermove', move)
         window.removeEventListener('pointerup', up)
+        window.removeEventListener('pointercancel', up)   // 触屏取消也走收尾，监听不泄漏
         setPlaced(true)
         ctx.evalIgnore?.()
       }
       window.addEventListener('pointermove', move)
       window.addEventListener('pointerup', up)
+      window.addEventListener('pointercancel', up)
     })
   }
   makeDraggable(panel, panel.querySelector('.l2d-panel-head'), (v) => { panelPlaced = v })
