@@ -32,11 +32,11 @@ function compactText(value, fallback = '') {
 
 function toolText(name) {
   const value = String(name || '').toLowerCase()
-  if (value === 'bash' || value.includes('exec')) return 'Nori正在运行命令哦。'
-  if (value === 'apply_patch' || value.includes('edit') || value.includes('write')) return 'Nori正在修改文件。'
-  if (value.includes('web') || value.includes('browser')) return 'Nori正在数据库里找资料......'
-  if (value.includes('image')) return 'Nori正在处理图片哦。'
-  return '交给Nori吧，正在处理。'
+  if (value === 'bash' || value.includes('exec')) return '正在运行命令。'
+  if (value === 'apply_patch' || value.includes('edit') || value.includes('write')) return '正在修改文件。'
+  if (value.includes('web') || value.includes('browser')) return '正在查找资料……'
+  if (value.includes('image')) return '正在处理图片。'
+  return '正在处理。'
 }
 
 function mapHook(input) {
@@ -44,16 +44,16 @@ function mapHook(input) {
   const sessionId = String(input.session_id || input.turn_id || 'codex')
   const base = { source: 'codex', sessionId, holdMs: 6000 }
   switch (event) {
-    case 'SessionStart': return { ...base, state: 'idle', text: 'Nori接上Codex啦！一直在这里等你哦。', holdMs: 4000 }
-    case 'UserPromptSubmit': return { ...base, state: 'thinking', text: '唔......Nori想一下。' }
+    case 'SessionStart': return { ...base, state: 'idle', text: '桌宠已连接 Codex。', holdMs: 4000 }
+    case 'UserPromptSubmit': return { ...base, state: 'thinking', text: '正在思考……' }
     case 'PreToolUse': return { ...base, state: 'working', text: toolText(input.tool_name), holdMs: 3500 }
     case 'PostToolUse': return { ...base, state: 'working' }
     case 'PermissionRequest': return {
       ...base, state: 'waiting',
-      text: compactText(input.tool_input?.description, '这一步需要你确认一下......Nori会等你的。'), holdMs: 10000,
+      text: compactText(input.tool_input?.description, '这一步需要你确认。'), holdMs: 10000,
     }
-    case 'SubagentStart': return { ...base, state: 'working', text: 'Nori叫了一个帮手来。', holdMs: 3500 }
-    case 'SubagentStop': return { ...base, state: 'working', text: '帮手处理好啦，Nori继续哦。', holdMs: 3500 }
+    case 'SubagentStart': return { ...base, state: 'working', text: '已启动协作任务。', holdMs: 3500 }
+    case 'SubagentStop': return { ...base, state: 'working', text: '协作任务已完成，继续处理。', holdMs: 3500 }
     case 'Stop': return {
       ...base, state: 'done', text: '完成啦！' + compactText(input.last_assistant_message, '数据都整理好了。'), holdMs: 8000,
     }

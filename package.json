@@ -36,6 +36,8 @@
     "standalone/main.cjs",
     "standalone/preload.cjs",
     "standalone/server.cjs",
+    "standalone/profile-store.cjs",
+    "standalone/memory-providers.cjs",
     "standalone/package.json",
     "standalone/package-lock.json",
     "standalone/setup.cmd",

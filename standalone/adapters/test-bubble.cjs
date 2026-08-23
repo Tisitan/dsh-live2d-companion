@@ -6,7 +6,7 @@ async function main() {
   const base = process.env.APPDATA || path.join(process.env.USERPROFILE || '', 'AppData', 'Roaming')
   const discovery = JSON.parse(await fs.readFile(path.join(base, 'live2d-standalone-companion', 'adapter.json'), 'utf8'))
   const body = Buffer.from(JSON.stringify({
-    source: 'test', sessionId: 'bubble-test', state: 'done', text: '气泡连接成功啦！Nori在这里哦。', holdMs: 8000,
+    source: 'test', sessionId: 'bubble-test', state: 'done', text: '气泡连接成功，桌宠已就绪。', holdMs: 8000,
   }))
   await new Promise((resolve, reject) => {
     const req = http.request(discovery.endpoint, {
@@ -18,7 +18,7 @@ async function main() {
     req.on('error', reject)
     req.end(body)
   })
-  console.log('已发送：气泡连接成功啦！Nori在这里哦。')
+  console.log('已发送：气泡连接成功，桌宠已就绪。')
 }
 
 main().catch(error => { console.error('测试失败：请先启动桌宠。\n' + error.message); process.exitCode = 1 })
