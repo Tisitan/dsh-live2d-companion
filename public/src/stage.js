@@ -257,6 +257,8 @@ export async function initStage(ctx) {
   // 参数列表按 eyeBlink 实例缓存；切换模型后会为新实例单独记录并恢复。
   const eyeBlinkIds = new WeakMap()
   ctx.setEyeBlinkEnabled = (enabled) => {
+    // 绑定里没有睡眠动作的模型不摘眨眼靶：无睡眠动作可播时眨眼被禁只会干瞪眼
+    if (!enabled && !ctx.binding?.motion?.sleep) return
     const blink = ctx.model?.internalModel?.eyeBlink
     if (!blink || typeof blink.setParameterIds !== 'function') return
     if (!eyeBlinkIds.has(blink)) {

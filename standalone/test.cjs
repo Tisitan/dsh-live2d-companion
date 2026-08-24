@@ -71,6 +71,7 @@ async function main() {
   assert.match(interactSource, /你回来啦/)
   assert.match(stageSource, /setEyeBlinkEnabled/)
   assert.match(stageSource, /blink\.setParameterIds/)
+  assert.match(stageSource, /!enabled && !ctx\.binding\?\.motion\?\.sleep/)
   assert.match(stageSource, /guardIdlePool/)
   assert.match(stateSource, /setEyeBlinkEnabled\?\.\(next !== 'sleeping'\)/)
   assert.match(stateSource, /if \(woke\) ctx\.stopMotions\?\.\(\)/)
