@@ -334,6 +334,22 @@ body.l2d-no-pin #l2d-game-toggle { top: 86px; }
 #l2d-model-panel .l2d-tab.on { background: #fff; color: #2b4a8f; font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
 #l2d-model-panel .l2d-tabpage { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 #l2d-model-panel .l2d-tabpage[hidden] { display: none; }
+#l2d-model-panel .l2d-profile-page { overflow-y: auto; padding: 0 12px 12px; gap: 8px; }
+#l2d-model-panel .l2d-profile-row { display: flex; align-items: center; gap: 7px; }
+#l2d-model-panel .l2d-profile-row > label { flex: 0 0 58px; color: #778; font-size: 12px; }
+#l2d-model-panel .l2d-profile-row input[type="text"], #l2d-model-panel .l2d-profile-row select {
+  min-width: 0; flex: 1; height: 30px; box-sizing: border-box; padding: 0 7px;
+  border: 1px solid #d5dbe5; border-radius: 7px; background: #fff; color: #334; font: inherit;
+}
+#l2d-model-panel .l2d-profile-persona { width: 100%; min-height: 135px; resize: vertical; box-sizing: border-box;
+  border: 1px solid #d5dbe5; border-radius: 8px; padding: 7px 8px; color: #334;
+  font: 12px/1.55 ui-monospace, 'Cascadia Mono', Consolas, monospace; }
+#l2d-model-panel .l2d-profile-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+#l2d-model-panel .l2d-profile-actions button { flex: 1 1 92px; padding: 6px 8px; border: 1px solid #d5dbe5;
+  border-radius: 8px; background: #fff; color: #445; cursor: pointer; font: inherit; }
+#l2d-model-panel .l2d-profile-actions button.primary { background: #4a7fb5; border-color: #4a7fb5; color: #fff; }
+#l2d-model-panel .l2d-profile-note, #l2d-model-panel .l2d-profile-status { color: #889; font-size: 11px; line-height: 1.5; }
+#l2d-model-panel .l2d-profile-status.error { color: #c0392b; }
 
 /* ── 绑定编辑器分区卡 ── */
 #l2d-viewer .l2d-binder-sec {
@@ -619,7 +635,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   <button class="l2d-quips-del" type="button" title="删除当前预设">删除</button>
 </div>
 <div class="l2d-quips-row l2d-quips-namerow" hidden>
-  <input class="l2d-quips-name" type="text" maxlength="64" placeholder="新预设名称（如：温柔人设）">
+  <input class="l2d-quips-name" type="text" maxlength="64" placeholder="新预设名称（如：温柔模式）">
   <button class="l2d-quips-nameok" type="button">确定</button>
   <button class="l2d-quips-namecancel" type="button">取消</button>
 </div>
@@ -870,6 +886,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
 </div>
 <div class="l2d-panel-tabs">
   <button type="button" class="l2d-tab on" data-tab="models">模型</button>
+  <button type="button" class="l2d-tab l2d-profile-tab" data-tab="profile">角色</button>
   <button type="button" class="l2d-tab" data-tab="prefs">设置</button>
 </div>
 <div class="l2d-tabpage" data-page="models">
@@ -881,6 +898,22 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     <button type="button" class="l2d-refresh">刷新列表</button>
     <button type="button" class="l2d-import">导入模型</button>
   </div>
+</div>
+<div class="l2d-tabpage l2d-profile-page" data-page="profile" hidden>
+  <div class="l2d-profile-row"><label>角色档案</label><select class="l2d-profile-select"></select><button type="button" class="l2d-profile-new">新建</button></div>
+  <div class="l2d-profile-row"><label>角色名称</label><input class="l2d-profile-name" type="text" maxlength="64" placeholder="桌宠"></div>
+  <div class="l2d-profile-row"><label>绑定模型</label><input class="l2d-profile-model" type="text" readonly></div>
+  <div class="l2d-profile-row"><label>记忆模式</label><select class="l2d-profile-provider"><option value="local">本地召回（快速）</option><option value="opencode">OpenCode 语义重排（实验）</option></select></div>
+  <textarea class="l2d-profile-persona" maxlength="65536" placeholder="在这里编辑人设；“新增人设”会追加内容，“覆盖人设”会替换内容。留空则使用通用桌宠设定。"></textarea>
+  <div class="l2d-profile-actions">
+    <button type="button" class="l2d-profile-persona-append">新增人设</button>
+    <button type="button" class="l2d-profile-persona-replace">覆盖人设</button>
+    <button type="button" class="l2d-profile-memory-import">导入记忆</button>
+    <button type="button" class="l2d-profile-diary-import">导入日记</button>
+    <button type="button" class="l2d-profile-save primary">保存并启用</button>
+  </div>
+  <div class="l2d-profile-note">人设、记忆和日记保存在用户数据目录，不会写进模型文件夹。OpenCode 语义重排会多调用一次模型；未连接或筛选失败时自动退回本地记忆。</div>
+  <div class="l2d-profile-status"></div>
 </div>
 <div class="l2d-tabpage" data-page="prefs" hidden>
   <div class="l2d-fps-row">
@@ -901,7 +934,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     </select>
     <button type="button" class="l2d-mode-apply" hidden title="刷新 DSH 页面，让挂件变化立刻生效">立刻生效</button>
   </div>
-  <div class="l2d-hint">桌宠=趴在桌面上的独立窗口；网页挂件=嵌在 DSH 网页里。切换后桌宠立刻变化；挂件那边要刷新一下网页才跟着变（会送你「立刻生效」按钮，点一下就行）。</div>
+  <div class="l2d-hint l2d-mode-hint">桌宠=趴在桌面上的独立窗口；网页挂件=嵌在 DSH 网页里。切换后桌宠立刻变化；挂件那边要刷新一下网页才跟着变（会送你「立刻生效」按钮，点一下就行）。</div>
   <div class="l2d-soft-row" hidden>
     <label class="l2d-soft-label" title="默认 GPU 渲染；拖动闪烁的机器开启后改走 CPU，切换后桌宠自动重启生效">
       <input type="checkbox" class="l2d-soft"> CPU 渲染模式（拖动闪烁时开启，切换后自动重启生效）
@@ -969,6 +1002,21 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   importInput.webkitdirectory = true
   importInput.style.display = 'none'
   document.body.appendChild(importInput)
+  const personaInput = document.createElement('input')
+  personaInput.type = 'file'
+  personaInput.accept = '.md,.txt,text/markdown,text/plain'
+  personaInput.style.display = 'none'
+  const memoryInput = document.createElement('input')
+  memoryInput.type = 'file'
+  memoryInput.multiple = true
+  memoryInput.accept = '.md,.txt,.json,.jsonl,text/plain,application/json'
+  memoryInput.style.display = 'none'
+  const diaryInput = document.createElement('input')
+  diaryInput.type = 'file'
+  diaryInput.multiple = true
+  diaryInput.accept = '.md,.txt,text/markdown,text/plain'
+  diaryInput.style.display = 'none'
+  document.body.append(personaInput, memoryInput, diaryInput)
 
   const closeBtn = panel.querySelector('.l2d-panel-close')
   const currentPathEl = panel.querySelector('.l2d-current-path')
@@ -978,6 +1026,164 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   const refreshBtn = panel.querySelector('.l2d-refresh')
   const importBtn = panel.querySelector('.l2d-import')
   const fpsSelect = panel.querySelector('.l2d-fps-select')
+  const profileTab = panel.querySelector('.l2d-profile-tab')
+  const profileSelect = panel.querySelector('.l2d-profile-select')
+  const profileName = panel.querySelector('.l2d-profile-name')
+  const profileModel = panel.querySelector('.l2d-profile-model')
+  const profileProvider = panel.querySelector('.l2d-profile-provider')
+  const profilePersona = panel.querySelector('.l2d-profile-persona')
+  const profileStatus = panel.querySelector('.l2d-profile-status')
+  let profileId = ''
+  let profiles = []
+  let personaImportMode = 'replace'
+
+  profileTab.hidden = !STANDALONE
+  function setProfileStatus(text, error = false) {
+    profileStatus.textContent = text
+    profileStatus.classList.toggle('error', error)
+  }
+  function fillProfile(profile = null, model = ctx.modelPath) {
+    profileId = profile?.id || ''
+    profileName.value = profile?.name || ((model || '').split('/').slice(-2, -1)[0] || '桌宠')
+    profileModel.value = profile?.model || model || ''
+    profileProvider.value = profile?.memoryProvider || 'local'
+    profilePersona.value = profile?.persona || ''
+    profileSelect.value = profileId
+  }
+  async function loadProfiles(preferredId = '') {
+    if (!STANDALONE) return null
+    const response = await fetch(BASE + '/companion-profiles', { cache: 'no-store' })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(data.error || '角色档案读取失败')
+    if (Array.isArray(data.providers) && data.providers.length) {
+      profileProvider.replaceChildren(...data.providers.map(item => new Option(
+        `${item.name}${item.available === false ? '（当前未连接）' : ''}`, item.id,
+      )))
+    }
+    profiles = Array.isArray(data.profiles) ? data.profiles : []
+    const forModel = profiles.filter(item => item.model === ctx.modelPath)
+    profileSelect.replaceChildren(
+      new Option('新角色档案', ''),
+      ...forModel.map(item => new Option(item.name, item.id)),
+    )
+    let active = data.active || null
+    if (preferredId) active = profiles.find(item => item.id === preferredId) || active
+    if (active?.id && active.id !== data.active?.id) {
+      const activated = await fetch(BASE + '/companion-profiles', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'activate', id: active.id }),
+      }).then(r => r.json())
+      active = activated.active || active
+    }
+    fillProfile(active?.model === ctx.modelPath ? active : null, ctx.modelPath)
+    setProfileStatus(active ? `当前档案：${active.name}` : '为当前模型创建一份角色档案')
+    return active
+  }
+  async function saveProfile(silent = false) {
+    if (!profileModel.value) throw new Error('没有可以绑定的模型')
+    const response = await fetch(BASE + '/companion-profiles', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: profileId || undefined,
+        name: profileName.value.trim(), model: profileModel.value,
+        memoryProvider: profileProvider.value, persona: profilePersona.value,
+      }),
+    })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok || !data.active) throw new Error(data.error || '角色档案保存失败')
+    profileId = data.active.id
+    await loadProfiles(profileId)
+    if (!silent) {
+      setProfileStatus('角色档案已保存并启用')
+      ctx.showBubble?.('角色档案已经准备好了。', 2600, 2)
+    }
+    return data.active
+  }
+  async function importProfileFiles(kind, files) {
+    if (!files?.length) return
+    const active = await saveProfile(true)
+    let imported = 0
+    for (const file of files) {
+      const text = await file.text()
+      const response = await fetch(`${BASE}/companion-profile/import?id=${encodeURIComponent(active.id)}&kind=${encodeURIComponent(kind)}&name=${encodeURIComponent(file.name)}`, {
+        method: 'POST', headers: { 'content-type': 'text/plain; charset=utf-8' }, body: text,
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data.error || `导入失败：${file.name}`)
+      imported += data.duplicate ? 0 : 1
+    }
+    setProfileStatus(`已导入 ${imported} 个${kind === 'memory' ? '记忆' : '日记'}文件`)
+  }
+  async function openProfileEditor(model = ctx.modelPath, imported = false) {
+    if (!STANDALONE) return
+    openPanel()
+    profileTab.click()
+    setProfileStatus('正在读取角色档案……')
+    try {
+      await loadProfiles()
+      if (imported) setProfileStatus('模型已导入，请确认角色名称并导入人设；日记和记忆目录已自动创建。')
+    } catch (error) {
+      setProfileStatus(error.message, true)
+    }
+  }
+  ctx.openProfileEditor = openProfileEditor
+  profileTab.addEventListener('click', () => void loadProfiles().catch(error => setProfileStatus(error.message, true)))
+  panel.querySelector('.l2d-profile-new').addEventListener('click', () => {
+    fillProfile(null, ctx.modelPath)
+    setProfileStatus('正在创建绑定当前模型的新角色档案')
+  })
+  profileSelect.addEventListener('change', async () => {
+    if (!profileSelect.value) { fillProfile(null, ctx.modelPath); return }
+    try {
+      const response = await fetch(BASE + '/companion-profiles', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'activate', id: profileSelect.value }),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok || !data.active) throw new Error(data.error || '档案切换失败')
+      if (data.active.model !== ctx.modelPath) await ctx.switchModel(data.active.model)
+      await loadProfiles(data.active.id)
+    } catch (error) { setProfileStatus(error.message, true) }
+  })
+  panel.querySelector('.l2d-profile-save').addEventListener('click', () => {
+    void saveProfile().catch(error => setProfileStatus(error.message, true))
+  })
+  panel.querySelector('.l2d-profile-persona-append').addEventListener('click', () => {
+    personaImportMode = 'append'
+    personaInput.click()
+  })
+  panel.querySelector('.l2d-profile-persona-replace').addEventListener('click', () => {
+    personaImportMode = 'replace'
+    personaInput.click()
+  })
+  panel.querySelector('.l2d-profile-memory-import').addEventListener('click', () => memoryInput.click())
+  panel.querySelector('.l2d-profile-diary-import').addEventListener('click', () => diaryInput.click())
+  personaInput.addEventListener('change', async () => {
+    const file = personaInput.files?.[0]
+    if (file) {
+      const incoming = (await file.text()).trim()
+      if (!incoming) {
+        setProfileStatus(`人设文件为空：${file.name}`, true)
+      } else if (personaImportMode === 'append') {
+        const current = profilePersona.value.trimEnd()
+        const duplicate = current.includes(incoming)
+        if (!duplicate) profilePersona.value = current ? `${current}\n\n${incoming}` : incoming
+        setProfileStatus(duplicate ? `人设中已经包含：${file.name}` : `已追加人设：${file.name}；点击“保存并启用”生效`)
+      } else {
+        profilePersona.value = incoming
+        setProfileStatus(`已读取人设：${file.name}；保存后将覆盖当前人设`)
+      }
+    }
+    personaInput.value = ''
+  })
+  memoryInput.addEventListener('change', () => {
+    void importProfileFiles('memory', [...memoryInput.files]).catch(error => setProfileStatus(error.message, true))
+    memoryInput.value = ''
+  })
+  diaryInput.addEventListener('change', () => {
+    void importProfileFiles('diary', [...diaryInput.files]).catch(error => setProfileStatus(error.message, true))
+    diaryInput.value = ''
+  })
 
   // 帧率预设：初始化跟随持久化值，切换立即生效并给气泡反馈
   if (fpsSelect && ctx.setFpsMode) {
@@ -994,7 +1200,10 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   // 一键 location.reload()；桌宠侧够不到浏览器页，文字指引手动刷新。
   const modeSelect = panel.querySelector('.l2d-mode-select')
   const modeApply = panel.querySelector('.l2d-mode-apply')
-  if (STANDALONE) panel.querySelector('.l2d-mode-row').hidden = true
+  if (STANDALONE) {
+    modeSelect.value = 'pet'
+    panel.querySelector('.l2d-mode-hint').textContent = '桌宠=趴在桌面上的独立窗口；网页挂件=嵌在 DSH 网页里。切换后桌宠立刻变化；挂件那边要刷新一下网页才跟着变（会送你「立刻生效」按钮，点一下就行）。OpenCode 与 Codex 目前不支持网页挂件；独立版固定使用桌宠模式。'
+  }
   modeApply.addEventListener('click', () => location.reload())
   async function refreshMode() {
     if (STANDALONE) return
@@ -1005,7 +1214,11 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     } catch { }
   }
   modeSelect.addEventListener('change', async () => {
-    if (STANDALONE) return
+    if (STANDALONE) {
+      modeSelect.value = 'pet'
+      setStatus('OpenCode 与 Codex 不支持网页挂件，独立版使用桌宠模式')
+      return
+    }
     const mode = modeSelect.value
     setStatus('正在切换显示模式…')
     try {
@@ -1034,6 +1247,10 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   // 退出桌宠：仅桌宠形态显示；双击确认防误触，道别后再退场
   const quitRow = panel.querySelector('.l2d-quit-row')
   const quitBtn = panel.querySelector('.l2d-quit')
+  const quitHint = panel.querySelector('.l2d-quit-hint')
+  if (STANDALONE && quitHint) {
+    quitHint.textContent = '重启=重载模型与台词、顺手治小毛病；退出=立刻下班，想叫她回来就重新打开 Live2D桌宠.exe。'
+  }
   // 软渲染开关：仅桌宠形态显示；勾选状态来自持久化配置，切换写盘后自动重启
   const softRow = panel.querySelector('.l2d-soft-row')
   const softCheck = panel.querySelector('.l2d-soft')
@@ -1572,6 +1789,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
       if (!switched && ctx.modelPath !== data.model) throw new Error('模型加载失败')
       renderList()
       setStatus('已切换：' + data.model)
+      if (STANDALONE) await loadProfiles(data.profile?.id || '')
     } catch (error) {
       setStatus('切换失败：' + error.message, true)
     } finally {
@@ -1723,6 +1941,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     await refreshModels()
     if (model3Path) {
       await selectModel(model3Path)
+      await openProfileEditor(model3Path, true)
     } else {
       setStatus(`导入完成：${modelName}（未找到 .model3.json）`)
     }

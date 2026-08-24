@@ -38,13 +38,15 @@ function installOpenCode() {
   const pluginDir = path.join(home, '.config', 'opencode', 'plugins')
   const agentDir = path.join(home, '.config', 'opencode', 'agents')
   const pluginTarget = path.join(pluginDir, 'live2d-companion.js')
-  const agentTarget = path.join(agentDir, 'nori.md')
+  const agentTarget = path.join(agentDir, 'live2d-companion.md')
   fs.mkdirSync(pluginDir, { recursive: true })
   fs.mkdirSync(agentDir, { recursive: true })
   backup(pluginTarget)
-  backup(agentTarget)
   fs.copyFileSync(path.join(root, 'adapters', 'opencode-live2d.js'), pluginTarget)
-  fs.copyFileSync(path.join(root, 'adapters', 'nori.md'), agentTarget)
+  // Preserve locally customized character prompts on repeated installs.
+  if (!fs.existsSync(agentTarget)) {
+    fs.copyFileSync(path.join(root, 'adapters', 'live2d-companion.md'), agentTarget)
+  }
   return { plugin: pluginTarget, agent: agentTarget }
 }
 
@@ -54,7 +56,7 @@ try {
   console.log('安装完成。')
   console.log(`Codex: ${codex}`)
   console.log(`OpenCode 插件: ${opencode.plugin}`)
-  console.log(`Nori 人设: ${opencode.agent}`)
+  console.log(`桌宠角色模板: ${opencode.agent}`)
   console.log('请重启 Codex/OpenCode。Codex 首次使用时还需要在 /hooks 中信任新钩子。')
 } catch (error) {
   console.error('安装失败：' + error.message)

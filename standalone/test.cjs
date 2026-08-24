@@ -23,16 +23,58 @@ async function main() {
   const mainSource = fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8')
   const preloadSource = fs.readFileSync(path.join(__dirname, 'preload.cjs'), 'utf8')
   const cardPreloadSource = fs.readFileSync(path.join(__dirname, 'preload-card.cjs'), 'utf8')
+  const chatSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'src', 'chat.js'), 'utf8')
+  const interactSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'src', 'interact.js'), 'utf8')
+  const stageSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'src', 'stage.js'), 'utf8')
+  const stateSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'src', 'state.js'), 'utf8')
+  const openCodeAdapterSource = fs.readFileSync(path.join(__dirname, 'adapters', 'opencode-live2d.js'), 'utf8')
+  const installerSource = fs.readFileSync(path.join(__dirname, 'adapters', 'install-adapters.cjs'), 'utf8')
   assert.match(mainSource, /l2d-game-open/)
   assert.match(mainSource, /cardGameId/)
   assert.match(mainSource, /cardExpectedSize/)
   assert.match(mainSource, /useContentSize:\s*true/)
   assert.match(mainSource, /hasShadow:\s*false/)
   assert.match(mainSource, /cardWin\.setBounds/)
+  assert.match(mainSource, /l2d-restart/)
   assert.match(preloadSource, /openGame/)
   assert.match(preloadSource, /getCardArea/)
+  assert.match(preloadSource, /getDiaryConfig/)
+  assert.match(preloadSource, /chooseDiaryDir/)
+  assert.match(preloadSource, /saveDiary/)
   assert.match(cardPreloadSource, /l2d-game-close/)
   assert.match(cardPreloadSource, /l2d-game-moveby/)
+  assert.match(chatSource, /l2d-chat-history/)
+  assert.match(chatSource, /appendHistory\('user'/)
+  assert.match(chatSource, /appendHistory\('assistant'/)
+  assert.match(chatSource, /diary\/summarize/)
+  assert.match(chatSource, /diary\/extract-memory/)
+  assert.match(chatSource, /memory\/commit/)
+  assert.match(chatSource, /替换已有记忆/)
+  assert.match(chatSource, /setInterval\(\(\) =>/)
+  assert.match(chatSource, /status\.textContent = '请先打开 OpenCode'/)
+  assert.match(chatSource, /l2d-diary-location/)
+  assert.match(chatSource, /BRIDGE\.chooseDiaryDir/)
+  assert.match(chatSource, /BRIDGE\.saveDiary/)
+  assert.match(chatSource, /角色档案已保存，但指定位置写入失败/)
+  assert.match(chatSource, /head\.setPointerCapture/)
+  assert.match(chatSource, /placePanelOnce/)
+  assert.match(chatSource, /pointercancel/)
+  assert.match(chatSource, /60000/)
+  assert.match(mainSource, /l2d-diary-save/)
+  assert.match(mainSource, /diary-\$\{now\.getFullYear\(\)\}/)
+  assert.match(openCodeAdapterSource, /L2D_COMPANION_AGENT/)
+  assert.match(openCodeAdapterSource, /live2d-companion/)
+  assert.match(installerSource, /live2d-companion\.md/)
+  assert.ok(fs.existsSync(path.join(__dirname, 'adapters', 'live2d-companion.md')))
+  assert.match(interactSource, /wokeFromSleep/)
+  assert.match(interactSource, /clickReact\(true\)/)
+  assert.match(interactSource, /你回来啦/)
+  assert.match(stageSource, /setEyeBlinkEnabled/)
+  assert.match(stageSource, /blink\.setParameterIds/)
+  assert.match(stageSource, /guardIdlePool/)
+  assert.match(stateSource, /setEyeBlinkEnabled\?\.\(next !== 'sleeping'\)/)
+  assert.match(stateSource, /if \(woke\) ctx\.stopMotions\?\.\(\)/)
+  assert.match(preloadSource, /restart/)
 
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'l2d-standalone-test-'))
   const publicDir = path.resolve(__dirname, '..', 'public')
@@ -49,6 +91,69 @@ async function main() {
     const cookie = page.headers.get('set-cookie')
     assert.ok(cookie?.includes('l2d_standalone_token='))
     const browserAuth = { cookie: cookie.split(';')[0] }
+    const importedModel = await fetch(server.origin + '/live2d/import?model=test-model&path=test.model3.json', {
+      method: 'POST', headers: browserAuth, body: JSON.stringify({ FileReferences: {} }),
+    })
+    assert.equal(importedModel.status, 200)
+    const selectedModel = await fetch(server.origin + '/live2d/model', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'test-model/test.model3.json' }),
+    })
+    assert.equal(selectedModel.status, 200)
+
+    const profilesDenied = await fetch(server.origin + '/live2d/companion-profiles')
+    assert.equal(profilesDenied.status, 403)
+    const profilesResponse = await fetch(server.origin + '/live2d/companion-profiles', { headers: browserAuth })
+    const profileData = await profilesResponse.json()
+    assert.equal(profilesResponse.status, 200)
+    assert.equal(profileData.active.model, 'test-model/test.model3.json')
+    const profileId = profileData.active.id
+    const savedProfile = await fetch(server.origin + '/live2d/companion-profiles', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ ...profileData.active, name: '测试桌宠', persona: '你是用于测试的桌宠。', autoDiary: true }),
+    })
+    assert.equal(savedProfile.status, 200)
+    const personaReplacement = await fetch(server.origin + '/live2d/companion-profiles', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ id: profileId, name: '测试桌宠', model: profileData.active.model,
+        memoryProvider: 'local', persona: '你是用于测试的更新后桌宠。' }),
+    }).then(r => r.json())
+    assert.equal(personaReplacement.active.persona, '你是用于测试的更新后桌宠。')
+    assert.equal(personaReplacement.active.autoDiary, true)
+    const memoryImport = await fetch(`${server.origin}/live2d/companion-profile/import?id=${profileId}&kind=memory&name=test-memory.md`, {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'text/plain' }, body: '用户和桌宠曾经一起下棋。',
+    })
+    assert.equal(memoryImport.status, 200)
+    const importedMemory = await memoryImport.json()
+    assert.equal(importedMemory.category, 'event')
+    assert.match(importedMemory.file, /^memory-.*\.md$/)
+    const duplicateMemory = await fetch(`${server.origin}/live2d/companion-profile/import?id=${profileId}&kind=memory&name=test-memory.md`, {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'text/plain' }, body: '  用户和桌宠曾经一起下棋  ',
+    })
+    assert.equal((await duplicateMemory.json()).duplicate, true)
+    const memoryIndex = JSON.parse(fs.readFileSync(path.join(dataDir, 'profiles', profileId, 'memories', 'index.json'), 'utf8'))
+    assert.equal(memoryIndex.length, 1)
+    const secondProfileResponse = await fetch(server.origin + '/live2d/companion-profiles', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: '另一个角色', model: 'test-model/test.model3.json', persona: '独立测试档案。' }),
+    })
+    const secondProfile = (await secondProfileResponse.json()).active
+    assert.notEqual(secondProfile.id, profileId)
+    await fetch(`${server.origin}/live2d/companion-profile/import?id=${secondProfile.id}&kind=memory&name=private.md`, {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'text/plain' }, body: '另一个角色喜欢潜水。',
+    })
+    const reactivateProfile = await fetch(server.origin + '/live2d/companion-profiles', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'activate', id: profileId }),
+    })
+    assert.equal((await reactivateProfile.json()).active.id, profileId)
+    const allProfiles = await fetch(server.origin + '/live2d/companion-profiles', { headers: browserAuth }).then(r => r.json())
+    assert.equal(allProfiles.profiles.filter(item => item.model === 'test-model/test.model3.json').length, 2)
+    const seedDiary = await fetch(server.origin + '/live2d/diary/save', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ summary: '今天一起去了海边捡贝壳。' }),
+    })
+    assert.equal(seedDiary.status, 200)
     const gameCardPage = await fetch(server.origin + '/live2d/game-card.html')
     assert.equal(gameCardPage.status, 200)
     const gameCardScript = await fetch(server.origin + '/live2d/game-card.js')
@@ -56,7 +161,7 @@ async function main() {
     assert.match(await gameCardScript.text(), /requestedGame/)
 
     const chatStatusBefore = await fetch(server.origin + '/live2d/chat/status')
-    assert.deepEqual(await chatStatusBefore.json(), { connected: false })
+    assert.deepEqual(await chatStatusBefore.json(), { connected: false, profileId, profileName: '测试桌宠' })
     const chatPollDenied = await fetch(server.origin + '/live2d/chat/next')
     assert.equal(chatPollDenied.status, 403)
     const heartbeatDenied = await fetch(server.origin + '/live2d/chat/heartbeat')
@@ -67,12 +172,12 @@ async function main() {
     const emptyPoll = await fetch(server.origin + '/live2d/chat/next', { headers: adapterAuth })
     assert.equal(emptyPoll.status, 204)
     const chatStatusAfter = await fetch(server.origin + '/live2d/chat/status')
-    assert.deepEqual(await chatStatusAfter.json(), { connected: true })
+    assert.deepEqual(await chatStatusAfter.json(), { connected: true, profileId, profileName: '测试桌宠' })
 
     const chatPromise = fetch(server.origin + '/live2d/chat', {
       method: 'POST',
       headers: { ...browserAuth, 'content-type': 'application/json' },
-      body: JSON.stringify({ message: 'Nori，在吗？' }),
+      body: JSON.stringify({ message: '还记得我们一起下棋吗？' }),
     })
     let chatJobResponse
     for (let attempt = 0; attempt < 20; attempt++) {
@@ -82,16 +187,62 @@ async function main() {
     }
     assert.equal(chatJobResponse.status, 200)
     const chatJob = await chatJobResponse.json()
-    assert.equal(chatJob.message, 'Nori，在吗？')
+    assert.equal(chatJob.message, '还记得我们一起下棋吗？')
+    assert.match(chatJob.memory, /一起下棋/)
+    assert.doesNotMatch(chatJob.memory, /喜欢潜水/)
+    assert.equal(chatJob.profileId, profileId)
+    assert.equal(chatJob.profileName, '测试桌宠')
+    assert.match(chatJob.persona, /用于测试的更新后桌宠/)
     const chatReply = await fetch(server.origin + '/live2d/chat/reply', {
       method: 'POST',
       headers: { ...adapterAuth, 'content-type': 'application/json' },
-      body: JSON.stringify({ id: chatJob.id, text: '在哦。Nori一直在这里。' }),
+      body: JSON.stringify({ id: chatJob.id, text: '在这里。' }),
     })
     assert.equal(chatReply.status, 200)
     const chatResult = await chatPromise
     assert.equal(chatResult.status, 200)
-    assert.deepEqual(await chatResult.json(), { reply: '在哦。Nori一直在这里。' })
+    assert.deepEqual(await chatResult.json(), { reply: '在这里。' })
+
+    const unrelatedChatPromise = fetch(server.origin + '/live2d/chat', {
+      method: 'POST',
+      headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ message: '今天的天气怎么样？' }),
+    })
+    let unrelatedJobResponse
+    for (let attempt = 0; attempt < 20; attempt++) {
+      unrelatedJobResponse = await fetch(server.origin + '/live2d/chat/next', { headers: adapterAuth })
+      if (unrelatedJobResponse.status === 200) break
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    assert.equal(unrelatedJobResponse.status, 200)
+    const unrelatedJob = await unrelatedJobResponse.json()
+    assert.equal(unrelatedJob.memory, '')
+    await fetch(server.origin + '/live2d/chat/reply', {
+      method: 'POST',
+      headers: { ...adapterAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ id: unrelatedJob.id, text: '天气不错。' }),
+    })
+    assert.deepEqual(await (await unrelatedChatPromise).json(), { reply: '天气不错。' })
+
+    const diaryRecallPromise = fetch(server.origin + '/live2d/chat', {
+      method: 'POST',
+      headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ message: '海边捡贝壳好玩吗？' }),
+    })
+    let diaryRecallResponse
+    for (let attempt = 0; attempt < 20; attempt++) {
+      diaryRecallResponse = await fetch(server.origin + '/live2d/chat/next', { headers: adapterAuth })
+      if (diaryRecallResponse.status === 200) break
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    assert.equal(diaryRecallResponse.status, 200)
+    const diaryRecallJob = await diaryRecallResponse.json()
+    assert.match(diaryRecallJob.memory, /海边捡贝壳/)
+    await fetch(server.origin + '/live2d/chat/reply', {
+      method: 'POST', headers: { ...adapterAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ id: diaryRecallJob.id, text: '很好玩。' }),
+    })
+    assert.deepEqual(await (await diaryRecallPromise).json(), { reply: '很好玩。' })
 
     const config = await fetch(server.origin + '/live2d/config')
     assert.equal(config.status, 200)
@@ -173,6 +324,20 @@ async function main() {
       body: JSON.stringify({ source: 'codex', sessionId: 's1', remove: true }),
     })
 
+    const hiddenThinking = await fetch(adapter.endpoint, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${adapter.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'opencode', sessionId: 'hidden-game-turn', state: 'thinking', hidden: true }),
+    })
+    assert.equal(hiddenThinking.status, 200)
+    const hiddenFrame = await hiddenThinking.json()
+    assert.equal(hiddenFrame.state, 'thinking')
+    assert.deepEqual(hiddenFrame.sessions, [])
+    await fetch(adapter.endpoint, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${adapter.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'opencode', sessionId: 'hidden-game-turn', remove: true }),
+    })
     const hookOutput = await runHook(path.join(__dirname, 'adapters', 'codex-hook.cjs'), {
       hook_event_name: 'Stop', session_id: 'hook-session', last_assistant_message: '**已经完成**\n```js\nsecret code\n```',
     }, { L2D_ADAPTER_FILE: adapterFile })
@@ -189,13 +354,38 @@ async function main() {
     process.env.L2D_ADAPTER_FILE = adapterFile
     const pluginModule = await import(pathToFileURL(path.join(__dirname, 'adapters', 'opencode-live2d.js')).href)
     const mockCalls = []
-    let mockPromptText = 'Nori收到啦。'
+    let mockPromptText = '桌宠收到啦。'
+    let mockMemoryReply = 'select'
     const plugin = await pluginModule.Live2DCompanion({ client: { session: {
       create: async (input) => {
         mockCalls.push(['create', input])
-        return { data: { id: input.body.title.includes('游戏') ? 'nori-game-session' : 'nori-chat-session' } }
+        const id = input.body.title.includes('游戏') ? 'companion-game-session'
+          : input.body.title.includes('记忆筛选') ? 'companion-memory-session'
+            : input.body.title.includes('记忆提炼') ? 'companion-extract-session'
+            : 'companion-chat-session'
+        return { data: { id } }
       },
-      prompt: async (input) => { mockCalls.push(['prompt', input]); return { data: { parts: [{ type: 'text', text: mockPromptText }] } } },
+      prompt: async (input) => {
+        mockCalls.push(['prompt', input])
+        let text = mockPromptText
+        if (input.path.id === 'companion-memory-session') {
+          if (mockMemoryReply === 'invalid') text = 'not-json'
+          else {
+            const prompt = input.body.parts[0].text
+            const material = prompt.split('<memory-candidates>\n')[1]?.split('\n</memory-candidates>')[0] || ''
+            const matching = material.split(/\n\n(?=\[M\d+\]\n)/).find(block => block.includes('一起下棋') || block.includes('下围棋')) || ''
+            const id = matching.match(/^\[(M\d+)\]/)?.[1]
+            text = JSON.stringify({ ids: id ? [id] : [] })
+          }
+        } else if (input.path.id === 'companion-extract-session') {
+          text = JSON.stringify({ memories: [
+            { category: 'preference', content: '用户喜欢陶艺。', matchId: null, reason: '稳定偏好' },
+            { category: 'event', content: '用户后来更喜欢和桌宠下围棋。', matchId: memoryIndex[0].id, reason: '更新已有事件' },
+          ] })
+        }
+        return { data: { parts: [{ type: 'text', text }] } }
+      },
+      delete: async (input) => { mockCalls.push(['delete', input]); return { data: true } },
     } } })
     await plugin.event({ event: { type: 'session.created', properties: { sessionID: 'oc1' } } })
     const afterOpenCodeStart = await fetch(server.origin + '/live2d/state')
@@ -215,13 +405,15 @@ async function main() {
       new Promise((_, reject) => setTimeout(() => reject(new Error('OpenCode plugin chat timed out')), 3500)),
     ])
     assert.equal(pluginChatResult.status, 200)
-    assert.deepEqual(await pluginChatResult.json(), { reply: 'Nori收到啦。' })
+    assert.deepEqual(await pluginChatResult.json(), { reply: '桌宠收到啦。' })
     assert.equal(mockCalls[0][0], 'create')
     assert.equal(mockCalls[1][0], 'prompt')
-    assert.equal(mockCalls[1][1].body.agent, 'nori')
-    assert.equal(mockCalls[1][1].body.parts[0].text, '测试插件聊天')
+    assert.equal(mockCalls[1][1].body.agent, 'live2d-companion')
+    assert.match(mockCalls[1][1].body.parts[0].text, /companion-persona/)
+    assert.match(mockCalls[1][1].body.parts[0].text, /用于测试的更新后桌宠/)
+    assert.match(mockCalls[1][1].body.parts[0].text, /测试插件聊天$/)
 
-    // 独立版 OpenCode 解说：本地 AI 走子，独立 Nori 游戏会话只返回人格化台词。
+    // 独立版 OpenCode 解说：本地 AI 走子，独立桌宠游戏会话只返回人格化台词。
     const onlineGame = await fetch(server.origin + '/live2d/game/new', {
       method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
       body: JSON.stringify({ game: 'gomoku', mode: 'online', difficulty: 'normal', userTitle: '主人' }),
@@ -237,13 +429,19 @@ async function main() {
     ])
     assert.equal(onlineMove.status, 200)
     const commentedGame = await onlineMove.json()
-    assert.equal(commentedGame.commentary.at(-1).text, 'Nori收到啦。')
+    assert.equal(commentedGame.commentary.at(-1).text, '桌宠收到啦。')
     assert.equal(mockCalls[2][0], 'create')
-    assert.equal(mockCalls[2][1].body.title, 'Nori 游戏解说')
+    assert.equal(mockCalls[2][1].body.title, '桌宠游戏解说')
     assert.equal(mockCalls[3][0], 'prompt')
-    assert.equal(mockCalls[3][1].path.id, 'nori-game-session')
-    assert.equal(mockCalls[3][1].body.agent, 'nori')
+    assert.equal(mockCalls[3][1].path.id, 'companion-game-session')
+    assert.equal(mockCalls[3][1].body.agent, 'live2d-companion')
     assert.match(mockCalls[3][1].body.parts[0].text, /只回复一句/)
+    let afterGameTurnState = 'thinking'
+    for (let attempt = 0; attempt < 20 && afterGameTurnState === 'thinking'; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+      afterGameTurnState = (await (await fetch(server.origin + '/live2d/state')).json()).state
+    }
+    assert.equal(afterGameTurnState, 'done')
 
     // 游戏台词由程序强制限制为一句、40 字；OpenCode 内部步骤总结必须被丢弃并回退本地台词。
     const emptyPoint = () => {
@@ -267,6 +465,124 @@ async function main() {
     assert.equal(filteredMove.status, 200)
     const filteredGame = await filteredMove.json()
     assert.doesNotMatch(filteredGame.commentary.at(-1).text, /最大步骤|剩余任务|当前工作/)
+
+    mockPromptText = '桌宠收到啦。'
+    const diarySummary = await Promise.race([
+      fetch(server.origin + '/live2d/diary/summarize', {
+        method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+        body: JSON.stringify({ messages: [{ role: 'user', text: '今天一起下棋了' }, { role: 'assistant', text: '我玩得很开心。' }] }),
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('OpenCode diary summary timed out')), 5000)),
+    ])
+    assert.equal(diarySummary.status, 200)
+    assert.equal((await diarySummary.json()).summary, '桌宠收到啦。')
+    assert.equal(mockCalls[6][0], 'create')
+    assert.equal(mockCalls[6][1].body.title, '桌宠日记整理')
+    assert.equal(mockCalls[7][0], 'prompt')
+    assert.equal(mockCalls[7][1].body.agent, 'live2d-companion')
+    assert.match(mockCalls[7][1].body.parts[0].text, /今天一起下棋了/)
+
+    const diarySave = await fetch(server.origin + '/live2d/diary/save', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ summary: '今天测试了通用角色档案。' }),
+    })
+    assert.equal(diarySave.status, 200)
+    const diaryResult = await diarySave.json()
+    assert.equal(diaryResult.profileId, profileId)
+    const diaryDir = path.join(dataDir, 'profiles', profileId, 'diaries')
+    assert.ok(fs.readdirSync(diaryDir).some(name => name.endsWith('.md')))
+
+    const diaryList = await fetch(server.origin + '/live2d/diary/list', { headers: browserAuth }).then(r => r.json())
+    assert.equal(diaryList.diaries.length, 1)
+    assert.equal(diaryList.diaries[0].processed, false)
+
+    const extraction = await Promise.race([
+      fetch(server.origin + '/live2d/diary/extract-memory', {
+        method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+        body: JSON.stringify({ profileId, files: [diaryResult.file] }),
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('OpenCode memory extraction timed out')), 5000)),
+    ])
+    assert.equal(extraction.status, 200)
+    const extracted = await extraction.json()
+    assert.equal(extracted.alreadyProcessed, false)
+    assert.deepEqual(extracted.diaryFiles, [diaryResult.file])
+    assert.equal(extracted.candidates.length, 2)
+    assert.equal(extracted.candidates[0].matchId, null)
+    assert.equal(extracted.candidates[1].matchId, memoryIndex[0].id)
+    assert.match(extracted.candidates[1].existing.content, /一起下棋/)
+    const extractionPrompt = mockCalls.find(call => call[0] === 'prompt' && call[1].path.id === 'companion-extract-session')
+    assert.match(extractionPrompt[1].body.parts[0].text, /不要替用户决定是否覆盖/)
+
+    const memoryCommit = await fetch(server.origin + '/live2d/memory/commit', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ profileId: extracted.profileId, sourceHashes: extracted.sourceHashes, items: [
+        { action: 'add', category: extracted.candidates[0].category, content: extracted.candidates[0].content },
+        { action: 'replace', category: extracted.candidates[1].category, content: extracted.candidates[1].content,
+          replaceId: extracted.candidates[1].matchId },
+      ] }),
+    })
+    assert.equal(memoryCommit.status, 200)
+    const committed = await memoryCommit.json()
+    assert.equal(committed.added, 1)
+    assert.equal(committed.replaced, 1)
+    const updatedIndex = JSON.parse(fs.readFileSync(path.join(dataDir, 'profiles', profileId, 'memories', 'index.json'), 'utf8'))
+    assert.equal(updatedIndex.length, 2)
+    const replacedEntry = updatedIndex.find(item => item.id === memoryIndex[0].id)
+    assert.match(fs.readFileSync(path.join(dataDir, 'profiles', profileId, 'memories', replacedEntry.file), 'utf8'), /更喜欢和桌宠下围棋/)
+
+    const repeatedExtraction = await fetch(server.origin + '/live2d/diary/extract-memory', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ profileId, files: [diaryResult.file] }),
+    })
+    assert.equal(repeatedExtraction.status, 200)
+    assert.equal((await repeatedExtraction.json()).alreadyProcessed, true)
+    const processedDiaryList = await fetch(server.origin + '/live2d/diary/list', { headers: browserAuth }).then(r => r.json())
+    assert.equal(processedDiaryList.diaries[0].processed, true)
+
+    const activeBeforeSemantic = await fetch(server.origin + '/live2d/companion-profiles', { headers: browserAuth }).then(r => r.json())
+    const enableSemantic = await fetch(server.origin + '/live2d/companion-profiles', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify({ ...activeBeforeSemantic.active, memoryProvider: 'opencode' }),
+    })
+    assert.equal((await enableSemantic.json()).active.memoryProvider, 'opencode')
+    const semanticCallStart = mockCalls.length
+    const semanticChat = await Promise.race([
+      fetch(server.origin + '/live2d/chat', {
+        method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+        body: JSON.stringify({ message: '棋盘上的对局还记得吗？' }),
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('OpenCode semantic memory timed out')), 5000)),
+    ])
+    assert.equal(semanticChat.status, 200)
+    assert.deepEqual(await semanticChat.json(), { reply: '桌宠收到啦。' })
+    const semanticCalls = mockCalls.slice(semanticCallStart)
+    const rerankPrompt = semanticCalls.find(call => call[0] === 'prompt' && call[1].path.id === 'companion-memory-session')
+    assert.ok(rerankPrompt)
+    assert.match(rerankPrompt[1].body.parts[0].text, /棋盘上的对局/)
+    assert.ok(semanticCalls.some(call => call[0] === 'delete' && call[1].path.id === 'companion-memory-session'))
+    const semanticAnswer = semanticCalls.find(call => call[0] === 'prompt' && call[1].path.id === 'companion-chat-session')
+    assert.ok(semanticAnswer)
+    assert.match(semanticAnswer[1].body.parts[0].text, /下围棋/)
+
+    mockMemoryReply = 'invalid'
+    const semanticProfile = await fetch(server.origin + '/live2d/companion-profiles', { headers: browserAuth }).then(r => r.json())
+    await fetch(server.origin + '/live2d/companion-profiles', {
+      method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+      body: JSON.stringify(semanticProfile.active),
+    })
+    const fallbackCallStart = mockCalls.length
+    const fallbackChat = await Promise.race([
+      fetch(server.origin + '/live2d/chat', {
+        method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
+        body: JSON.stringify({ message: '还记得我们下围棋吗？' }),
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('OpenCode memory fallback timed out')), 5000)),
+    ])
+    assert.equal(fallbackChat.status, 200)
+    const fallbackCalls = mockCalls.slice(fallbackCallStart)
+    const fallbackAnswer = fallbackCalls.find(call => call[0] === 'prompt' && call[1].path.id === 'companion-chat-session')
+    assert.match(fallbackAnswer[1].body.parts[0].text, /下围棋/)
     if (oldAdapterFile === undefined) delete process.env.L2D_ADAPTER_FILE
     else process.env.L2D_ADAPTER_FILE = oldAdapterFile
 
@@ -281,21 +597,8 @@ async function main() {
     const current = await fetch(server.origin + '/live2d/state')
     assert.deepEqual(await current.json(), { state: 'working' })
 
-    const auth = browserAuth
-    const imported = await fetch(server.origin + '/live2d/import?model=test-model&path=test.model3.json', {
-      method: 'POST', headers: auth, body: JSON.stringify({ FileReferences: {} }),
-    })
-    assert.equal(imported.status, 200)
-
     const models = await fetch(server.origin + '/live2d/models')
     assert.ok((await models.json()).models.some(item => item.path === 'test-model/test.model3.json'))
-
-    const selected = await fetch(server.origin + '/live2d/model', {
-      method: 'POST',
-      headers: { ...auth, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'test-model/test.model3.json' }),
-    })
-    assert.equal(selected.status, 200)
     process.stdout.write('standalone server smoke test: ok\n')
   } finally {
     await server.close()

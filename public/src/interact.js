@@ -113,6 +113,7 @@ export function initInteract(ctx) {
 
   // ── 忙碌拦截：8 秒冷却，避免刷屏 ──
   let busyQuipAt = 0
+  let wokeAt = 0
   function busyBlock() {
     const now = performance.now()
     if (now - busyQuipAt > 8000) {
@@ -122,13 +123,16 @@ export function initInteract(ctx) {
   }
 
   /** 点击反应：随机播放点击池动作，50% 概率搭一句吐槽。 */
-  function clickReact() {
+  function clickReact(wokeFromSleep = false) {
     // 睡眠时点击=唤醒+专属台词（PR#3）；pokeActivity 的静默唤醒让位给有台词版
-    if (ctx.getState() === 'sleeping') {
-      ctx.enter('idle')
+    if (wokeFromSleep || ctx.getState() === 'sleeping') {
+      if (ctx.getState() === 'sleeping') ctx.enter('idle')
+      wokeAt = performance.now()
       ctx.showBubble('唔......你回来啦？', 2200, 2)
       return
     }
+    // 双击会产生第二次 pointerup；刚唤醒后短暂吞掉普通点击，避免连续冒两句。
+    if (performance.now() - wokeAt < 600) return
     ctx.pokeActivity?.()   // 用户活动=重置睡眠计时
     if (ctx.busy()) { busyBlock(); return }
     const pool = ctx.binding.clickPool
@@ -231,8 +235,9 @@ export function initInteract(ctx) {
   if (!PET) {
     let drag = null
     box.addEventListener('pointerdown', (e) => {
+      const wokeFromSleep = ctx.getState() === 'sleeping'
       ctx.pokeActivity?.()
-      drag = { x: e.clientX, y: e.clientY, rect: box.getBoundingClientRect(), moved: false }
+      drag = { x: e.clientX, y: e.clientY, rect: box.getBoundingClientRect(), moved: false, wokeFromSleep }
       box.setPointerCapture(e.pointerId)
     })
     box.addEventListener('pointermove', (e) => {
@@ -262,7 +267,8 @@ export function initInteract(ctx) {
         ctx.setExpr(ctx.stateExpr())
       } else if (e) {
         // 未拖动的点击：先判摸头（头部 30%），否则普通点击反应
-        if (!tryPat(e.clientX, e.clientY)) clickReact()
+        if (drag.wokeFromSleep) clickReact(true)
+        else if (!tryPat(e.clientX, e.clientY)) clickReact()
       }
       drag = null
     }
@@ -303,15 +309,17 @@ export function initInteract(ctx) {
         const b = ctx.modelBounds()
         store.setPetPos({ cx: b.x + b.width / 2, cy: b.y + b.height / 2 })
         ctx.setExpr(ctx.stateExpr())
-      } else if (e?.type === 'pointerup' && !tryPat(e.clientX, e.clientY)) {
-        clickReact()
+      } else if (e?.type === 'pointerup') {
+        if (drag.wokeFromSleep) clickReact(true)
+        else if (!tryPat(e.clientX, e.clientY)) clickReact()
       }
       drag = null
       dragging = false
     }
     box.addEventListener('pointerdown', (e) => {
+      const wokeFromSleep = ctx.getState() === 'sleeping'
       ctx.pokeActivity?.()
-      drag = { x: e.screenX, y: e.screenY, curX: e.screenX, curY: e.screenY, flushX: e.screenX, flushY: e.screenY, moved: false }
+      drag = { x: e.screenX, y: e.screenY, curX: e.screenX, curY: e.screenY, flushX: e.screenX, flushY: e.screenY, moved: false, wokeFromSleep }
       dragging = true
       box.setPointerCapture(e.pointerId)
     })
