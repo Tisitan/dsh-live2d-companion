@@ -1,10 +1,11 @@
-import { createReadStream, existsSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { mkdir, readdir, lstat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, normalize, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { registerGame, getGame, listGames, defaultQuipKey } from './games/registry.mjs'
+import { findLivePet } from './pet-lifecycle.mjs'
 import gomokuGame from './games/gomoku/index.mjs'
 import chessGame from './games/chess/index.mjs'
 
@@ -24,11 +25,29 @@ const MAX_SELECTION_BYTES = 64 * 1024
 const MAX_IMPORT_FILE_BYTES = 128 * 1024 * 1024
 // 显示模式切换的写入目标：本 profile 的用户补丁层（热重载，改文件即重挂载本插件）
 const PATCH_FILE = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'profiles', 'web', 'cordis.patch.yml')
+// 桌宠进程凭据：桌宠拿单实例锁后写、退场清理，宿主跨重启凭它收养存活实例
+const PET_PID_FILE = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'live2d-companion', 'pet.pid')
+
+/**
+ * 宿主侧保证凭据目录就绪（双保险之一，桌宠写入前另有兜底）。
+ * 失败不得静默：目录缺失 = 凭据永远写不出 = 跨重启收养整条链路失效且无日志可查。
+ */
+function ensurePetCredentialDir(logger) {
+  try {
+    mkdirSync(dirname(PET_PID_FILE), { recursive: true })
+  } catch (error) {
+    logger.warn(`live2d pet cannot prepare credential dir ${dirname(PET_PID_FILE)}: ${String(error)} — cross-restart pet adoption disabled`)
+  }
+}
 
 /** 桌宠 spawn 节流：效果重挂载（如端口冲突重试）时 30 秒内不重复拉起，防 electron 生死循环。 */
 let lastPetSpawnAt = 0
-/** 桌宠进程句柄：跨重挂载存活，新实例收养而非杀旧生新（杀+生竞态=单实例锁弹回新进程）。 */
+/** 本进程 spawn 的句柄：重挂载时的第一顺位收养源（免异步核对）。 */
 let petChild = null
+/** 当前托管桌宠 pid（spawn 或跨进程收养统一登记）：杀灭调度与 exit 兜底的唯一依据。 */
+let managedPetPid = null
+/** 挂载会话令牌：dispose 时自增使未决的异步收养决策当场过期（过期者自行履约处置）。 */
+let petGen = 0
 /** 延迟处死定时器：卸载后 8 秒内无新实例收养才杀（真卸载/关宿主兜底）。 */
 let petKillTimer = null
 /** 宿主进程退出钩子只挂一次（模块级状态跨挂载存活，反复注册会叠加）。 */
@@ -1291,59 +1310,89 @@ export function apply(ctx, config) {
     const petDir = config?.petDir ?? fileURLToPath(new URL('./pet', import.meta.url))
     const exe = join(petDir, 'node_modules', 'electron', 'dist', 'electron.exe')
     if (existsSync(exe)) {
+      ensurePetCredentialDir(ctx.logger)
+      const killPetTree = (pid) => {
+        try {
+          spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => { })
+        } catch { }
+      }
       /** 卸载不即杀：进入 8 秒收养窗口，超时无新实例才 taskkill（重挂载热更秒收养）。 */
-      const schedulePetKill = (child) => {
+      const schedulePetKill = (pid) => {
+        if (pid === null) return
         if (petKillTimer !== null) clearTimeout(petKillTimer)
         petKillTimer = setTimeout(() => {
           petKillTimer = null
-          if (petChild !== child) return   // 已被收养/更替
-          petChild = null
-          try {
-            spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => { })
-          } catch { }
+          if (managedPetPid !== pid) return   // 已被更替/重新收养
+          managedPetPid = null
+          killPetTree(pid)
         }, 8000)
       }
-      // 宿主真退出时定时器随进程消失——exit 钩子同步兜底杀，防孤儿桌宠
+      // 宿主真退出时定时器随进程消失——exit 钩子同步兜底杀，防孤儿桌宠（含跨重启收养的）
       if (!petExitHookArmed) {
         petExitHookArmed = true
         process.on('exit', () => {
-          if (petChild === null) return
-          try {
-            spawn('taskkill', ['/pid', String(petChild.pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => { })
-          } catch { }
+          if (managedPetPid !== null) killPetTree(managedPetPid)
         })
       }
       ctx.effect(() => {
-        // 收养优先：重挂载（配置热更/端口重试）时旧桌宠还活着就直接续用——
-        // 杀旧生新的窗口里新进程会被单实例锁弹回秒退，桌宠永远回不来（实测血案）
+        const gen = ++petGen
         if (petKillTimer !== null) { clearTimeout(petKillTimer); petKillTimer = null }
+        // 收养优先级 1：同进程句柄还活着——重挂载（配置热更/端口重试）秒级续用。
+        // 杀旧生新的窗口里新进程会被单实例锁弹回秒退，桌宠永远回不来（实测血案）
         if (petChild !== null && petChild.exitCode === null && !petChild.killed) {
           const adopted = petChild   // 闭包固化：处置器触发时模块变量可能已空（桌宠中途自退）
-          ctx.logger.info(`live2d pet adopted (pid ${adopted.pid})`)
-          return () => schedulePetKill(adopted)
+          managedPetPid = adopted.pid
+          ctx.logger.info(`live2d pet adopted in-process (pid ${adopted.pid})`)
+          return () => schedulePetKill(adopted.pid)
         }
-        // spawn 节流：cordis 效果若因宿主故障反复重挂载，30 秒内只拉一次桌宠。
-        // 桌宠自身有单实例锁兜底，但反复 spawn 进程本身就是 CPU 灾难。
-        const now = Date.now()
-        if (now - lastPetSpawnAt < 30000) {
-          ctx.logger.info('live2d pet spawn throttled (effect remounted within 30s)')
-          return undefined
+        // 收养优先级 2：跨宿主重启的存活实例凭 PID 文件认领（孤儿桌宠占锁场景的根治）。
+        // 异步决策以 gen 为令牌：dispose 令其过期，过期者按履约语义自行处置结果
+        void findLivePet({ pidFile: PET_PID_FILE, expectedExe: exe }).then((found) => {
+          if (gen !== petGen) {
+            // 决策落地前挂载已被替换/卸载：真桌宠在场且无人接管时就地处置，不留悬空活物；
+            // 已被新会话登记管理的（managedPetPid 指向它）绝不能抢杀
+            if (found.status === 'alive' && managedPetPid !== found.pid) killPetTree(found.pid)
+            return
+          }
+          if (found.status === 'alive') {
+            managedPetPid = found.pid
+            const log = found.identityVerified ? ctx.logger.info : ctx.logger.warn
+            log(`live2d pet adopted via pid file (pid ${found.pid}${found.identityVerified ? '' : ', identity UNVERIFIED'})`)
+            return
+          }
+          ctx.logger.info(`live2d pet pid file check: ${found.reason}`)
+          // spawn 节流：cordis 效果若因宿主故障反复重挂载，30 秒内只拉一次桌宠。
+          // 桌宠自身有单实例锁兜底，但反复 spawn 进程本身就是 CPU 灾难。
+          const now = Date.now()
+          if (now - lastPetSpawnAt < 30000) {
+            ctx.logger.info('live2d pet spawn throttled (effect remounted within 30s)')
+            return
+          }
+          lastPetSpawnAt = now
+          const petUrl = `http://127.0.0.1:${ctx.webServer.port}/live2d/pet.html`
+          const child = spawn(exe, ['.'], {
+            cwd: petDir,
+            detached: true,
+            stdio: 'ignore',
+            env: { ...process.env, L2D_URL: petUrl, L2D_PIDFILE: PET_PID_FILE },
+          })
+          // spawn 的 ENOENT 走异步 error 事件，try/catch 接不住——不监听会 uncaughtException 崩宿主
+          child.on('error', (error) => ctx.logger.warn(`live2d pet spawn failed: ${String(error)}`))
+          child.on('exit', (code) => {
+            if (petChild === child) petChild = null
+            if (managedPetPid === child.pid) managedPetPid = null
+            // 秒退出也不再无痕：单实例锁弹回/模型崩溃等留下的 code 在这里可见
+            ctx.logger.info(`live2d pet exited (pid ${child.pid}, code ${code})`)
+          })
+          petChild = child
+          managedPetPid = child.pid
+          child.unref()
+          ctx.logger.info(`live2d pet spawned (pid ${child.pid}) -> ${petUrl}`)
+        }).catch(() => { })
+        return () => {
+          ++petGen   // 未决的异步决策立即过期；届时自行履约（在场即处置）
+          schedulePetKill(managedPetPid)
         }
-        lastPetSpawnAt = now
-        const petUrl = `http://127.0.0.1:${ctx.webServer.port}/live2d/pet.html`
-        const child = spawn(exe, ['.'], {
-          cwd: petDir,
-          detached: true,
-          stdio: 'ignore',
-          env: { ...process.env, L2D_URL: petUrl },
-        })
-        // spawn 的 ENOENT 走异步 error 事件，try/catch 接不住——不监听会 uncaughtException 崩宿主
-        child.on('error', (error) => ctx.logger.warn(`live2d pet spawn failed: ${String(error)}`))
-        child.on('exit', () => { if (petChild === child) petChild = null })
-        petChild = child
-        child.unref()
-        ctx.logger.info(`live2d pet spawned (pid ${child.pid}) -> ${petUrl}`)
-        return () => schedulePetKill(child)
       })
     } else {
       ctx.logger.warn(`live2d pet enabled but electron not found at ${exe}`)

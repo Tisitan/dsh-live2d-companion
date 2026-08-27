@@ -5,6 +5,8 @@ const path = require('node:path')
 const TARGET = process.env.L2D_URL
   || ('http://127.0.0.1:3080/live2d/pet.html'
     + (process.env.L2D_MODEL ? '?model=' + encodeURIComponent(process.env.L2D_MODEL) : ''))
+// 宿主 spawn 时注入的凭据文件位置；独立运行不设则跳过（不影响手动启动场景）
+const L2D_PIDFILE = process.env.L2D_PIDFILE ?? ''
 if (process.env.L2D_DEBUG === '1') {
   app.commandLine.appendSwitch('remote-debugging-port', '9222')
 }
@@ -36,6 +38,25 @@ const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
+  // 拿锁即立户：PID 文件 = 宿主跨重启的收养凭据。抢锁失败的实例绝不覆写（宿主靠它认领本进程）
+  try {
+    if (L2D_PIDFILE !== '') {
+      fs.mkdirSync(path.dirname(L2D_PIDFILE), { recursive: true })
+      fs.writeFileSync(L2D_PIDFILE, JSON.stringify({ pid: process.pid, exe: process.execPath, bornAt: Date.now(), url: TARGET }))
+    }
+  } catch (error) {
+    console.error('[l2d-pet] credential write failed:', error)
+  }
+  // 退场清理：属主校验后再删——抢锁失败的实例 quit 也走 will-quit，不能拆掉持有者的凭据。
+  // relaunch 类退场（软渲染切换/手动重启）走 app.exit(0) 不经 will-quit：凭据由接管的新实例覆写，
+  // 偶发残留指向死进程时由宿主的 stale 探活判定自愈
+  app.on('will-quit', () => {
+    if (L2D_PIDFILE === '') return
+    try {
+      const cur = JSON.parse(fs.readFileSync(L2D_PIDFILE, 'utf8'))
+      if (cur?.pid === process.pid) fs.rmSync(L2D_PIDFILE, { force: true })
+    } catch { }
+  })
 app.on('second-instance', () => {
   if (win !== null && !win.isDestroyed()) win.show()
 })

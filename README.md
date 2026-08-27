@@ -347,8 +347,8 @@ export default function apply(api) {
 
 - 桌宠 DevTools：`L2D_DEBUG=1` 启动后 `--remote-debugging-port 9222`，配合 `pet/cdp-probe.mjs`（CDP 注入探针）
 - 页面控制台句柄：`window.__l2d`（model / 当前状态 / bounds / 手动 enter）
-- 桌宠环境变量：`L2D_URL`（目标页面）、`L2D_MODEL`（临时模型）、`L2D_SOFT=1`（软渲染模式：GPU 光栅化路径异常的逃生门，代价是渲染吃 CPU；对拖动闪烁无效，见下方拖拽架构）
-- 测试套件：`node games/gomoku/engine.test.mjs`、`node games/chess/engine.test.mjs`、`node games/chess/ai.test.mjs`、`node games/llm-duel.test.mjs`、`node standalone/test.cjs`
+- 桌宠环境变量：`L2D_URL`（目标页面）、`L2D_MODEL`（临时模型）、`L2D_SOFT=1`（软渲染模式：GPU 光栅化路径异常的逃生门，代价是渲染吃 CPU；对拖动闪烁无效，见下方拖拽架构）、`L2D_PIDFILE`（宿主注入的凭据文件：桌宠拿单实例锁后写入自己的 pid，退场属主校验后清理——宿主重启凭它认领存活实例并接管生命周期，孤儿不再占锁弹回新进程。注意 relaunch 类退场走 `app.exit(0)` 不经 will-quit，凭据残留指向死进程时由宿主 stale 探活判定自愈，属设计内行为）
+- 测试套件：`node games/gomoku/engine.test.mjs`、`node games/chess/engine.test.mjs`、`node games/chess/ai.test.mjs`、`node games/llm-duel.test.mjs`、`node pet-lifecycle.test.mjs`、`node standalone/test.cjs`
 
 ### 桌宠架构：全屏覆盖层（overlay-pet）
 
