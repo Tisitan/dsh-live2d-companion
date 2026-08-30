@@ -626,6 +626,7 @@ async function createStandaloneServer({ publicDir, dataDir }) {
         }
         const parsed = JSON.parse((await readBody(req, MAX_DIARY_BYTES)).toString('utf8') || '{}')
         const messages = Array.isArray(parsed.messages) ? parsed.messages.slice(-200) : []
+        const previousSummary = cleanChatText(parsed.previousSummary, 6000)
         const lines = messages.map(item => {
           const role = item?.role === 'user' ? '用户' : '桌宠'
           const text = cleanChatText(item?.text, 1200)
@@ -633,10 +634,11 @@ async function createStandaloneServer({ publicDir, dataDir }) {
         }).filter(Boolean)
         if (!lines.length) throw new Error('没有可以写进日记的聊天')
         const transcript = lines.join('\n').slice(-14000)
-        const prompt = `请以当前桌宠角色的第一人称，把下面这次聊天整理成一篇简短日记。\n`
-          + `保持当前角色设定，保留确实发生的事情、用户表达的喜好或约定，以及角色当时的感受；不要虚构。\n`
+        const prompt = `请以当前桌宠角色的第一人称，${previousSummary ? '根据已有日记和新增聊天更新同一篇日记' : '把下面这次聊天整理成一篇简短日记'}。\n`
+          + `保持当前角色设定，保留确实发生的事情、用户表达的喜好或约定，以及角色当时的感受；不要虚构或重复已有内容。\n`
           + `使用自然的 Markdown 段落，最多 600 字，不要写任务总结、系统提示或保存说明。\n\n`
-          + `<conversation>\n${transcript}\n</conversation>`
+          + (previousSummary ? `<existing-diary>\n${previousSummary}\n</existing-diary>\n\n` : '')
+          + `<new-conversation>\n${transcript}\n</new-conversation>`
         const summary = cleanChatText(await requestOpenCode(prompt, 'diary', 45000), 6000)
         if (!summary || invalidAgentText(summary)) {
           json(res, 502, { error: '桌宠没有生成可保存的日记' })
