@@ -60,7 +60,7 @@ export function initChat(ctx) {
     <div id="l2d-chat-head"><span id="l2d-chat-status">和桌宠说点什么</span><button id="l2d-chat-close" type="button" aria-label="关闭">×</button></div>
     <div id="l2d-chat-history" role="log" aria-live="polite"><div id="l2d-chat-empty">本次启动的聊天会显示在这里</div></div>
     <form id="l2d-chat-form"><input id="l2d-chat-input" maxlength="1000" autocomplete="off" placeholder="输入消息......"><button id="l2d-chat-send" type="submit">发送</button></form>
-    <div id="l2d-diary-tools"><button id="l2d-diary-save" type="button">总结并保存</button><button id="l2d-memory-extract" type="button">提炼日记</button><button id="l2d-diary-location" type="button">保存位置</button><button id="l2d-profile-open" type="button">角色档案</button><label id="l2d-diary-auto-label"><input id="l2d-diary-auto" type="checkbox">闲置1分钟自动保存</label></div>
+    <div id="l2d-diary-tools"><button id="l2d-diary-save" type="button">总结并保存</button><button id="l2d-memory-extract" type="button">提炼日记</button><button id="l2d-diary-location" type="button">保存位置</button><button id="l2d-profile-open" type="button">角色档案</button><label id="l2d-diary-auto-label" title="新增聊天达到4条或400字后，闲置1分钟自动更新本次日记"><input id="l2d-diary-auto" type="checkbox">自动保存日记</label></div>
     <div id="l2d-diary-status">日记保存到当前角色档案</div>
     <section id="l2d-memory-review" hidden><div id="l2d-memory-review-title">确认要保存的长期记忆</div><div id="l2d-memory-candidates"></div><div id="l2d-memory-actions"><button id="l2d-memory-cancel" type="button">取消</button><button id="l2d-memory-commit" type="button">保存选择</button></div></section>
   `
@@ -85,11 +85,16 @@ export function initChat(ctx) {
   const memoryCancel = panel.querySelector('#l2d-memory-cancel')
   const memoryCommit = panel.querySelector('#l2d-memory-commit')
   const historyRecords = []
+  const AUTO_DIARY_IDLE_MS = 60000
+  const AUTO_DIARY_MIN_MESSAGES = 4
+  const AUTO_DIARY_MIN_CHARS = 400
   let activeProfile = null
   let companionName = '桌宠'
   let diaryTimer = 0
   let diarySaving = false
   let lastSavedCount = 0
+  let currentDiarySummary = ''
+  let currentDiaryFile = ''
   let memorySourceHashes = []
   let memoryProfileId = ''
   let memoryBusy = false
@@ -98,10 +103,10 @@ export function initChat(ctx) {
   let diaryMirrorDir = ''
 
   // 仅保存在当前页面内存中：关闭面板不丢，桌宠重启/页面重载即清空。
-  function appendHistory(role, text) {
+  function appendHistory(role, text, { diary = true } = {}) {
     const value = String(text ?? '').trim()
     if (!value) return
-    historyRecords.push({ role: role === 'user' ? 'user' : 'assistant', text: value })
+    historyRecords.push({ role: role === 'user' ? 'user' : 'assistant', text: value, diary })
     emptyHistory?.remove()
     const line = document.createElement('div')
     line.className = 'l2d-chat-line'
@@ -129,7 +134,13 @@ export function initChat(ctx) {
     const response = await fetch(BASE + '/companion-profiles', { cache: 'no-store' })
     const data = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(data.error || '角色档案读取失败')
-    activeProfile = data.active || null
+    const nextProfile = data.active || null
+    if (activeProfile?.id && nextProfile?.id !== activeProfile.id) {
+      lastSavedCount = 0
+      currentDiarySummary = ''
+      currentDiaryFile = ''
+    }
+    activeProfile = nextProfile
     companionName = activeProfile?.name || '桌宠'
     toggle.title = `和${companionName}聊天`
     toggle.setAttribute('aria-label', toggle.title)
@@ -151,12 +162,18 @@ export function initChat(ctx) {
     if (diarySaving || historyRecords.length === 0 || historyRecords.length === lastSavedCount) return
     if (!activeProfile) await loadActiveProfile().catch(() => null)
     if (!activeProfile) return
+    const capturedCount = historyRecords.length
+    const captured = historyRecords.slice(lastSavedCount, capturedCount).filter(item => item.diary !== false).slice(-200)
+    const capturedChars = captured.reduce((sum, item) => sum + item.text.length, 0)
+    if (!captured.length) {
+      lastSavedCount = capturedCount
+      return
+    }
+    if (automatic && captured.length < AUTO_DIARY_MIN_MESSAGES && capturedChars < AUTO_DIARY_MIN_CHARS) return
     diarySaving = true
     diarySave.disabled = true
     diaryLocation.disabled = true
     profileOpen.disabled = true
-    const capturedCount = historyRecords.length
-    const captured = historyRecords.slice(-200)
     showDiaryConfig(automatic ? '正在自动整理日记……' : '桌宠正在整理这次聊天……')
     try {
       const ac = new AbortController()
@@ -166,7 +183,7 @@ export function initChat(ctx) {
         response = await fetch(BASE + '/diary/summarize', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ messages: captured }),
+          body: JSON.stringify({ messages: captured, previousSummary: currentDiarySummary }),
           signal: ac.signal,
         })
       } finally { clearTimeout(timeout) }
@@ -178,6 +195,8 @@ export function initChat(ctx) {
       })
       const saved = await saveResponse.json().catch(() => ({}))
       if (!saveResponse.ok || !saved?.ok) throw new Error(saved.error || '日记保存失败')
+      currentDiarySummary = data.summary
+      currentDiaryFile = saved.file || currentDiaryFile
       let mirrored = null
       if (diaryMirrorDir && BRIDGE?.saveDiary) {
         try { mirrored = await BRIDGE.saveDiary({ summary: data.summary, profileName: activeProfile.name }) }
@@ -188,7 +207,7 @@ export function initChat(ctx) {
         }
       }
       lastSavedCount = Math.max(lastSavedCount, capturedCount)
-      showDiaryConfig(mirrored?.path ? `已保存并另存：${mirrored.path}` : `已保存：${saved.file}`)
+      showDiaryConfig(mirrored?.path ? `已更新本次日记并另存：${mirrored.path}` : `已更新本次日记：${currentDiaryFile}`)
       if (!automatic) ctx.showBubble('日记保存好了。', 6500, 2)
     } catch (error) {
       showDiaryConfig(error?.name === 'AbortError' ? '日记总结等待超时，请稍后再试' : String(error?.message || '日记保存失败'))
@@ -203,7 +222,7 @@ export function initChat(ctx) {
   function scheduleDiarySave() {
     clearTimeout(diaryTimer)
     if (!activeProfile?.autoDiary || historyRecords.length === lastSavedCount) return
-    diaryTimer = setTimeout(() => void saveDiary({ automatic: true }), 60000)
+    diaryTimer = setTimeout(() => void saveDiary({ automatic: true }), AUTO_DIARY_IDLE_MS)
   }
 
   void Promise.all([
@@ -595,7 +614,7 @@ export function initChat(ctx) {
         : error.status === 504 || error.name === 'AbortError'
           ? '等了好久也没收到回答……请再试一次。'
           : '唔......这次没能接上OpenCode。'
-      appendHistory('assistant', text)
+      appendHistory('assistant', text, { diary: false })
       if (error.status === 503) status.textContent = '请先打开 OpenCode'
       scheduleDiarySave()
       ctx.showBubble(text, 8500, 2)
