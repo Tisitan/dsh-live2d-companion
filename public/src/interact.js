@@ -187,25 +187,31 @@ export function initInteract(ctx) {
 
   // 卫星窗死区：游戏卡独立小窗的屏幕区域（主进程实时推送，开/移动/关）。
   // overlay 是 screen-saver 层压在卡片上方——光标落在卡片区域时 overlay 必须恒穿透，
-  // 否则模型区停留解锁会把卡片的点击/拖动全吃掉（卡片想点点不动的病灶）
-  let cardArea = null       // 屏幕坐标 {x,y,width,height} | null
+  // 否则模型区停留解锁会把卡片的点击/拖动全吃掉（卡片想点点不动的病灶）。
+  // 每游戏独立卫星窗后主进程可能推多个矩形：数组逐个判；单矩形（旧语义）包装成单项数组
+  let cardAreas = []        // 屏幕坐标矩形 [{x,y,width,height}, ...]
   let winOrigin = { x: 0, y: 0 }   // overlay 窗原点（屏坐标），onCursor 随帧更新
+  const setCardAreas = (b) => {
+    if (!b || typeof b !== 'object') { cardAreas = []; return }
+    cardAreas = Array.isArray(b)
+      ? b.filter((r) => r && typeof r === 'object'
+        && Number.isFinite(r.x) && Number.isFinite(r.y) && Number.isFinite(r.width) && Number.isFinite(r.height))
+      : [b]
+  }
   BRIDGE?.onCardArea?.((b) => {
-    cardArea = b && typeof b === 'object' ? b : null
+    setCardAreas(b)
     ctx.evalIgnore()
   })
   // 自愈重载兜底：页面重载后推送态丢失，主动拉一次（否则卡片开着而死区为空，点击又被吃）
   BRIDGE?.getCardArea?.().then((b) => {
-    cardArea = b && typeof b === 'object' ? b : null
+    setCardAreas(b)
     ctx.evalIgnore()
   }).catch(() => { })
-  /** 指针（画布坐标）是否落在卫星窗死区内。 */
+  /** 指针（画布坐标）是否落在任一卫星窗死区内。 */
   function inCardArea(x, y) {
-    if (!cardArea) return false
     const sx = x + winOrigin.x
     const sy = y + winOrigin.y
-    return sx >= cardArea.x && sx < cardArea.x + cardArea.width
-      && sy >= cardArea.y && sy < cardArea.y + cardArea.height
+    return cardAreas.some((r) => sx >= r.x && sx < r.x + r.width && sy >= r.y && sy < r.y + r.height)
   }
 
   if (BRIDGE && BRIDGE.onCursor) {

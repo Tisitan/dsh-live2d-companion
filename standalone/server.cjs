@@ -172,36 +172,41 @@ async function createStandaloneServer({ publicDir, dataDir }) {
   let lastOpenCodeHeartbeat = 0
   let state = 'idle'
   let modelPath = ''
-  let game = null
+  /** 对局槽表：gameId → 对局条目（多窗各玩各的；与宿主 index.js 分槽同口径）。 */
+  const games = new Map()
+  /** 旧式无 game 请求的归属槽（既有单槽语义=最近开的局）；该槽不存在时回落 gomoku。 */
+  let lastGameSlot = 'gomoku'
+  const fallbackSlot = () => (games.has(lastGameSlot) ? lastGameSlot : 'gomoku')
 
   const sanitizeTitle = raw => typeof raw === 'string' && /^[\p{L}\p{N} _\-~·]{1,12}$/u.test(raw.trim()) ? raw.trim() : '主人'
   const pickGameQuip = list => list[Math.floor(Math.random() * list.length)]
   const DIFF_NAME = { easy: '简单', normal: '普通', hard: '困难' }
 
-  // game = { def: 描述符, engine, ai, difficulty, userTitle, commentary, createdAt }
-  function gameSnapshot() {
-    if (!game) return { status: 'idle' }
-    const over = game.def.isOver(game.engine)
+  // game 条目 = { def: 描述符, engine, ai, difficulty, userTitle, commentary, createdAt, mode, busy }
+  function gameSnapshot(g) {
+    if (g === undefined || typeof g === 'string') g = games.get(g ?? '') ?? null
+    if (!g) return { status: 'idle' }
+    const over = g.def.isOver(g.engine)
     return {
       status: over.over ? 'over' : 'playing',
-      game: game.def.id,
-      ...game.def.snapshot(game.engine),
+      game: g.def.id,
+      ...g.def.snapshot(g.engine),
       winner: over.winner,
-      busy: game.busy === true,
-      mode: game.mode,
-      difficulty: game.difficulty,
+      busy: g.busy === true,
+      mode: g.mode,
+      difficulty: g.difficulty,
       presetId: null,
-      commentary: game.commentary.slice(-20),
-      createdAt: game.createdAt,
+      commentary: g.commentary.slice(-20),
+      createdAt: g.createdAt,
     }
   }
 
-  /** 终局系统播报（与宿主同口径）。 */
-  function pushGameOutcome() {
-    const over = game.def.isOver(game.engine)
+  /** 终局系统播报（与宿主同口径），按槽追加。 */
+  function pushGameOutcome(g) {
+    const over = g.def.isOver(g.engine)
     if (!over.over) return
-    const lines = game.def.outcomeLines(game.engine)
-    game.commentary.push({ from: 'system', text: over.winner === 1 ? lines.playerWin : over.winner === 2 ? lines.aiWin : lines.draw })
+    const lines = g.def.outcomeLines(g.engine)
+    g.commentary.push({ from: 'system', text: over.winner === 1 ? lines.playerWin : over.winner === 2 ? lines.aiWin : lines.draw })
   }
 
   function resolveModel(ref) {
@@ -337,14 +342,15 @@ async function createStandaloneServer({ publicDir, dataDir }) {
     })
   }
 
-  async function gameCommentary(placed, aiDone = null, outcome = '') {
-    if (!game || game.mode !== 'online') return ''
+  async function gameCommentary(g, placed, aiDone = null, outcome = '') {
+    if (!g || g.mode !== 'online') return ''
     const turn = [placed?.desc, aiDone?.desc].filter(Boolean).join('；')
-    const prompt = `${game.def.commentatorBrief(game.userTitle)}\n`
+    const prompt = `${g.def.commentatorBrief(g.userTitle)}\n`
       + `本回合：${turn || '对局刚刚结束'}。${outcome ? `结果：${outcome}。` : ''}\n`
-      + `当前局面：\n${game.def.boardText(game.engine)}\n`
-      + '只回复一句此刻脱口而出的对局台词，不要解释规则，不要复述坐标，不超过40字。'
-    return cleanGameCommentary(await requestOpenCode(prompt, 'game', 25000))
+      + `当前局面：\n${g.def.boardText(g.engine)}\n`
+      + '只回复一句此刻脱口而出的对局台词，不要解释规则，不要复述坐标，简短自然就好。'
+    // 60s：OpenCode 侧同样可能接推理模型，思维链耗时（与 index.js 游戏 90s 档同理由）
+    return cleanGameCommentary(await requestOpenCode(prompt, 'game', 60000))
   }
 
   function sessionSnapshot() {
@@ -818,7 +824,10 @@ async function createStandaloneServer({ publicDir, dataDir }) {
     }
 
     if (pathname === '/live2d/game/state' && method === 'GET') {
-      json(res, 200, gameSnapshot())
+      // 槽查询：?game=<id> 返回该游戏槽（无槽→idle）；不带参数落最近开的局（旧式兼容）
+      const qGame = new URL(req.url ?? '/', 'http://x').searchParams.get('game')
+      const qGameId = typeof qGame === 'string' && /^[a-z0-9-]{1,40}$/i.test(qGame) ? qGame : fallbackSlot()
+      json(res, 200, gameSnapshot(qGameId))
       return
     }
 
@@ -836,7 +845,7 @@ async function createStandaloneServer({ publicDir, dataDir }) {
         const difficulty = parsed.difficulty === 'alphago' ? 'hard'
           : ['easy', 'normal', 'hard'].includes(parsed.difficulty) ? parsed.difficulty : 'normal'
         const mode = parsed.mode === 'online' ? 'online' : 'offline'
-        game = {
+        const g = {
           def,
           engine: def.createEngine(),
           ai: def.createAI(difficulty),
@@ -848,9 +857,11 @@ async function createStandaloneServer({ publicDir, dataDir }) {
           createdAt: new Date().toISOString(),
         }
         if (mode === 'online' && !openCodeConnected()) {
-          game.commentary.push({ from: 'system', text: 'OpenCode 暂未连接，本局会自动使用本地台词；连接后下一手即可启用模型解说。' })
+          g.commentary.push({ from: 'system', text: 'OpenCode 暂未连接，本局会自动使用本地台词；连接后下一手即可启用模型解说。' })
         }
-        json(res, 200, gameSnapshot())
+        games.set(gameId, g)   // 槽覆盖：重开同一游戏的新局，其它游戏槽不受打扰
+        lastGameSlot = gameId
+        json(res, 200, gameSnapshot(g))
       } catch (error) {
         json(res, error.message === 'body too large' ? 413 : 400, { error: error.message })
       }
@@ -859,20 +870,22 @@ async function createStandaloneServer({ publicDir, dataDir }) {
 
     if (pathname === '/live2d/game/move' && method === 'POST') {
       // 回合串行闸 + 代际校验（对齐宿主版 index.js）：解说 await 期间开新局，
-      // 旧句不得写进新局 commentary；闸防并发双击把引擎走乱
+      // 旧句不得写进新局 commentary；闸防并发双击把引擎走乱。槽路由：body.game 指定对局槽。
       let g = null
+      let slotId = 'gomoku'
       try {
-        if (!game) {
+        const parsed = JSON.parse((await readBody(req, MAX_JSON_BYTES)).toString('utf8') || '{}')
+        slotId = typeof parsed.game === 'string' && /^[a-z0-9-]{1,40}$/i.test(parsed.game) ? parsed.game : fallbackSlot()
+        g = games.get(slotId)
+        if (!g) {
           json(res, 409, { error: '尚未开局' })
           return
         }
-        if (game.busy) {
+        if (g.busy) {
           json(res, 409, { error: '思考中，请稍候' })
           return
         }
-        game.busy = true
-        g = game
-        const parsed = JSON.parse((await readBody(req, MAX_JSON_BYTES)).toString('utf8') || '{}')
+        g.busy = true
         const placed = g.def.playerMove(g.engine, parsed)
         if (!placed.ok) {
           g.busy = false
@@ -883,28 +896,28 @@ async function createStandaloneServer({ publicDir, dataDir }) {
           // 玩家制胜手终局：在线优先让 OpenCode 桌宠回应；失败再落回本地 lose 池。
           const over = g.def.isOver(g.engine)
           const lines = g.def.outcomeLines(g.engine)
-          const said = await gameCommentary(placed, null, over.winner === 1 ? lines.playerWin : lines.draw)
-          if (game !== g) { json(res, 409, { error: '对局已更换，请以最新局面为准' }); return }
+          const said = await gameCommentary(g, placed, null, over.winner === 1 ? lines.playerWin : lines.draw)
+          if (games.get(slotId) !== g) { json(res, 409, { error: '对局已更换，请以最新局面为准' }); return }
           if (said) g.commentary.push({ from: 'agent', text: said })
           else if (over.winner === 1 && g.def.quips.lose) {
             g.commentary.push({ from: 'agent', text: pickGameQuip(g.def.quips.lose).replaceAll('主人', g.userTitle) })
           }
-          pushGameOutcome()
+          pushGameOutcome(g)
           g.busy = false
-          json(res, 200, { ...gameSnapshot(), aiMove: null })
+          json(res, 200, { ...gameSnapshot(g), aiMove: null })
           return
         }
         const mv = await g.ai.pickMove(g.engine)
-        if (game !== g) { json(res, 409, { error: '对局已更换，请以最新局面为准' }); return }
+        if (games.get(slotId) !== g) { json(res, 409, { error: '对局已更换，请以最新局面为准' }); return }
         if (!mv) {
           g.busy = false
-          json(res, 200, { ...gameSnapshot(), aiMove: null })
+          json(res, 200, { ...gameSnapshot(g), aiMove: null })
           return
         }
         const aiDone = g.def.aiMove(g.engine, mv)
         if (!aiDone.ok) {
           g.busy = false
-          json(res, 200, { ...gameSnapshot(), aiMove: null })
+          json(res, 200, { ...gameSnapshot(g), aiMove: null })
           return
         }
         const over = g.def.isOver(g.engine)
@@ -913,18 +926,18 @@ async function createStandaloneServer({ publicDir, dataDir }) {
         const pool = g.def.quips[key] ?? g.def.quips.normal
         const lines = over.over ? g.def.outcomeLines(g.engine) : null
         const outcome = over.over ? (over.winner === 2 ? lines.aiWin : lines.draw) : ''
-        const said = await gameCommentary(placed, aiDone, outcome)
-        if (game !== g) { json(res, 409, { error: '对局已更换，请以最新局面为准' }); return }
+        const said = await gameCommentary(g, placed, aiDone, outcome)
+        if (games.get(slotId) !== g) { json(res, 409, { error: '对局已更换，请以最新局面为准' }); return }
         g.commentary.push({
           from: 'agent',
           text: said || pickGameQuip(pool).replaceAll('主人', g.userTitle),
         })
         if (g.commentary.length > 60) g.commentary.splice(0, g.commentary.length - 60)
-        if (over.over) pushGameOutcome()
+        if (over.over) pushGameOutcome(g)
         g.busy = false   // 必须在 json 前清：响应即回合终态，前端按 busy 渲染思考态
-        json(res, 200, { ...gameSnapshot(), aiMove: mv })
+        json(res, 200, { ...gameSnapshot(g), aiMove: mv })
       } catch (error) {
-        if (g && game === g) g.busy = false
+        if (g && games.get(slotId) === g) g.busy = false
         json(res, error.message === 'body too large' ? 413 : 400, { error: error.message })
       }
       return

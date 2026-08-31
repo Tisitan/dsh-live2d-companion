@@ -52,6 +52,10 @@ let petGen = 0
 let petKillTimer = null
 /** 宿主进程退出钩子只挂一次（模块级状态跨挂载存活，反复注册会叠加）。 */
 let petExitHookArmed = false
+/** 桌宠意外退场的退避重拉定时器：dispose 时清除（卸载语义绝不诈尸）。 */
+let petRespawnTimer = null
+/** 重拉滑窗（1 小时最多 3 次）：崩溃循环保护，撞顶即放弃等人工/remount。 */
+const petRespawnHistory = []
 
 /** 显示模式 → config 布尔对。 */
 const DISPLAY_MODES = {
@@ -673,12 +677,16 @@ export function apply(ctx, config) {
   //   在线模式的 LLM 只做「解说员」——不碰引擎、无工具、单轮问答
   // - 同步：AI 落子在引擎内即时完成，但响应扣到解说就位再返回——前端收到响应时
   //   落子动画与解说语句同帧出现；解说 25s 超时/失败静默落回本地台词池，对局永不卡死
-  /** 当前对局（单局制）。 */
-  const gameRef = { current: null }
+  /** 当前对局槽表：gameId → 对局条目（多窗各玩各的；页内卡按选中游戏分槽）。 */
+  const gameRefs = new Map()
+  /** 旧式无 game 请求的归属槽（既有单槽语义=最近开的局）；该槽不存在时回落 gomoku。 */
+  let lastGameSlot = 'gomoku'
+  const fallbackSlot = () => (gameRefs.has(lastGameSlot) ? lastGameSlot : 'gomoku')
   // game = { game: 描述符, engine, ai, handle, agent, mode, difficulty, userTitle, presetId, busy, commentary, createdAt }
 
-  function gameStateJson() {
-    const g = gameRef.current
+  /** 读取一个槽的状态；g 缺省按 gameId 查槽，槽不存在返回 idle。 */
+  function gameStateJson(g) {
+    if (g === undefined || typeof g === 'string') g = gameRefs.get(g ?? '') ?? null
     if (!g) return { status: 'idle' }
     const over = g.game.isOver(g.engine)
     return {
@@ -695,12 +703,16 @@ export function apply(ctx, config) {
     }
   }
 
-  async function disposeGame() {
-    const g = gameRef.current
-    gameRef.current = null
-    if (g) { try { await g.handle?.dispose() } catch { } }
+  /** 拆槽：只拆指定游戏；不传 game 拆全部（插件卸载清场用），防孤儿 agent 会话。 */
+  async function disposeGame(gameId) {
+    const targets = gameId === undefined
+      ? [...gameRefs.values()]
+      : [gameRefs.get(gameId)].filter(Boolean)
+    if (gameId === undefined) gameRefs.clear()
+    else gameRefs.delete(gameId)
+    for (const g of targets) { try { await g.handle?.dispose() } catch { } }
   }
-  // 插件重挂载/卸载时拆除对局 agent，防孤儿会话
+  // 插件重挂载/卸载时拆除全部对局 agent，防孤儿会话
   ctx.effect(() => () => { void disposeGame() })
 
   /** 称呼消毒：1~12 个文字/数字/常见符号，拒绝控制字符与提示词注入面。 */
@@ -734,12 +746,14 @@ export function apply(ctx, config) {
   }
 
   /**
-   * 对局 agent 单轮问答公共件：followup + 25s 超时 + 超时 cancel（防尸体占队列串台）
+   * 对局 agent 单轮问答公共件：followup + 超时 + 超时 cancel（防尸体占队列串台）
    * + 代际校验 + 按回合 id 切片提取文本。返回回复文本；超时/出错/换局返回 null。
    * 解说管道与阿尔法狗对局管道共用。
+   * 超时默认 90s：推理模型（如 deepseek-v4-flash）思维链动辄 30~60s，旧 25s 必掐
+   * （实测截图「Hmm, …→已停止」实锤）；关思考成功的模型几秒即回，超时只是上限。
    */
   let commentSeq = 0
-  async function askAgent(g, promptText, timeoutMs = 25000) {
+  async function askAgent(g, promptText, timeoutMs = 90000) {
     const seqBefore = g.agent.session.seq
     const myId = `game-${Date.now()}-${++commentSeq}`   // 唯一回合键：事件切片对齐用
     g.agent.followup(/** @type {any} */ ({
@@ -760,8 +774,8 @@ export function apply(ctx, config) {
     } finally {
       clearTimeout(timeoutHandle)
     }
-    // 代际校验：等待期间主人开了新局（disposeGame），本回复属于旧局——丢弃不回写
-    if (gameRef.current !== g) return null
+    // 代际校验：等待期间该游戏槽开了新局（disposeGame），本回复属于旧局——丢弃不回写
+    if (gameRefs.get(g.game.id) !== g) return null
     // 切片对齐本轮 followup：旧 turn 迟到的文本落在 seqBefore 之后也不认账（防串台双保险）
     const events = g.agent.session.events
     let startIdx = seqBefore
@@ -787,7 +801,7 @@ export function apply(ctx, config) {
       `${firstBrief}对方刚走了：${playerDesc}${aiDesc ? `。你回应了：${aiDesc}` : '——这一手直接终结了比赛'}。`
       + `\n当前局面：\n${g.game.boardText(g.engine)}${overLine}${titleLine}`
       + '\n说出你此刻边下边说的话：先对对方这手给个真实反应（惊讶/得意/不服/警惕都行），'
-      + '再带出你这手的打算或心情。一句口语，40 字内，别用解说腔，别复述坐标，别每句都以称呼开头。')
+      + '再带出你这手的打算或心情。口语短句、简短自然就好（别憋长篇），别用解说腔，别复述坐标。')
   }
 
   /**
@@ -807,10 +821,11 @@ export function apply(ctx, config) {
     let move = reply ? spec.parse(reply) : null
     const firstBanter = banterOf(reply)
     if (!move && reply !== null) {
-      // 没解析出合法走法：带失败诊断重答一次（压缩到 15s——两连超时不该拖 50s）
+      // 没解析出合法走法：带失败诊断重答一次（45s——推理模型思维链耗时，见 askAgent 注释；
+      // 首答超时 reply===null 不进重试，两连超时上限 135s 而非拖死对局）
       reply = await askAgent(g, spec.prompt
         + '\n注意：你上一条回复的走法被裁判打回了——原因只会是这三种：没有闭合的 <move>…</move> 标签、'
-        + '选的位置已经有棋子/越界、或不在合法走法清单里。看清棋盘上的 · 空位（或清单条目）重来。' + titleLine, 15000)
+        + '选的位置已经有棋子/越界、或不在合法走法清单里。看清棋盘上的 · 空位（或清单条目）重来。' + titleLine, 45000)
       move = reply ? spec.parse(reply) : null
     }
     if (!move) return null
@@ -877,12 +892,16 @@ export function apply(ctx, config) {
     path: '/live2d/game/state',
     handler(req, res) {
       if (req.method !== 'GET') { res.writeHead(405, { allow: 'GET' }); res.end('method not allowed'); return }
-      sendJson(res, 200, gameStateJson())
+      // 槽查询：?game=<id> 返回该游戏槽（无槽→idle）；不带参数落最近开的局（旧式兼容）
+      const url = new URL(req.url ?? '/', 'http://x')
+      const qGame = url.searchParams.get('game')
+      const gameId = typeof qGame === 'string' && /^[a-z0-9-]{1,40}$/i.test(qGame) ? qGame : fallbackSlot()
+      sendJson(res, 200, gameStateJson(gameId))
     },
   }))
 
-  /** 开局串行闸：createAgent 是异步让出点，并发 new 会泄漏孤儿 agent 句柄（无人 dispose）。 */
-  let newGameInFlight = false
+  /** 开局串行闸（每游戏槽各一道）：createAgent 是异步让出点，并发 new 同槽会泄漏孤儿 agent 句柄。 */
+  const newGameInFlight = new Set()
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
@@ -891,10 +910,10 @@ export function apply(ctx, config) {
       if (req.method !== 'POST') { res.writeHead(405, { allow: 'POST' }); res.end('method not allowed'); return }
       if (!isLocalWriteReq(req)) { sendJson(res, 403, { error: 'this route is local-only' }); return }
       readJsonBody(req).then(async (parsed) => {
-        if (newGameInFlight) { sendJson(res, 409, { error: '正在开局，请稍候' }); return }
-        newGameInFlight = true
+        const gameId = typeof parsed.game === 'string' ? parsed.game : 'gomoku'
+        if (newGameInFlight.has(gameId)) { sendJson(res, 409, { error: '正在开局，请稍候' }); return }
+        newGameInFlight.add(gameId)
         try {
-          const gameId = typeof parsed.game === 'string' ? parsed.game : 'gomoku'
           const def = getGame(gameId)
           if (!def) { sendJson(res, 400, { error: `unknown game: ${String(gameId).slice(0, 40)}` }); return }
           const mode = parsed.mode === 'offline' ? 'offline' : 'online'
@@ -909,21 +928,23 @@ export function apply(ctx, config) {
             return
           }
           const userTitle = sanitizeTitle(parsed.userTitle)
-          await disposeGame()
+          await disposeGame(gameId)   // 只拆本游戏槽：其它游戏的进行中对局不受打扰
           const engine = def.createEngine()
-          // 执子者：本地 AI（难度分档在本地生效）；阿尔法狗局也建 hard 档本地 AI——LLM 超时/乱答时的兜底
-          const ai = def.createAI(difficulty === 'alphago' ? 'hard' : difficulty)
           const startText = def.startLine?.(difficulty, mode)
             ?? `对局开始（${mode === 'offline' ? '本地对弈' : '在线解说'}·${DIFF_NAME[difficulty]}）。`
+          // 执子者：本地 AI（难度分档在本地生效）；阿尔法狗局也建 hard 档本地 AI——LLM 超时/乱答时的兜底
+          const ai = def.createAI(difficulty === 'alphago' ? 'hard' : difficulty)
           // 离线模式：本地台词解说，不建 agent，秒回不耗 token
           if (mode === 'offline') {
-            gameRef.current = {
+            const g = {
               game: def, engine, ai, handle: null, agent: null,
               mode, difficulty, userTitle, presetId: null, busy: false,
               commentary: [{ from: 'system', text: startText }],
               createdAt: new Date().toISOString(),
             }
-            sendJson(res, 200, gameStateJson())
+            gameRefs.set(gameId, g)
+            lastGameSlot = gameId
+            sendJson(res, 200, gameStateJson(g))
             return
           }
           const sel = ctx.agentDefaultModel.currentSelection()
@@ -931,10 +952,21 @@ export function apply(ctx, config) {
           const chosenModel = typeof parsed.model === 'string' && /^[\w.:-]{1,80}$/.test(parsed.model) ? parsed.model : sel.model
           const presetId = typeof parsed.preset === 'string' && parsed.preset !== '' ? parsed.preset : undefined
           const sessionId = /** @type {any} */ (`l2d-game-${gameId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+          // 模型元数据预探查：maxTokens 顶格——游戏 LLM 调用走不限制：AgentOptions.maxTokens
+          // 语义为「每次对话模型请求的最大输出 tokens」（dsh-agent runtime-types），不传时
+          // 由适配器按保守 defaultMaxTokens 兜底；这里显式顶到模型元数据声明的输出上限
+          // （defaultMaxTokens=物理上限），解除 agent 层与适配器默认的双重压缩——推理模型
+          // 思维链再长也不至于把 <guess>/<hint> 协议块挤掉。assertAgentOptions 要求正
+          // safe integer，故用模型声明值而非 Infinity（Infinity 会 throw）。
+          let maxTokensCap
+          try {
+            const info = await ctx.llm.resolveModelInfo(sel.provider, chosenModel)
+            if (Number.isSafeInteger(info?.defaultMaxTokens) && info.defaultMaxTokens > 0) maxTokensCap = info.defaultMaxTokens
+          } catch { }
           const handle = await ctx.agentLoop.createAgent(ctx, {
             sessionId,
             meta: { cwd: homedir() },   // 不写死桌面路径：发布包在别人机器上该目录不存在
-            agentOptions: /** @type {any} */ ({ provider: sel.provider, model: chosenModel }),
+            agentOptions: /** @type {any} */ ({ provider: sel.provider, model: chosenModel, ...(maxTokensCap ? { maxTokens: maxTokensCap } : {}) }),
             setup: async (agentCtx) => {
               // 预设=解说人格：挂载失败裸跑兜底（解说变通用语气，游戏不受影响）
               try {
@@ -953,7 +985,7 @@ export function apply(ctx, config) {
               }
             },
           })
-          gameRef.current = {
+          const g = {
             game: def, engine, ai, handle, agent: handle.agent,
             mode, difficulty, userTitle,
             presetId: presetId ?? ctx.agentPresets.defaultId,
@@ -961,11 +993,13 @@ export function apply(ctx, config) {
             commentary: [{ from: 'system', text: startText }],
             createdAt: new Date().toISOString(),
           }
-          sendJson(res, 200, gameStateJson())
+          gameRefs.set(gameId, g)
+          lastGameSlot = gameId
+          sendJson(res, 200, gameStateJson(g))
         } catch (error) {
           sendJson(res, 500, { error: `开局失败：${String(error)}` })
         } finally {
-          newGameInFlight = false
+          newGameInFlight.delete(gameId)
         }
       }, error => {
         sendJson(res, 400, { error: `invalid request body: ${String(error)}` })
@@ -980,7 +1014,9 @@ export function apply(ctx, config) {
       if (req.method !== 'POST') { res.writeHead(405, { allow: 'POST' }); res.end('method not allowed'); return }
       if (!isLocalWriteReq(req)) { sendJson(res, 403, { error: 'this route is local-only' }); return }
       readJsonBody(req).then(async (parsed) => {
-        const g = gameRef.current
+        // 槽路由：body.game 指定对局槽；不传落最近开的局（旧式调用兼容）
+        const slotId = typeof parsed.game === 'string' && /^[a-z0-9-]{1,40}$/i.test(parsed.game) ? parsed.game : fallbackSlot()
+        const g = gameRefs.get(slotId)
         try {
           if (!g) { sendJson(res, 409, { error: '尚未开局' }); return }
           if (g.busy) { sendJson(res, 409, { error: '思考中，请稍候' }); return }
@@ -995,13 +1031,13 @@ export function apply(ctx, config) {
             if (g.mode === 'online' && g.agent) {
               text = await commentate(g, placed.desc, null)
             }
-            // 代际校验：解说等待期间开了新局——不回写旧局
-            if (gameRef.current !== g) { sendJson(res, 409, { error: '对局已更换，请以最新局面为准' }); return }
+            // 代际校验：解说等待期间该槽开了新局——不回写旧局
+            if (gameRefs.get(slotId) !== g) { sendJson(res, 409, { error: '对局已更换，请以最新局面为准' }); return }
             if (!text) text = fallbackQuip(g, null, false, overNow.winner === 1)
             pushLine(g, { from: 'agent', text })
             pushOutcome(g)
             g.busy = false
-            sendJson(res, 200, { ...gameStateJson(), aiMove: null })
+            sendJson(res, 200, { ...gameStateJson(g), aiMove: null })
             return
           }
           // AI 回合：阿尔法狗=LLM 亲自执子（走子+台词一次产出，失败兜底本地 hard AI）；
@@ -1010,14 +1046,14 @@ export function apply(ctx, config) {
           let duelText = null
           if (g.difficulty === 'alphago' && g.mode === 'online' && g.agent) {
             const r = await llmDuel(g, placed.desc)
-            if (gameRef.current !== g) { sendJson(res, 409, { error: '对局已更换，请以最新局面为准' }); return }
+            if (gameRefs.get(slotId) !== g) { sendJson(res, 409, { error: '对局已更换，请以最新局面为准' }); return }
             if (r) { mv = r.move; duelText = r.text }
           }
           if (!mv) mv = await g.ai.pickMove(g.engine)
           if (!mv) {
             // 无合法手但引擎未判终局（防御性分支，正常不会发生）：按现状收局返回
             g.busy = false
-            sendJson(res, 200, { ...gameStateJson(), aiMove: null })
+            sendJson(res, 200, { ...gameStateJson(g), aiMove: null })
             return
           }
           let aiDone = g.game.aiMove(g.engine, mv)
@@ -1031,7 +1067,7 @@ export function apply(ctx, config) {
           if (!aiDone.ok) {
             // 本地 AI 的手也被拒（当前两游戏不会触发，防御缺口先堵）
             g.busy = false
-            sendJson(res, 200, { ...gameStateJson(), aiMove: null })
+            sendJson(res, 200, { ...gameStateJson(g), aiMove: null })
             return
           }
           const over = g.game.isOver(g.engine)
@@ -1040,13 +1076,13 @@ export function apply(ctx, config) {
           if (!text && g.mode === 'online' && g.agent) {
             text = await commentate(g, placed.desc, aiDone.desc)
           }
-          // 代际校验：解说等待期间主人开了新局，本 handler 作用的是旧局——不回写状态
-          if (gameRef.current !== g) { sendJson(res, 409, { error: '对局已更换，请以最新局面为准' }); return }
+          // 代际校验：解说等待期间该槽开了新局，本 handler 作用的是旧局——不回写状态
+          if (gameRefs.get(slotId) !== g) { sendJson(res, 409, { error: '对局已更换，请以最新局面为准' }); return }
           if (!text) text = fallbackQuip(g, mv, over.over && over.winner === 2)
           pushLine(g, { from: 'agent', text })
           if (over.over) pushOutcome(g)
           g.busy = false   // 必须在 sendJson 前清：响应即回合终态，前端按 busy 渲染思考态
-          sendJson(res, 200, { ...gameStateJson(), aiMove: mv })
+          sendJson(res, 200, { ...gameStateJson(g), aiMove: mv })
         } catch (error) {
           if (g) g.busy = false
           sendJson(res, 500, { error: `回合失败：${String(error)}` })
@@ -1316,6 +1352,59 @@ export function apply(ctx, config) {
           spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => { })
         } catch { }
       }
+      // spawn 主路径（effect 首拉与意外退场重拉共用）：exit 时区分「卸载处置」与「意外死亡」——
+      // 卸载路径 schedulePetKill 已先把 managedPetPid 置 null，exit 时判 false 不重拉
+      const spawnPet = () => {
+        const petUrl = `http://127.0.0.1:${ctx.webServer.port}/live2d/pet.html`
+        const child = spawn(exe, ['.'], {
+          cwd: petDir,
+          detached: true,
+          stdio: 'ignore',
+          env: { ...process.env, L2D_URL: petUrl, L2D_PIDFILE: PET_PID_FILE },
+        })
+        // spawn 的 ENOENT 走异步 error 事件，try/catch 接不住——不监听会 uncaughtException 崩宿主
+        child.on('error', (error) => ctx.logger.warn(`live2d pet spawn failed: ${String(error)}`))
+        child.on('exit', (code) => {
+          const unexpected = managedPetPid === child.pid
+          if (petChild === child) petChild = null
+          if (managedPetPid === child.pid) managedPetPid = null
+          // 秒退出也不再无痕：单实例锁弹回/模型崩溃等留下的 code 在这里可见
+          ctx.logger.info(`live2d pet exited (pid ${child.pid}, code ${code})`)
+          if (unexpected) schedulePetRespawn()
+        })
+        petChild = child
+        managedPetPid = child.pid
+        child.unref()
+        lastPetSpawnAt = Date.now()
+        ctx.logger.info(`live2d pet spawned (pid ${child.pid}) -> ${petUrl}`)
+      }
+      // 意外退场重拉：30s 退避（复用 spawn 节流窗口）+ 1h 滑窗 3 次上限（崩溃循环保护）。
+      // 凭据探活仍活=已被别路拉起（remount/收养），不重复 spawn
+      const schedulePetRespawn = () => {
+        if (petRespawnTimer !== null) return
+        petRespawnTimer = setTimeout(() => {
+          petRespawnTimer = null
+          const cutoff = Date.now() - 3600000
+          while (petRespawnHistory.length > 0 && petRespawnHistory[0] < cutoff) petRespawnHistory.shift()
+          if (petRespawnHistory.length >= 3) {
+            ctx.logger.warn('live2d pet respawn abandoned: 3 respawns within 1h (crash loop suspected)')
+            return
+          }
+          void findLivePet({ pidFile: PET_PID_FILE, expectedExe: exe }).then((found) => {
+            if (found.status === 'alive') {
+              if (managedPetPid === null) managedPetPid = found.pid
+              ctx.logger.info(`live2d pet respawn skipped: live instance adopted (pid ${found.pid})`)
+              return
+            }
+            if (Date.now() - lastPetSpawnAt < 30000) {
+              ctx.logger.info('live2d pet respawn throttled (spawned within 30s)')
+              return
+            }
+            petRespawnHistory.push(Date.now())
+            spawnPet()
+          }).catch(() => { })
+        }, 30000)
+      }
       /** 卸载不即杀：进入 8 秒收养窗口，超时无新实例才 taskkill（重挂载热更秒收养）。 */
       const schedulePetKill = (pid) => {
         if (pid === null) return
@@ -1369,28 +1458,11 @@ export function apply(ctx, config) {
             return
           }
           lastPetSpawnAt = now
-          const petUrl = `http://127.0.0.1:${ctx.webServer.port}/live2d/pet.html`
-          const child = spawn(exe, ['.'], {
-            cwd: petDir,
-            detached: true,
-            stdio: 'ignore',
-            env: { ...process.env, L2D_URL: petUrl, L2D_PIDFILE: PET_PID_FILE },
-          })
-          // spawn 的 ENOENT 走异步 error 事件，try/catch 接不住——不监听会 uncaughtException 崩宿主
-          child.on('error', (error) => ctx.logger.warn(`live2d pet spawn failed: ${String(error)}`))
-          child.on('exit', (code) => {
-            if (petChild === child) petChild = null
-            if (managedPetPid === child.pid) managedPetPid = null
-            // 秒退出也不再无痕：单实例锁弹回/模型崩溃等留下的 code 在这里可见
-            ctx.logger.info(`live2d pet exited (pid ${child.pid}, code ${code})`)
-          })
-          petChild = child
-          managedPetPid = child.pid
-          child.unref()
-          ctx.logger.info(`live2d pet spawned (pid ${child.pid}) -> ${petUrl}`)
+          spawnPet()
         }).catch(() => { })
         return () => {
           ++petGen   // 未决的异步决策立即过期；届时自行履约（在场即处置）
+          if (petRespawnTimer !== null) { clearTimeout(petRespawnTimer); petRespawnTimer = null }
           schedulePetKill(managedPetPid)
         }
       })

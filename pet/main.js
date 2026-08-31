@@ -141,33 +141,70 @@ app.whenReady().then(() => {
     return { x: p.x, y: p.y, bounds: win.getBounds() }
   })
 
-  // ── 游戏卫星窗 ──
+  // ── 游戏卫星窗（每游戏独立一窗）──
   // 对局卡独立小窗：输入捕获范围物理上只有卡片大小，overlay 的穿透状态机不再参与；
-  // focusable:false 使点卡片永不抢前台游戏焦点。卡片与 overlay 通过 BroadcastChannel
-  // 同源互通（气泡台词转发到小人头上）。
-  let cardWin = null
-  let cardExpectedSize = null   // 加载完成时的实测尺寸：拖拽期钉死，防对账循环改尺寸
-  // 卡片区域实时推送：overlay 把该区域当穿透死区——否则 overlay 压在卡片上方（screen-saver
-  // 层 > floating 层），光标在卡片上停留会触发 overlay 的模型区解锁，把卡片点击全吃掉
+  // focusable:true 让下拉/输入原生可用。卡片与 overlay 通过 BroadcastChannel 同源互通
+  // （气泡台词转发到小人头上）。
+  // 每游戏独立尺寸表（useContentSize 语义=内容区像素），与各游戏渲染器 canvasSize 对应：
+  //   gomoku / chess：500×500 正方盘 + 卡头/状态条/评论列 → 760×650
+  const CARD_SIZES = {
+    gomoku: { width: 760, height: 650 },
+    chess: { width: 760, height: 650 },
+  }
+  const cardWins = new Map()    // gameId → { win, expectedSize, guardTimer }
+  // gameId 白名单：格式粗筛（registry id 规则 /^[a-z0-9-]+$/）+ 尺寸表命中，非法一律落 gomoku
+  const normalizeGameId = (raw) => {
+    if (typeof raw !== 'string' || !/^[a-z0-9-]+$/.test(raw)) return 'gomoku'
+    return Object.prototype.hasOwnProperty.call(CARD_SIZES, raw) ? raw : 'gomoku'
+  }
+  // 卡片区域实时推送（多窗=矩形数组）：overlay 把这些区域当穿透死区——否则 overlay 压在
+  // 卡片上方（screen-saver 层 > floating 层），光标停留会触发模型区解锁，把卡片点击全吃掉。
+  // 兼容语义：0 窗 null / 1 窗单矩形（旧接收端行为不变）/ 多窗矩形数组（新接收端逐个判）
   const pushCardArea = () => {
     if (win === null || win.isDestroyed()) return
-    const b = cardWin && !cardWin.isDestroyed() ? cardWin.getBounds() : null
-    win.webContents.send('l2d-game-area', b)
+    const areas = []
+    for (const entry of cardWins.values()) {
+      if (entry.win && !entry.win.isDestroyed()) areas.push(entry.win.getBounds())
+    }
+    win.webContents.send('l2d-game-area', areas.length === 1 ? areas[0] : areas.length > 0 ? areas : null)
+  }
+  // IPC sender 反查：close/moveby 等来自卡片窗的消息，用 sender 在多窗表里找归属窗（找不到拒收）
+  const cardEntryBySender = (event) => {
+    for (const entry of cardWins.values()) {
+      if (entry.win && !entry.win.isDestroyed() && event.sender === entry.win.webContents) return entry
+    }
+    return null
   }
   ipcMain.handle('l2d-game-bounds', (event) => {
     if (!fromPet(event)) return null
-    return cardWin && !cardWin.isDestroyed() ? cardWin.getBounds() : null
+    const areas = []
+    for (const entry of cardWins.values()) {
+      if (entry.win && !entry.win.isDestroyed()) areas.push(entry.win.getBounds())
+    }
+    return areas.length === 1 ? areas[0] : areas.length > 0 ? areas : null
   })
-  ipcMain.on('l2d-game-open', (event) => {
+  ipcMain.on('l2d-game-open', (event, rawGameId) => {
     if (!fromPet(event)) return
-    if (cardWin && !cardWin.isDestroyed()) { cardWin.show(); pushCardArea(); return }
+    const gameId = normalizeGameId(rawGameId)
+    const existing = cardWins.get(gameId)
+    if (existing) {
+      if (existing.win && !existing.win.isDestroyed()) { existing.win.show(); pushCardArea(); return }
+      clearTimeout(existing.guardTimer)   // 残骸条目（窗已亡未清）：先拆再重建
+      cardWins.delete(gameId)
+    }
     const disp = screen.getPrimaryDisplay().workArea
-    cardWin = new BrowserWindow({
-      width: 760,
-      height: 650,
+    const size = CARD_SIZES[gameId]
+    // 新窗级联偏移：默认位右下角起，按已开窗数每窗 (+28,+28) 防完全重叠；出屏回落默认位
+    const baseX = disp.x + disp.width - (size.width + 16)
+    const baseY = disp.y + Math.max(0, Math.round((disp.height - size.height) / 2))
+    let x = baseX + cardWins.size * 28
+    let y = baseY + cardWins.size * 28
+    if (x + size.width > disp.x + disp.width || y + size.height > disp.y + disp.height) { x = baseX; y = baseY }
+    const cardWin = new BrowserWindow({
+      width: size.width,
+      height: size.height,
       useContentSize: true,   // 尺寸语义=内容区：减少客户区↔框架换算面（分数 DPI 对账稳定化）
-      x: disp.x + disp.width - 776,
-      y: disp.y + Math.round((disp.height - 650) / 2),
+      x, y,
       frame: false,
       alwaysOnTop: true,
       resizable: false,
@@ -175,8 +212,7 @@ app.whenReady().then(() => {
       focusable: true,           // 恒 true：setFocusable 切换在分数 DPI 下有窗口管理副作用
       backgroundColor: '#ffffff',
       hasShadow: false,          // DWM 阴影的隐形边框是分数 DPI 框架对账误差来源（overlay 窗同款配置从不自激）
-      // roundedCorners 保持关闭：自激 resize 案中圆角非元凶，但排查后保留——
-      // 尽量减少 DWM 框架度量参与面，分数 DPI 下对账更稳
+      roundedCorners: false,     // 减少 DWM 框架度量参与面，分数 DPI 下对账更稳（单窗案排查后保留）
       webPreferences: {
         preload: path.join(__dirname, 'preload-card.js'),
         contextIsolation: true,
@@ -185,43 +221,64 @@ app.whenReady().then(() => {
         backgroundThrottling: false,
       },
     })
+    const entry = { win: cardWin, expectedSize: null, guardTimer: null, loadRetries: 0 }   // 本窗自己的 DPI 治疗链状态
+    cardWins.set(gameId, entry)
     // 与 overlay 同级且后设置 → 压在透明 overlay 之上。卡片是不透明窗本就该在上：
     // 否则透明穿透窗叠在不透明窗上，Windows 光标判定在夹层抖动（标题栏光标跳变病灶）
     cardWin.setAlwaysOnTop(true, 'screen-saver')
     cardWin.setMenu(null)
     cardWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-    // 锁视觉缩放：触控板/触屏的捏合手势在拖拽标题栏时极易被误判成 pinch，
-    // Chromium 默认视觉缩放会把整页放大（"一拖动就放大"的嫌疑路径）；
-    // 卫星窗没有任何需要页面级缩放的场景，锁死 1:1
+    // 锁视觉缩放：捏合手势在拖拽标题栏时极易被误判成 pinch 把整页放大；卫星窗锁死 1:1
     cardWin.webContents.setVisualZoomLevelLimits(1, 1).catch(() => { })
-    // 渲染器就绪后重锁：webContents 创建前设置的视觉缩放锁可能被首个导航静默丢弃
-    cardWin.webContents.on('did-finish-load', () => {
-      cardWin?.webContents.setVisualZoomLevelLimits(1, 1).catch(() => { })
-      cardExpectedSize = cardWin && !cardWin.isDestroyed() ? cardWin.getSize() : null
-    })
     cardWin.webContents.on('will-navigate', (e, target) => {
       if (!target.startsWith(targetOrigin + '/')) e.preventDefault()
     })
-    // 尺寸看门狗：分数 DPI 下 Chromium↔Windows 的框架对账会残留 ±1px 级抽搐
-    // （雪崩已被 hasShadow:false + 拖拽钉尺寸打断），任何路径引起的尺寸偏移
-    // 80ms 平息后一律钉回实测尺寸——窗口设计上固定尺寸，视觉层零容忍
-    let cardSizeGuardTimer = null
+    // 渲染器崩溃：关窗退场（closed 钩子自清表+收缩死区，🎮 可重开）——×按钮/拖动都靠页面，
+    // 页死即不可交互，留壳只会钉一块白窗在屏幕上
+    cardWin.webContents.on('render-process-gone', (_event, details) => {
+      console.error(`[l2d-card] render gone: game=${gameId} reason=${details.reason} exitCode=${details.exitCode}`)
+      cardWin.close()
+    })
+    // 主 frame 加载失败有限退避（2s/4s 两次），仍败关窗退场
+    cardWin.webContents.on('did-fail-load', (_event, _code, _desc, _url, isMainFrame) => {
+      if (!isMainFrame) return
+      entry.loadRetries += 1
+      console.error(`[l2d-card] load failed: game=${gameId} attempt=${entry.loadRetries}`)
+      if (entry.loadRetries > 2) { cardWin.close(); return }
+      setTimeout(() => { if (!cardWin.isDestroyed()) cardWin.loadURL(cardUrl).catch(() => { }) }, 2000 * entry.loadRetries)
+    })
+    // 渲染器就绪后重锁：webContents 创建前设置的视觉缩放锁可能被首个导航静默丢弃；
+    // 同时记本窗实测尺寸（每窗一份 expectedSize，拖拽期钉死用）
+    cardWin.webContents.on('did-finish-load', () => {
+      cardWin?.webContents.setVisualZoomLevelLimits(1, 1).catch(() => { })
+      entry.expectedSize = cardWin && !cardWin.isDestroyed() ? cardWin.getSize() : null
+      entry.loadRetries = 0
+    })
+    // 尺寸看门狗（每窗一份）：分数 DPI 下 Chromium↔Windows 的框架对账会残留 ±1px 级
+    // 抽搐（雪崩已被 hasShadow:false + 拖拽钉尺寸打断），任何路径引起的尺寸偏移
+    // 80ms 平息后一律钉回本窗实测尺寸——窗口设计上固定尺寸，视觉层零容忍
     cardWin.on('resize', () => {
-      clearTimeout(cardSizeGuardTimer)
-      cardSizeGuardTimer = setTimeout(() => {
-        if (!cardWin || cardWin.isDestroyed() || !cardExpectedSize) return
+      clearTimeout(entry.guardTimer)
+      entry.guardTimer = setTimeout(() => {
+        if (cardWin.isDestroyed() || !entry.expectedSize) return
         const s = cardWin.getSize()
-        if (s[0] !== cardExpectedSize[0] || s[1] !== cardExpectedSize[1]) {
-          cardWin.setSize(cardExpectedSize[0], cardExpectedSize[1])
+        if (s[0] !== entry.expectedSize[0] || s[1] !== entry.expectedSize[1]) {
+          cardWin.setSize(entry.expectedSize[0], entry.expectedSize[1])
         }
       }, 80)
     })
-    cardWin.on('closed', () => { cardWin = null; pushCardArea() })
-    cardWin.loadURL(new URL('/live2d/game-card.html', TARGET).href).catch(() => { })
+    cardWin.on('closed', () => {
+      clearTimeout(entry.guardTimer)
+      if (cardWins.get(gameId) === entry) cardWins.delete(gameId)
+      pushCardArea()   // 死区数组随关窗收缩
+    })
+    const cardUrl = new URL(`/live2d/game-card.html?game=${encodeURIComponent(gameId)}`, TARGET).href
+    cardWin.loadURL(cardUrl).catch(() => { })
     pushCardArea()
   })
   ipcMain.on('l2d-game-close', (event) => {
-    if (cardWin && !cardWin.isDestroyed() && event.sender === cardWin.webContents) cardWin.close()
+    const entry = cardEntryBySender(event)   // 多窗反查：sender 属于哪张卡就关哪张，找不到拒收
+    if (entry) entry.win.close()
   })
   // 运行期焦点能力切换【禁用】：setFocusable 切 WS_EX_NOACTIVATE 会触发 Windows
   // 重算窗口框架——分数 DPI（RDP 150%）下属于窗口尺寸对账的扰动源（自激 resize
@@ -233,13 +290,15 @@ app.whenReady().then(() => {
   // 分数 DPI 下纯 setPosition 会触发 Chromium↔Windows 尺寸对账循环（窗口疯长），
   // 故拖拽全程用 setBounds 把尺寸钉死在加载完成时的实测值——位置照动、尺寸免谈。
   ipcMain.on('l2d-game-moveby', (event, dx, dy) => {
-    if (!cardWin || cardWin.isDestroyed() || event.sender !== cardWin.webContents) return
+    const entry = cardEntryBySender(event)   // 多窗反查：按 sender 找归属窗，找不到拒收
+    if (!entry || entry.win.isDestroyed()) return
     if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
-    const [x, y] = cardWin.getPosition()
-    if (cardExpectedSize) {
-      cardWin.setBounds({ x: Math.round(x + dx), y: Math.round(y + dy), width: cardExpectedSize[0], height: cardExpectedSize[1] })
+    const [x, y] = entry.win.getPosition()
+    if (entry.expectedSize) {
+      // 拖拽钉尺寸：setBounds 同时钉住本窗加载完成时的实测尺寸（位置照动、尺寸免谈）
+      entry.win.setBounds({ x: Math.round(x + dx), y: Math.round(y + dy), width: entry.expectedSize[0], height: entry.expectedSize[1] })
     } else {
-      cardWin.setPosition(Math.round(x + dx), Math.round(y + dy))
+      entry.win.setPosition(Math.round(x + dx), Math.round(y + dy))
     }
     pushCardArea()   // 死区跟随窗口移动
   })
@@ -252,15 +311,22 @@ app.whenReady().then(() => {
     if (win === null || win.isDestroyed()) return
     win.loadURL(TARGET).catch(() => { })
   }
-  win.webContents.on('did-fail-load', () => {
+  win.webContents.on('did-fail-load', (_event, _code, _desc, _url, isMainFrame) => {
+    if (!isMainFrame) return
     const delay = Math.min(30000, 2000 * 2 ** loadRetries)
     loadRetries += 1
     setTimeout(reloadPage, delay)
   })
-  win.webContents.on('did-finish-load', () => { loadRetries = 0 })
+  win.webContents.on('did-finish-load', () => { loadRetries = 0; pageMisses = 0 })
   // 渲染进程崩溃/假死看门狗：直接退出释放单实例锁，比留僵尸透明窗卡死下次启动强
-  win.webContents.on('render-process-gone', () => app.quit())
-  win.webContents.on('unresponsive', () => app.quit())
+  win.webContents.on('render-process-gone', (_event, details) => {
+    console.error(`[l2d-pet] render-process-gone: reason=${details.reason} exitCode=${details.exitCode}`)
+    app.quit()
+  })
+  win.webContents.on('unresponsive', () => {
+    console.error('[l2d-pet] renderer unresponsive')
+    app.quit()
+  })
   win.loadURL(TARGET).catch(() => { })
 
   let lastCursor = null
@@ -274,9 +340,34 @@ app.whenReady().then(() => {
 
   const origin = new URL(TARGET).origin
   let failures = 0
-  setInterval(async () => {
+  let pageMisses = 0
+  const probePage = async () => {
+    if (win === null || win.isDestroyed()) return
+    const alive = await Promise.race([
+      win.webContents.executeJavaScript('window.__L2D_PAGE_LIVE === true').then((v) => v === true, () => false),
+      new Promise((resolve) => setTimeout(() => resolve(false), 4000)),
+    ])
+    if (alive) {
+      if (pageMisses > 0) console.error(`[l2d-pet] page liveness recovered after ${pageMisses} miss(es)`)
+      pageMisses = 0
+      return
+    }
+    pageMisses += 1
+    console.error(`[l2d-pet] page liveness probe miss #${pageMisses}`)
+    if (pageMisses === 2) reloadPage()
+    if (pageMisses >= 5) {
+      console.error('[l2d-pet] page unrecoverable after 5 probe misses, quitting')
+      app.quit()
+    }
+  }
+  app.on('child-process-gone', (_event, details) => {
+    console.error(`[l2d-pet] child-process-gone: type=${details.type} reason=${details.reason} exitCode=${details.exitCode}`)
+    if (details.type === 'Renderer') void probePage()
+  })
+  // 自递归 tick 而非 setInterval：上一轮 fetch/探针未决时不叠并发（慢网络下计数不失真）
+  const healthTick = async () => {
     try {
-      const r = await fetch(origin + '/live2d/state', { cache: 'no-store' })
+      const r = await fetch(origin + '/live2d/state', { cache: 'no-store', signal: AbortSignal.timeout(5000) })
       failures = r.ok ? 0 : failures + 1
     } catch {
       failures += 1
@@ -285,7 +376,10 @@ app.whenReady().then(() => {
     // 持续 120 秒仍不通认定宿主已死才退出（宿主下次启动会重新 spawn）
     if (failures >= 10) reloadPage()
     if (failures >= 15) app.quit()
-  }, 8000)
+    await probePage()
+    setTimeout(() => { void healthTick() }, 8000)
+  }
+  setTimeout(() => { void healthTick() }, 8000)
 })
 
 app.on('window-all-closed', () => app.quit())

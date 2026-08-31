@@ -8,61 +8,79 @@ export function attachGame(ctx) {
   style.textContent = `
 #l2d-game {
   position: fixed; right: 24px; top: 24px; z-index: 99998; display: none;
-  background: rgba(255,255,255,.97); border-radius: 16px;
-  box-shadow: 0 16px 60px rgba(0,0,0,.35); overflow: hidden;
+  background: var(--g-card-bg); border: var(--g-card-border); border-radius: var(--g-card-radius);
+  box-shadow: var(--g-card-shadow);
+  max-width: calc(100vw - 48px); max-height: calc(100vh - 48px); overflow: auto;
+  /* 主题变量默认值=gomoku 宣纸档；GAME_PROFILES.theme 经 style.setProperty 逐键覆盖（applyProfile） */
+  --g-card-bg: #f7f4ec; --g-card-border: 1px solid #d5cdb8; --g-card-shadow: 0 16px 60px rgba(60,50,30,.25); --g-card-radius: 12px;
+  --g-title: #2b2b26; --g-title-font: "Kaiti SC","STKaiti","KaiTi","SimSun",serif;
+  --g-strip-bg: rgba(255,255,255,.55); --g-strip-border: #ddd5c2; --g-label: #7a7264;
+  --g-input-bg: #fffdf6; --g-input-color: #3a382f; --g-input-border: #c9c1ab;
+  --g-hint: #8d8574;
+  --g-side-bg: rgba(255,255,255,.5); --g-side-border: #ddd5c2; --g-side-text: #4a463a;
+  --g-msg-bg: rgba(58,56,47,.07); --g-msg-color: #3a382f; --g-sys-msg: #8d8574;
+  --g-close: #9a9280; --g-close-hover: #3a382f;
+  --g-chip-bg: #f2eee2; --g-chip-color: #3a382f;
+  --g-canvas-bg: #f3e5c3; --g-canvas-ring: rgba(120,90,40,.35);
+  --l2d-game-accent: #b23a2c; --l2d-game-accent-soft: rgba(178,58,44,.45); --l2d-game-accent-faint: #f3e4df;
   font: 13px/1.6 system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  color: #334;
+  color: var(--g-side-text);
 }
 #l2d-game.open { display: block; }
+/* 皮肤结构性差异（档案驱动 class；颜色一律走变量） */
+#l2d-game.l2d-skin-gomoku .l2d-game-title { letter-spacing: 3px; font-weight: 600; }
+#l2d-game.l2d-skin-chess .l2d-game-title { letter-spacing: 1px; }
+#l2d-game.l2d-skin-chess .l2d-game-head { border-bottom: 1px solid var(--l2d-game-accent-soft); }
 #l2d-game .l2d-game-head {
   display: flex; align-items: center; gap: 8px; padding: 10px 14px 8px;
   cursor: grab; user-select: none;
 }
 #l2d-game .l2d-game-head:active { cursor: grabbing; }
-#l2d-game .l2d-game-title { font-size: 15px; font-weight: 700; color: #223; }
+#l2d-game .l2d-game-title { font-size: 15px; font-weight: 700; color: var(--g-title); font-family: var(--g-title-font); }
 #l2d-game .l2d-game-chips { display: flex; gap: 6px; }
 #l2d-game .l2d-game-chip {
   font: inherit; font-size: 12px; padding: 3px 12px; border-radius: 999px; cursor: pointer;
-  border: 1px solid rgba(74,127,181,.45); background: #eef4fb; color: #345;
+  border: 1px solid var(--l2d-game-accent-soft); background: var(--g-chip-bg); color: var(--g-chip-color);
 }
-#l2d-game .l2d-game-chip.on { background: #4a7fb5; border-color: #4a7fb5; color: #fff; }
+#l2d-game .l2d-game-chip.on { background: var(--l2d-game-accent); border-color: var(--l2d-game-accent); color: #fff; }
 #l2d-game .l2d-game-chip:disabled { opacity: .55; cursor: default; }
 #l2d-game .l2d-game-strip {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 8px 14px; border-top: 1px solid rgba(0,0,0,.06); border-bottom: 1px solid rgba(0,0,0,.08);
+  padding: 8px 14px; border-top: 1px solid var(--g-strip-border); border-bottom: 1px solid var(--g-strip-border);
+  background: var(--g-strip-bg);
 }
-#l2d-game .l2d-game-strip label { font-size: 12px; color: #778; }
+#l2d-game .l2d-game-strip label { font-size: 12px; color: var(--g-label); }
 #l2d-game .l2d-game-cfg-hint {
-  padding: 5px 14px; font-size: 11.5px; line-height: 1.5; color: #99a;
-  border-bottom: 1px solid rgba(0,0,0,.06); min-height: 17px;
+  padding: 5px 14px; font-size: 11.5px; line-height: 1.5; color: var(--g-hint);
+  border-bottom: 1px solid var(--g-strip-border); min-height: 17px;
 }
 #l2d-game .l2d-game-title-input {
-  width: 72px; font: inherit; font-size: 12px; color: #334;
-  border: 1px solid rgba(0,0,0,.14); border-radius: 8px; padding: 3px 6px; background: #fff;
+  width: 72px; font: inherit; font-size: 12px; color: var(--g-input-color);
+  border: 1px solid var(--g-input-border); border-radius: 8px; padding: 3px 6px; background: var(--g-input-bg);
 }
 #l2d-game .l2d-game-preset, #l2d-game .l2d-game-model, #l2d-game .l2d-game-mode, #l2d-game .l2d-game-diff {
-  flex: 0 0 auto; max-width: 108px; font: inherit; font-size: 12px; color: #334;
-  border: 1px solid rgba(0,0,0,.14); border-radius: 8px; padding: 3px 6px; background: #fff;
+  flex: 0 0 auto; max-width: 108px; font: inherit; font-size: 12px; color: var(--g-input-color);
+  border: 1px solid var(--g-input-border); border-radius: 8px; padding: 3px 6px; background: var(--g-input-bg);
 }
 #l2d-game .l2d-game-new {
   font: inherit; font-size: 12.5px; padding: 4px 12px; border-radius: 8px; cursor: pointer;
-  border: 1px solid rgba(74,127,181,.5); background: #eef4fb; color: #345;
+  border: 1px solid var(--l2d-game-accent-soft); background: var(--g-chip-bg); color: var(--g-chip-color);
 }
-#l2d-game .l2d-game-new:hover { background: #dfeaf7; }
+#l2d-game .l2d-game-new:hover { background: var(--l2d-game-accent-faint); }
 #l2d-game .l2d-game-new:disabled { opacity: .5; cursor: default; }
 #l2d-game .l2d-game-close {
-  margin-left: auto; border: 0; background: none; font-size: 18px; color: #889; cursor: pointer; padding: 2px 6px;
+  margin-left: auto; border: 0; background: none; font-size: 18px; color: var(--g-close); cursor: pointer; padding: 2px 6px;
 }
-#l2d-game .l2d-game-close:hover { color: #334; }
+#l2d-game .l2d-game-close:hover { color: var(--g-close-hover); }
 #l2d-game .l2d-game-body { display: flex; gap: 0; }
 #l2d-game .l2d-game-stage { padding: 12px 0 12px 12px; }
-#l2d-game canvas { display: block; border-radius: 10px; background: #f3e5c3; box-shadow: inset 0 0 0 1px rgba(120,90,40,.35); cursor: pointer; }
+#l2d-game canvas { display: block; border-radius: 10px; background: var(--g-canvas-bg); box-shadow: inset 0 0 0 1px var(--g-canvas-ring); cursor: pointer; }
 #l2d-game .l2d-game-side {
   width: 210px; display: flex; flex-direction: column; padding: 12px; gap: 8px;
-  border-left: 1px solid rgba(0,0,0,.06);
+  border-left: 1px solid var(--g-side-border); background: var(--g-side-bg);
 }
-#l2d-game .l2d-game-status { font-size: 13px; font-weight: 600; color: #456; min-height: 20px; }
-#l2d-game .l2d-game-status.thinking { color: #4a7fb5; }
+#l2d-game .l2d-game-status { font-size: 13px; font-weight: 600; color: var(--g-side-text); min-height: 20px; }
+#l2d-game .l2d-game-status.thinking { color: var(--l2d-game-accent); }
 #l2d-game .l2d-game-status.win { color: #2ea043; }
 #l2d-game .l2d-game-status.lose { color: #c0392b; }
 #l2d-game .l2d-game-log {
@@ -70,13 +88,13 @@ export function attachGame(ctx) {
   display: flex; flex-direction: column; gap: 5px; padding-right: 4px;
 }
 #l2d-game .l2d-game-msg { padding: 5px 9px; border-radius: 9px; font-size: 12px; line-height: 1.55; }
-#l2d-game .l2d-game-msg.agent { background: #eef4fb; color: #345; align-self: flex-start; max-width: 95%; }
-#l2d-game .l2d-game-msg.system { background: transparent; color: #99a; font-size: 11.5px; align-self: center; text-align: center; padding: 2px 6px; }
-#l2d-game .l2d-game-hint { color: #aab; font-size: 11px; }
+#l2d-game .l2d-game-msg.agent { background: var(--g-msg-bg); color: var(--g-msg-color); align-self: flex-start; max-width: 95%; }
+#l2d-game .l2d-game-msg.system { background: transparent; color: var(--g-sys-msg); font-size: 11.5px; align-self: center; text-align: center; padding: 2px 6px; }
+#l2d-game .l2d-game-hint { color: var(--g-hint); font-size: 11px; }
 @media (max-width: 760px), (max-height: 620px) {
   #l2d-game { max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; }
   #l2d-game .l2d-game-body { flex-direction: column; }
-  #l2d-game .l2d-game-side { width: auto; min-height: 130px; border-left: 0; border-top: 1px solid rgba(0,0,0,.06); }
+  #l2d-game .l2d-game-side { width: auto; min-height: 130px; border-left: 0; border-top: 1px solid var(--g-side-border); }
   #l2d-game canvas { width: min(500px, calc(100vw - 44px)); height: auto; }
 }
 `
@@ -181,6 +199,70 @@ export function attachGame(ctx) {
   // 宿主显式指定（卫星窗 URL ?game= 经 game-card.js 传入 ctx.gameId）优先于本地偏好
   let selectedGame = typeof ctx.gameId === 'string' && /^[a-z0-9-]{1,40}$/i.test(ctx.gameId) ? ctx.gameId
     : typeof prefs.game === 'string' ? prefs.game : 'gomoku'
+  // ── 卫星窗锁定模式 + 按游戏隐藏无意义配置 ──
+  // 卫星窗（game-card.html 内联置位 __l2dCardWin）URL 恒带 ?game=<id>（主进程保证），
+  // 窗口专职一个游戏：chips 隐藏（切换走 🎮 菜单另开新窗），selectedGame 锁定为初始游戏。
+  const isCardWin = Boolean(window.__l2dCardWin)
+  // ── 每游戏 UI 档案：真·独立皮肤（各自游戏的 UI 独立设计）──
+  // displayName/icon：卫星窗卡头与标题用；
+  // theme：整卡视觉变量集（键名 camelCase → 注入为 --g-kebab-case），两档设计语言：
+  //   gomoku 宣纸水墨禅风（米白宣纸底/墨色楷体标题/素线边框/朱砂点缀）；
+  //   chess 西洋古典（酒红丝绒渐变底/金色镶边/衬线标题/金属感按钮/墨绿棋毯 canvas）。
+  // accent 三件套沿用旧变量名（chip.on/按钮描边/status.thinking）。
+  const GAME_PROFILES = {
+    gomoku: {
+      displayName: '五子棋', icon: '🎲',
+      accent: { main: '#b23a2c', soft: 'rgba(178,58,44,.45)', faint: '#f3e4df' },
+      theme: {
+        cardBg: '#f7f4ec', cardBorder: '1px solid #d5cdb8', cardShadow: '0 16px 60px rgba(60,50,30,.25)', cardRadius: '12px',
+        title: '#2b2b26', titleFont: '"Kaiti SC","STKaiti","KaiTi","SimSun",serif',
+        stripBg: 'rgba(255,255,255,.55)', stripBorder: '#ddd5c2', label: '#7a7264',
+        inputBg: '#fffdf6', inputColor: '#3a382f', inputBorder: '#c9c1ab',
+        hint: '#8d8574',
+        sideBg: 'rgba(255,255,255,.5)', sideBorder: '#ddd5c2', sideText: '#4a463a',
+        msgBg: 'rgba(58,56,47,.07)', msgColor: '#3a382f', sysMsg: '#8d8574',
+        close: '#9a9280', closeHover: '#3a382f',
+        chipBg: '#f2eee2', chipColor: '#3a382f',
+        canvasBg: '#f3e5c3', canvasRing: 'rgba(120,90,40,.35)',
+      },
+    },
+    chess: {
+      displayName: '国际象棋', icon: '♟️',
+      accent: { main: '#c9a961', soft: 'rgba(201,169,97,.55)', faint: 'rgba(201,169,97,.18)' },
+      theme: {
+        cardBg: 'linear-gradient(165deg,#4d2029,#301319)', cardBorder: '1px solid rgba(176,141,74,.65)', cardShadow: '0 20px 60px rgba(15,5,8,.6)', cardRadius: '6px',
+        title: '#e8d9a8', titleFont: 'Georgia,"Times New Roman","STZhongsong","SimSun",serif',
+        stripBg: 'rgba(0,0,0,.28)', stripBorder: 'rgba(176,141,74,.35)', label: '#c9b98f',
+        inputBg: 'rgba(255,255,255,.07)', inputColor: '#f0e6cc', inputBorder: 'rgba(176,141,74,.55)',
+        hint: '#a89878',
+        sideBg: 'rgba(0,0,0,.25)', sideBorder: 'rgba(176,141,74,.3)', sideText: '#e3d5ae',
+        msgBg: 'rgba(176,141,74,.16)', msgColor: '#f0e6cc', sysMsg: '#a89878',
+        close: '#bfa878', closeHover: '#f0e6cc',
+        chipBg: 'rgba(255,255,255,.07)', chipColor: '#e3d5ae',
+        canvasBg: '#1d4425', canvasRing: 'rgba(176,141,74,.5)',
+      },
+    },
+  }
+  const gameProfile = (id) => GAME_PROFILES[id] ?? GAME_PROFILES.gomoku
+  const titleEl = card.querySelector('.l2d-game-title')
+  /** 档案应用：整卡主题变量逐键注入（camelCase→--g-kebab）+ 皮肤 class 挂卡根；卫星窗卡头换游戏徽标。 */
+  function applyProfile() {
+    const p = gameProfile(selectedGame)
+    for (const [key, value] of Object.entries(p.theme)) {
+      card.style.setProperty('--g-' + key.replace(/[A-Z]/g, (m) => '-' + m.toLowerCase()), value)
+    }
+    card.style.setProperty('--l2d-game-accent', p.accent.main)
+    card.style.setProperty('--l2d-game-accent-soft', p.accent.soft)
+    card.style.setProperty('--l2d-game-accent-faint', p.accent.faint)
+    card.classList.remove('l2d-skin-gomoku', 'l2d-skin-chess')
+    card.classList.add('l2d-skin-' + (GAME_PROFILES[selectedGame] ? selectedGame : 'gomoku'))
+    if (isCardWin) titleEl.textContent = `${p.icon} ${p.displayName}`
+  }
+  applyProfile()
+  if (isCardWin) {
+    chipsBox.style.display = 'none'
+    document.title = `${gameProfile(selectedGame).displayName} · 桌宠卫星窗`
+  }
   function savePrefs() {
     try {
       localStorage.setItem(PREFS_KEY, JSON.stringify({
@@ -240,8 +322,9 @@ export function attachGame(ctx) {
     activeRenderer = r
     fx = null
     r.reset?.()   // 清掉渲染器内部选中态（如国象的棋子选择）
-    canvas.width = r.canvasSize ?? 500
-    canvas.height = r.canvasSize ?? 500
+    // canvasSize 兼容两种形状：number=正方形边长（gomoku/chess）；{width,height}=矩形
+    canvas.width = r.canvasSize?.width ?? r.canvasSize ?? 500
+    canvas.height = r.canvasSize?.height ?? r.canvasSize ?? 500
     hintEl.textContent = r.hint ?? ''
   }
 
@@ -305,8 +388,12 @@ export function attachGame(ctx) {
         chip.disabled = !g.available
         chip.title = `下一局玩「${g.name ?? g.id}」（进行中的对局不受影响）`
         chip.addEventListener('click', () => {
+          if (isCardWin) return   // 卫星窗锁定：chips 已隐藏，防御性守卫（切换走 🎮 菜单另开新窗）
           selectedGame = g.id
           savePrefs()
+          applyProfile()          // 档案联动：强调色随游戏切换
+          moveInFlight = false   // 已切走：旧局在途保护作废，立即改看新游戏槽
+          void refreshState()   // 立即拉该游戏槽：有局续局显示、无局 idle 开局引导
           chipsBox.querySelectorAll('.l2d-game-chip').forEach((c) => c.classList.toggle('on', c === chip))
           void ensureRenderer(g.id)   // 预载渲染器
         })
@@ -360,14 +447,15 @@ export function attachGame(ctx) {
 
   async function refreshState() {
     try {
-      const r = await fetch(BASE + '/game/state', { cache: 'no-store' })
+      // 槽查询：按当前选中游戏拉对应对局（卫星窗=锁定游戏，页内卡=chip 选中）
+      const r = await fetch(`${BASE}/game/state?game=${encodeURIComponent(selectedGame)}`, { cache: 'no-store' })
       if (r.ok) {
         const d = await r.json()
         // 走子在途：迟到轮询快照不得覆盖（会抹 busy/回退棋盘/骗乐观回滚删真子）
-        if (!moveInFlight) {
-          state = d
-          if (d.game && d.game !== activeGameId) void activateRenderer(d.game).then(render)
-        }
+        // 过时槽快照（等待期间切了游戏）同样丢弃，防旧局画面糊到新游戏上
+        if (moveInFlight || (d.game && d.game !== selectedGame)) { render(); return }
+        state = d
+        if (d.game && d.game !== activeGameId) void activateRenderer(d.game).then(render)
         lastError = ''
       } else if (state === null) {
         lastError = '宿主拒绝了状态读取（HTTP ' + r.status + '）'
@@ -469,14 +557,18 @@ export function attachGame(ctx) {
       const res = await fetch(BASE + '/game/move', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(move),
+        body: JSON.stringify({ game: selectedGame, ...move }),   // 槽路由：走子落到当前游戏槽
         signal: ctrl.signal,
       })
       const d = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(d.error || 'HTTP ' + res.status)
-      state = { ...d, busy: false }
-      // 落子动画与解说语句同帧出现：fx 驱动渲染器动画，speakNew 同 tick 播报
-      fx = d.aiMove ? { aiMove: d.aiMove, t0: performance.now() } : null
+      if (d.game && d.game !== selectedGame) {   // 等待期间切了游戏：响应属于旧槽，丢弃
+        fx = null
+      } else {
+        state = { ...d, busy: false }
+        // 落子动画与解说语句同帧出现：fx 驱动渲染器动画，speakNew 同 tick 播报
+        fx = d.aiMove ? { aiMove: d.aiMove, t0: performance.now() } : null
+      }
     } catch (error) {
       if (activeRenderer.rollbackOptimistic) activeRenderer.rollbackOptimistic(state, move)
       state.busy = false

@@ -30,11 +30,14 @@ async function main() {
   const openCodeAdapterSource = fs.readFileSync(path.join(__dirname, 'adapters', 'opencode-live2d.js'), 'utf8')
   const installerSource = fs.readFileSync(path.join(__dirname, 'adapters', 'install-adapters.cjs'), 'utf8')
   assert.match(mainSource, /l2d-game-open/)
-  assert.match(mainSource, /cardGameId/)
-  assert.match(mainSource, /cardExpectedSize/)
+  assert.match(mainSource, /const cardWins = new Map\(\)/)
+  assert.match(mainSource, /const CARD_SIZES = \{/)
+  assert.match(mainSource, /const normalizeGameId = /)
+  assert.match(mainSource, /const cardEntryBySender = /)
   assert.match(mainSource, /useContentSize:\s*true/)
   assert.match(mainSource, /hasShadow:\s*false/)
-  assert.match(mainSource, /cardWin\.setBounds/)
+  assert.match(mainSource, /expectedSize\[0\], height: entry\.expectedSize\[1\]/)
+  assert.match(mainSource, /searchParams\.set\('game', gameId\)/)
   assert.match(mainSource, /l2d-restart/)
   assert.match(preloadSource, /openGame/)
   assert.match(preloadSource, /getCardArea/)
@@ -250,7 +253,10 @@ async function main() {
 
     const gameList = await fetch(server.origin + '/live2d/game/list')
     assert.deepEqual(await gameList.json(), {
-      games: [{ id: 'gomoku', name: '五子棋', available: true }, { id: 'chess', name: '国际象棋', available: true }],
+      games: [
+        { id: 'gomoku', name: '五子棋', available: true },
+        { id: 'chess', name: '国际象棋', available: true },
+      ],
     })
     const newGame = await fetch(server.origin + '/live2d/game/new', {
       method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },

@@ -58,7 +58,7 @@ body.l2d-no-pin #l2d-game-toggle { top: 86px; }
   border-color: rgba(91,141,239,.9); --glow: rgba(91,141,239,.75);
   animation: l2d-breathe 2.6s ease-in-out infinite;
 }
-#l2d-pet-menu {
+#l2d-pet-menu, #l2d-game-menu {
   position: fixed; z-index: 100000; min-width: 112px; padding: 4px;
   background: rgba(255,255,255,.97); color: #445;
   border: 1px solid rgba(0,0,0,.12); border-radius: 10px;
@@ -67,12 +67,12 @@ body.l2d-no-pin #l2d-game-toggle { top: 86px; }
   opacity: 0; visibility: hidden; transform: translateY(-4px);
   transition: opacity .15s ease, transform .15s ease, visibility .15s;
 }
-#l2d-pet-menu.open { opacity: 1; visibility: visible; transform: none; }
-#l2d-pet-menu button {
+#l2d-pet-menu.open, #l2d-game-menu.open { opacity: 1; visibility: visible; transform: none; }
+#l2d-pet-menu button, #l2d-game-menu button {
   display: block; width: 100%; padding: 6px 10px; border: 0; border-radius: 7px;
   background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
 }
-#l2d-pet-menu button:hover { background: #f0f4ff; }
+#l2d-pet-menu button:hover, #l2d-game-menu button:hover { background: #f0f4ff; }
 #l2d-help-card {
   position: fixed; z-index: 100000; width: min(250px, calc(100vw - 16px));
   background: rgba(255,255,255,.97); color: #334;
@@ -383,8 +383,8 @@ body.l2d-roomy #l2d-model-panel .l2d-hint { padding: 0 16px 12px; font-size: 12p
 body.l2d-roomy #l2d-model-panel .l2d-soft-label { font-size: 13px; gap: 8px; }
 body.l2d-roomy #l2d-model-panel .l2d-quit-row { padding: 0 16px 14px; }
 body.l2d-roomy #l2d-model-panel .l2d-quit-row button { padding: 8px 10px; font-size: 13px; border-radius: 10px; }
-body.l2d-roomy #l2d-pet-menu { min-width: 136px; padding: 6px; font-size: 13.5px; border-radius: 12px; }
-body.l2d-roomy #l2d-pet-menu button { padding: 8px 12px; border-radius: 8px; }
+body.l2d-roomy #l2d-pet-menu, body.l2d-roomy #l2d-game-menu { min-width: 136px; padding: 6px; font-size: 13.5px; border-radius: 12px; }
+body.l2d-roomy #l2d-pet-menu button, body.l2d-roomy #l2d-game-menu button { padding: 8px 12px; border-radius: 8px; }
 body.l2d-roomy #l2d-help-card {
   width: min(330px, calc(100vw - 16px)); font-size: 13.5px; line-height: 1.9;
   padding: 14px 16px; border-radius: 14px;
@@ -442,21 +442,55 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   toggle.addEventListener('wheel', (e) => e.stopPropagation())
   ctx.box.appendChild(toggle)
 
-  // ── 游戏钮：⚙ 左边的独立功能入口，直达对局卡 ──
+  // ── 游戏钮：⚙ 左边的独立功能入口，弹出游戏菜单直达各对局卡 ──
   const gameToggle = document.createElement('button')
   gameToggle.id = 'l2d-game-toggle'
   gameToggle.type = 'button'
-  gameToggle.title = '五子棋对局'
-  gameToggle.setAttribute('aria-label', '五子棋对局')
+  gameToggle.title = '游戏中心'
+  gameToggle.setAttribute('aria-label', '游戏中心')
   gameToggle.textContent = '🎮'
   gameToggle.addEventListener('pointerdown', (e) => e.stopPropagation())
   gameToggle.addEventListener('pointerup', (e) => e.stopPropagation())
-  // 桌面桥提供 openGame 时走独立卫星窗（DSH 桌宠与独立版 preload 都已实现）；
-  // 网页挂件没有桌面桥，回退页内浮卡——可选调用静默结束会表现为游戏按钮点不开。
-  gameToggle.addEventListener('click', (e) => {
-    e.stopPropagation()
-    if (typeof BRIDGE?.openGame === 'function') BRIDGE.openGame('gomoku')
-    else ctx.openGame?.()
+  // 游戏菜单：桌耳桥提供 openGame(gameId) 时走独立卫星窗（每游戏一窗）；
+  // 网页挂件没有桌面桥，回退页内浮卡（ctx.openGame 打开上次选的游戏）
+  const gameMenu = document.createElement('div')
+  gameMenu.id = 'l2d-game-menu'
+  gameMenu.innerHTML = `
+    <button type="button" data-game="gomoku">🎲 五子棋</button>
+    <button type="button" data-game="chess">♟️ 国际象棋</button>`
+  gameMenu.addEventListener('pointerdown', (e) => e.stopPropagation())
+  gameMenu.addEventListener('pointerup', (e) => e.stopPropagation())
+  gameMenu.addEventListener('wheel', (e) => e.stopPropagation())
+  document.body.appendChild(gameMenu)
+  let gameMenuOpen = false
+  function positionGameMenu() {
+    const rect = gameToggle.getBoundingClientRect()
+    const w = gameMenu.offsetWidth || 128
+    const left = Math.min(Math.max(rect.right - w, 8), Math.max(8, window.innerWidth - w - 8))
+    let top = rect.bottom + 6
+    if (top + gameMenu.offsetHeight > window.innerHeight - 8) top = Math.max(8, rect.top - gameMenu.offsetHeight - 6)
+    gameMenu.style.left = left + 'px'
+    gameMenu.style.top = top + 'px'
+  }
+  function toggleGameMenu(show) {
+    gameMenuOpen = show ?? !gameMenuOpen
+    gameMenu.classList.toggle('open', gameMenuOpen)
+    if (gameMenuOpen) positionGameMenu()
+    ctx.evalIgnore?.()
+  }
+  gameMenu.querySelectorAll('button[data-game]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      toggleGameMenu(false)
+      const gameId = btn.getAttribute('data-game')
+      if (typeof BRIDGE?.openGame === 'function') BRIDGE.openGame(gameId)
+      else ctx.openGame?.(gameId)
+    })
+  })
+  // 再点 🎮 收起；点别处收起（与 ⚙ 菜单同一外点关闭惯例）
+  gameToggle.addEventListener('click', (e) => { e.stopPropagation(); toggleGameMenu() })
+  window.addEventListener('pointerdown', (e) => {
+    if (gameMenuOpen && !gameMenu.contains(e.target) && e.target !== gameToggle) toggleGameMenu(false)
   })
   gameToggle.addEventListener('dblclick', (e) => e.stopPropagation())
   gameToggle.addEventListener('wheel', (e) => e.stopPropagation())

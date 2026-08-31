@@ -7,6 +7,8 @@
  * 模块间不互相 import，全部经由共享上下文 ctx 在运行期取用彼此的能力。
  */
 
+window.__L2D_PAGE_LIVE = true
+
 import { BASE, PREVIEW, BRIDGE, quip, loadQuips } from './src/config.js'
 import { emptyBinding } from './src/binding.js'
 import { initUI } from './src/ui.js'
