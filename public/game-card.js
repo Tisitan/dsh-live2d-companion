@@ -19,17 +19,7 @@ document.getElementById('l2d-game')
   ?.querySelector('.l2d-game-close')
   ?.addEventListener('click', () => window.__cardBridge?.close())
 
-// ── 运行期焦点编排：窗口恒 focusable:false 保前台游戏；但 NOACTIVATE 下
-// <select> 下拉弹层与 <input> 打字都不可用 → 悬停设置条时临时放开焦点能力。
-// 悬停武装（hover 先于点击 ~百毫秒，无竞态）；点设置条以外/选完一项即收回。
-// 不用 pointerleave 收回：下拉弹层展开时指针物理上离开了设置条，会误杀弹层。──
 const card = document.getElementById('l2d-game')
-const strip = card?.querySelector('.l2d-game-strip')
-strip?.addEventListener('pointerenter', () => window.__cardBridge?.setFocusable(true))
-card?.addEventListener('pointerdown', (e) => {
-  if (!e.target.closest('.l2d-game-strip')) window.__cardBridge?.setFocusable(false)
-}, true)
-strip?.addEventListener('change', () => window.__cardBridge?.setFocusable(false))
 
 // ── 窗口拖动：IPC moveBy（screenX 差量喂主进程移窗）。窗口不透明，无透明窗
 // 移动丢帧问题；pointer capture 保证拖出窗口边界也不脱手。──

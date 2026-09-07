@@ -957,6 +957,33 @@ async function createStandaloneServer({ publicDir, dataDir }) {
     if (pathname === '/live2d/model' && method === 'POST') {
       try {
         const parsed = JSON.parse((await readBody(req, MAX_JSON_BYTES)).toString('utf8') || '{}')
+        // 删除模型目录：只删真模型目录（内含 .model3.json），当前在用则回落首个现存模型（对齐宿主 /model delete 语义）
+        if (typeof parsed.delete === 'string') {
+          if (!safeSegment(parsed.delete, 128)) {
+            json(res, 400, { error: 'dir is invalid' })
+            return
+          }
+          const target = path.join(modelDir, parsed.delete)
+          if (!fs.existsSync(target)) {
+            json(res, 404, { error: `model dir not found: ${parsed.delete}` })
+            return
+          }
+          if (!fs.readdirSync(target).some((f) => f.endsWith('.model3.json'))) {
+            json(res, 400, { error: `${parsed.delete} does not look like a model dir` })
+            return
+          }
+          await fsp.rm(target, { recursive: true, force: true })
+          let reset = false
+          if (modelPath.startsWith(parsed.delete + '/')) {
+            const models = await collectModels()
+            modelPath = models[0]?.path || modelPath
+            await fsp.writeFile(selectionFile, JSON.stringify({ model: modelPath, updatedAt: new Date().toISOString() }, null, 2) + '\n')
+            broadcast({ model: modelPath })
+            reset = true
+          }
+          json(res, 200, { deleted: parsed.delete, reset })
+          return
+        }
         const models = await collectModels()
         const next = parsed.reset === true ? models[0]?.path : resolveModel(parsed.model)?.ref
         if (!next) {
@@ -985,6 +1012,11 @@ async function createStandaloneServer({ publicDir, dataDir }) {
         const body = await readBody(req, MAX_IMPORT_BYTES)
         const target = path.resolve(modelDir, folder, ...parts)
         if (!isInside(modelDir, target)) throw new Error('invalid target')
+        // 静默覆盖防御：重名导入须显式 ?overwrite=1（对齐宿主语义，前端确认重传 UX 依赖此路由）
+        if (url.searchParams.get('overwrite') !== '1' && fs.existsSync(target)) {
+          json(res, 409, { error: `文件已存在：${folder}/${parts.join('/')}（确认覆盖请加 overwrite=1）` })
+          return
+        }
         await fsp.mkdir(path.dirname(target), { recursive: true })
         await fsp.writeFile(target, body)
         json(res, 200, { imported: { model: folder, path: parts.join('/'), bytes: body.length } })

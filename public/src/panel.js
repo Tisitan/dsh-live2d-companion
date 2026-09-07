@@ -552,6 +552,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   menu.innerHTML = `
     <button type="button" data-act="panel">切换模型</button>
     <button type="button" data-act="quips">台词编辑</button>`
+  menu.querySelector('[data-act="quips"]').hidden = STANDALONE   // 独立服无 /quips、/quips-config 路由，编辑器写入必 404
   menu.addEventListener('pointerdown', (e) => e.stopPropagation())
   menu.addEventListener('pointerup', (e) => e.stopPropagation())
   menu.addEventListener('wheel', (e) => e.stopPropagation())

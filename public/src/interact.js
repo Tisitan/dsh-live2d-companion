@@ -25,7 +25,7 @@ export function initInteract(ctx) {
   function uiHit() {
     if (lastPointer === null) return false
     const el = document.elementFromPoint(lastPointer.x, lastPointer.y)
-    return !!(el && el.closest('#l2d-model-toggle, #l2d-pin-toggle, #l2d-help-toggle, #l2d-game-toggle, #l2d-pet-menu, #l2d-model-panel, #l2d-help-card, #l2d-viewer, #l2d-chat-toggle, #l2d-chat-panel, #l2d-quips-card, #l2d-game'))
+    return !!(el && el.closest('#l2d-model-toggle, #l2d-pin-toggle, #l2d-help-toggle, #l2d-game-toggle, #l2d-pet-menu, #l2d-game-menu, #l2d-model-panel, #l2d-help-card, #l2d-viewer, #l2d-chat-toggle, #l2d-chat-panel, #l2d-quips-card, #l2d-game'))
   }
 
   // ── 穿透策略：自动（停留等待）+ 手动（穿透钮强制）──

@@ -551,6 +551,7 @@ export function attachGame(ctx) {
     moveInFlight = true   // 在途闸：响应到达前轮询快照不得覆盖本地
     render()
     if (state.mode !== 'offline') speak(THINK_QUIPS[Math.floor(Math.random() * THINK_QUIPS.length)])
+    const reqGame = selectedGame   // 槽位快照：成功/失败路径都以发起时的对局为准
     const ctrl = new AbortController()
     const timeout = setTimeout(() => ctrl.abort(), 60000)   // 阿尔法狗双问答最坏 ~40s+，60s 防闸永锁
     try {
@@ -570,11 +571,15 @@ export function attachGame(ctx) {
         fx = d.aiMove ? { aiMove: d.aiMove, t0: performance.now() } : null
       }
     } catch (error) {
-      if (activeRenderer.rollbackOptimistic) activeRenderer.rollbackOptimistic(state, move)
-      state.busy = false
-      const msg = error?.name === 'AbortError' ? '回合超时：宿主 60 秒无响应' : error.message
-      state.commentary = [...(state.commentary ?? []), { from: 'system', text: '回合失败：' + msg }]
-      fx = null
+      if (reqGame !== selectedGame) {   // 等待期间切了游戏：失败属于旧槽，不碰新局状态
+        fx = null
+      } else {
+        if (activeRenderer.rollbackOptimistic) activeRenderer.rollbackOptimistic(state, move)
+        state.busy = false
+        const msg = error?.name === 'AbortError' ? '回合超时：宿主 60 秒无响应' : error.message
+        state.commentary = [...(state.commentary ?? []), { from: 'system', text: '回合失败：' + msg }]
+        fx = null
+      }
     }
     clearTimeout(timeout)
     moveInFlight = false   // 收闸：之后轮询恢复对账

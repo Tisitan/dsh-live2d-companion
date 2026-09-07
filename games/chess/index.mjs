@@ -119,10 +119,4 @@ export default {
     win: ['将杀！咱厉害吧~', '赢啦赢啦！主人承让承让~'],
     lose: ['呜哇…被将杀了，主人好棋！这局咱心服口服~', '大意失荆州…主人的杀法太漂亮了，认输认输！', '输啦…主人这盘布局深远，咱甘拜下风！'],
   },
-
-  pickQuipKey(move, aiResult) {
-    if (aiResult?.win) return 'win'
-    if (move?.blocked) return 'block'   // chess 的 blocked 语义=吃子
-    return 'normal'
-  },
 }

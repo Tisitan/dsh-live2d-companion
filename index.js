@@ -368,8 +368,11 @@ export function apply(ctx, config) {
       req.on('data', chunk => {
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
         size += buffer.length
-        if (size > maxBytes) oversized = true
-        else chunks.push(buffer)
+        if (size > maxBytes) {
+          if (!oversized) { oversized = true; reject(new Error('file too large')); req.destroy() }
+          return
+        }
+        chunks.push(buffer)
       })
       req.on('end', () => {
         if (oversized) reject(new Error('file too large'))
@@ -422,6 +425,7 @@ export function apply(ctx, config) {
   }
 
   function setState(id, state) {
+    if (perSession.get(id)?.state === state) return   // 同值短路：working/thinking 高频重入（逐 token 事件）不重复 aggregate+publish
     const entry = perSession.get(id) ?? { state: 'idle', timer: undefined }
     if (entry.timer !== undefined) {
       clearTimeout(entry.timer)
@@ -487,20 +491,32 @@ export function apply(ctx, config) {
     publish()
   }, { global: true })
 
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: '/live2d/state-stream',
-    handler(req, res) {
-      res.writeHead(200, {
-        'content-type': 'text/event-stream',
-        'cache-control': 'no-store',
-        connection: 'keep-alive',
-      })
-      sseClients.add(res)
-      sseWrite(res, `data: ${JSON.stringify({ state: current, model: modelPath, sessions: sessionsSnapshot() })}\n\n`)
-      req.on('close', () => { sseClients.delete(res) })
-    },
-  }))
+  ctx.effect(() => {
+    const dispose = ctx.webServer.register({
+      kind: 'exact',
+      path: '/live2d/state-stream',
+      handler(req, res) {
+        res.writeHead(200, {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-store',
+          connection: 'keep-alive',
+        })
+        sseClients.add(res)
+        sseWrite(res, `data: ${JSON.stringify({ state: current, model: modelPath, sessions: sessionsSnapshot() })}\n\n`)
+        req.on('close', () => { sseClients.delete(res) })
+      },
+    })
+    // 卸载收尾：掐断全部 SSE 客户端并清 hold/reap 定时器，防插件重挂载后旧定时器 publish 到已关闭的流
+    return () => {
+      if (typeof dispose === 'function') dispose()
+      for (const res of sseClients) { try { res.end() } catch { } }
+      sseClients.clear()
+      for (const entry of perSession.values()) {
+        if (entry.timer !== undefined) clearTimeout(entry.timer)
+        entry.timer = undefined
+      }
+    }
+  })
 
   // SSE 心跳：25 秒注释帧。客户端被杀死而 TCP 未 RST 的半开连接会在
   // 写失败时被 sseWrite 自动剔除，防止 sseClients 只增不减、广播成本线性膨胀。
@@ -777,7 +793,9 @@ export function apply(ctx, config) {
     // 代际校验：等待期间该游戏槽开了新局（disposeGame），本回复属于旧局——丢弃不回写
     if (gameRefs.get(g.game.id) !== g) return null
     // 切片对齐本轮 followup：旧 turn 迟到的文本落在 seqBefore 之后也不认账（防串台双保险）
-    const events = g.agent.session.events
+    // alpha.4 起 Session.events getter 删除 → snapshotEvents()：特性探测双版本同跑
+    const session = g.agent.session
+    const events = typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : session.events
     let startIdx = seqBefore
     for (let i = events.length - 1; i >= seqBefore; i--) {
       const d = events[i]?.data
@@ -878,7 +896,7 @@ export function apply(ctx, config) {
       try {
         const presets = await ctx.agentPresets.list()
         sendJson(res, 200, {
-          presets: presets.map((p) => ({ id: p.id, name: p.metadata?.name ?? p.id })),
+          presets: presets.map((p) => ({ id: p.id, name: p.name ?? p.id })),
           defaultId: ctx.agentPresets.defaultId,
         })
       } catch (error) {
@@ -1120,6 +1138,12 @@ export function apply(ctx, config) {
         sendJson(res, 400, { error: 'file path is invalid' })
         return
       }
+      // 模型包扩展名白名单：静态路由按原后缀回吐，html/js/svg 等可执行/可渲染后缀不得入库
+      const ext = filePath.slice(filePath.lastIndexOf('.') + 1).toLowerCase()
+      if (!['json', 'moc3', 'png', 'jpg', 'jpeg', 'webp'].includes(ext)) {
+        sendJson(res, 400, { error: `不支持的文件类型：${parts.join('/')}` })
+        return
+      }
       readRawBody(req, MAX_IMPORT_FILE_BYTES).then(async buffer => {
         try {
           const target = join(MODEL_DIR, modelName, ...parts)
@@ -1333,7 +1357,7 @@ export function apply(ctx, config) {
         'content-length': info.size,
         'cache-control': 'no-cache',
       })
-      createReadStream(file).pipe(res)
+      createReadStream(file).on('error', () => res.destroy()).pipe(res)
     },
   }))
 

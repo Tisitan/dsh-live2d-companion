@@ -218,15 +218,22 @@ async function createWindow() {
   })
 
   // 游戏卫星窗：复杂游戏 UI 与透明 overlay 物理隔离，避免穿透、焦点和拖动互抢。
-  // gameId 作为通用入口保留；game-card 现有五子棋/国象/词宝谜航三个游戏，按查询参数切换。
+  // gameId 作为通用入口保留；game-card 现有五子棋/国象两个游戏，按查询参数切换。
   const pushCardArea = () => {
     if (win === null || win.isDestroyed()) return
-    const bounds = cardWin && !cardWin.isDestroyed() ? cardWin.getBounds() : null
-    win.webContents.send('l2d-game-area', bounds)
+    const areas = []
+    for (const entry of cardWins.values()) {
+      if (entry.win && !entry.win.isDestroyed()) areas.push(entry.win.getBounds())
+    }
+    win.webContents.send('l2d-game-area', areas.length === 1 ? areas[0] : areas.length > 0 ? areas : null)
   }
-  ipcMain.handle('l2d-game-bounds', event => {
+  ipcMain.handle('l2d-game-bounds', (event) => {
     if (!fromPet(event)) return null
-    return cardWin && !cardWin.isDestroyed() ? cardWin.getBounds() : null
+    const areas = []
+    for (const entry of cardWins.values()) {
+      if (entry.win && !entry.win.isDestroyed()) areas.push(entry.win.getBounds())
+    }
+    return areas.length === 1 ? areas[0] : areas.length > 0 ? areas : null
   })
   ipcMain.on('l2d-game-open', (event, requestedGame) => {
     if (!fromPet(event)) return
@@ -251,7 +258,7 @@ async function createWindow() {
       x, y,
       frame: false, alwaysOnTop: true, resizable: false,
       skipTaskbar: true, focusable: true,
-      backgroundColor: '#ffffff', hasShadow: false,
+      backgroundColor: '#ffffff', hasShadow: false, roundedCorners: false,
       webPreferences: {
         preload: path.join(__dirname, 'preload-card.cjs'),
         contextIsolation: true, nodeIntegration: false, sandbox: true,
