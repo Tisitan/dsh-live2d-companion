@@ -2,6 +2,11 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('__petBridge', {
   setIgnore: (ignore) => ipcRenderer.send('l2d-ignore', ignore),
+  // 穿透单源决策（同 pet/preload.js）：矩形集上报 + 心跳 + 状态迁移回推
+  pushRects: (rects) => ipcRenderer.send('l2d-rects', rects),
+  heartbeat: (lastInputAt) => ipcRenderer.send('l2d-heartbeat', lastInputAt),
+  onInteractState: (cb) => ipcRenderer.on('l2d-interact-state', (_e, state) => cb(state)),
+  reportError: (msg) => ipcRenderer.send('l2d-renderer-error', msg),
   onCursor: (cb) => ipcRenderer.on('l2d-cursor', (_e, data) => cb(data)),
   getCursor: () => ipcRenderer.invoke('l2d-cursor-get'),
   quit: () => ipcRenderer.send('l2d-quit'),

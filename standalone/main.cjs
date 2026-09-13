@@ -1,6 +1,7 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, screen, shell, Tray } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
+const { createPassthrough } = require('../pet/passthrough.cjs')
 const { createStandaloneServer } = require('./server.cjs')
 
 let win = null
@@ -46,6 +47,8 @@ function savePetConfig() {
 }
 if (process.env.L2D_SOFT === '1' || petConfig.soft === true) app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
+// GPU 故障会话兜底：允许 SwiftShader 软件 WebGL（同 pet/main.js，两形态行为一致铁律）
+app.commandLine.appendSwitch('enable-unsafe-swiftshader')
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) app.quit()
@@ -120,6 +123,7 @@ async function createWindow() {
     x: area.x, y: area.y,
     frame: false, transparent: true, alwaysOnTop: true, resizable: false,
     skipTaskbar: true, hasShadow: false,
+    show: false,   // fail-closed：穿透证实前不显示（同 pet/main.js 证实门）
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true, nodeIntegration: false, sandbox: true,
@@ -127,7 +131,15 @@ async function createWindow() {
     },
   })
   win.setAlwaysOnTop(true, 'screen-saver')
-  win.setIgnoreMouseEvents(true)   // 勿加 {forward:true}：electron#48035 光标闪烁（同 pet/main.js）
+  win.setIgnoreMouseEvents(true)   // 初始恒穿透（盲写）；运行期由单源决策接管，证实门兜底（同 pet/main.js）
+  // Linux WM 偶发把全屏 overlay 窗最小化且 skipTaskbar 无入口找回 → 立即弹回；
+  // Windows 无框窗不触发 minimize 事件，该守卫跨平台无害（同 pet/main.js）
+  win.on('minimize', () => {
+    console.error('[l2d-pet] minimized by WM, restoring')
+    if (!win.isDestroyed()) win.restore()
+  })
+  // 最小化还原同样重置 X 层穿透态（同 pet/main.js）——还原后立即重申
+  win.on('restore', () => passthrough.reassert())
   screen.on('display-metrics-changed', () => {
     if (win !== null && !win.isDestroyed()) win.setBounds(screen.getPrimaryDisplay().bounds)
   })
@@ -147,10 +159,153 @@ async function createWindow() {
 
   // 所有 preload 会在页面启动阶段调用的 IPC 都必须先注册，再加载页面。
   // 否则 CPU 模式和首帧光标读取会因“尚无处理器”而静默失败。
+  // l2d-ignore 通道保留为应急逃生门：运行期穿透开关已由单源决策接管（同 pet/main.js）。
   ipcMain.on('l2d-ignore', (event, ignore) => {
     // 勿加 {forward:true}：electron#48035 光标闪烁铁律（pet/main.js 有载），穿透态光标由主进程轮询驱动
     if (fromPet(event)) win.setIgnoreMouseEvents(Boolean(ignore))
   })
+  // ── 穿透单源决策（同 pet/main.js）：渲染层上报交互矩形集，主进程 OS 光标比对
+  // 直接驱动 setIgnoreMouseEvents；决策器共享 pet/passthrough.cjs 保证两形态一致。
+  const passthrough = createPassthrough({
+    apply: (ignore) => { if (win !== null && !win.isDestroyed()) win.setIgnoreMouseEvents(ignore) },
+    notify: (state) => { if (win !== null && !win.isDestroyed()) win.webContents.send('l2d-interact-state', state) },
+    log: (...args) => console.error(...args),
+    debug: (...args) => { if (process.env.L2D_DEBUG === '1') console.log(...args) },
+    // 窗口 1px 微移 wiggle：解冻 getCursorScreenPoint 读数（同 pet/main.js；
+    // 自移编排：freezeProbe 静音事件重申 500ms，往返落地后 50ms reassertNow 收尾）
+    wiggle: () => {
+      if (win === null || win.isDestroyed()) return
+      const b = win.getBounds()
+      win.setBounds({ x: b.x + 1, y: b.y, width: b.width, height: b.height })
+      setTimeout(() => {
+        if (win !== null && !win.isDestroyed()) win.setBounds({ x: b.x, y: b.y, width: b.width, height: b.height })
+        setTimeout(() => passthrough.reassertNow(), 50)
+      }, 300)
+    },
+  })
+  ipcMain.on('l2d-rects', (event, rects) => {
+    if (fromPet(event)) passthrough.setRects(rects)
+  })
+  ipcMain.on('l2d-heartbeat', (event, at) => {
+    if (fromPet(event)) passthrough.heartbeat(at)
+  })
+  // 渲染层关键错误转发留痕（同 pet/main.js）
+  ipcMain.on('l2d-renderer-error', (event, msg) => {
+    if (fromPet(event) && typeof msg === 'string') console.error('[l2d-pet] renderer:', msg.slice(0, 500))
+  })
+  // 窗口移动/尺寸变化会重置 X 层穿透态（同 pet/main.js）——move/resize 后立即重申
+  win.on('move', () => passthrough.reassert())
+  win.on('resize', () => passthrough.reassert())
+  // 导航/重载同样重置穿透态（同 pet/main.js）
+  win.webContents.on('did-navigate', () => passthrough.reassert())
+  win.webContents.on('did-start-loading', () => passthrough.reassert())
+  win.webContents.on('did-finish-load', () => passthrough.reassert())
+  win.webContents.on('did-fail-load', () => passthrough.reassert())
+  // ── 穿透证实门（fail-closed，同 pet/main.js）：穿透未证实前窗口不稳定显示 ──
+  // show:false 未 realize 时 native handle 可能读不出——惰性读取（同 pet/main.js）
+  let petWid = 0
+  let petTopWid = 0   // 客户窗的 root 直子祖先（reparenting WM 框架窗；无 reparent 时=petWid）
+  // reparenting WM 下命中读回返回框架窗而非客户窗（openbox 实证）——只比客户 id
+  // 会把捕获误判为穿透（同 pet/main.js，两形态行为一致铁律）。
+  // 时机铁律：必须在窗口 mapped 之后解析（reparent 发生在 map 时，提前解析会把
+  // petTopWid 误钉成客户窗——首轮实证踩中）。
+  const resolvePetTopWid = (force = false) => {
+    if (petWid === 0 || process.platform !== 'linux') return
+    if (petTopWid !== 0 && !force) return
+    try {
+      const { execFileSync } = require('node:child_process')
+      const tree = execFileSync('xwininfo', ['-root', '-tree'], { timeout: 3000, encoding: 'utf8' })
+      const entries = []
+      for (const line of tree.split('\n')) {
+        const m = /^(\s+)(0x[0-9a-f]+)\s/i.exec(line)
+        if (m) entries.push({ indent: m[1].length, wid: parseInt(m[2], 16) })
+      }
+      const idx = entries.findIndex((e) => e.wid === petWid)
+      if (idx >= 0) {
+        const minIndent = Math.min(...entries.map((e) => e.indent))
+        for (let i = idx; i >= 0; i--) {
+          if (entries[i].indent === minIndent) { petTopWid = entries[i].wid; break }
+        }
+      }
+      if (petTopWid === 0) petTopWid = petWid
+    } catch { petTopWid = petWid }
+  }
+  const refreshPetWid = () => {
+    if (petWid !== 0 || process.platform !== 'linux') return
+    try {
+      const handle = win.getNativeWindowHandle()
+      if (handle && handle.length >= 4) petWid = handle.readUInt32LE(0)
+    } catch { }
+  }
+  const isPetHit = (w) => w !== 0 && (w === petWid || (petTopWid !== 0 && w === petTopWid))
+  refreshPetWid()
+  let lastProbeWid = 0
+  let lastProbeAt = 0
+  let proofShownAt = 0
+  let proofHits = 0
+  let proofWarnedAt = 0
+  let passthroughProven = process.platform !== 'linux'
+  if (!passthroughProven) {
+    win.show()
+    proofShownAt = Date.now()
+    const proofTimer = setInterval(() => {
+      if (passthroughProven || win === null || win.isDestroyed()) { clearInterval(proofTimer); return }
+      refreshPetWid()
+      // 不碰 isIgnoreMouseEvents() 读回（本环境实证可同步死锁主进程，同 pet/main.js）
+      win.setIgnoreMouseEvents(true)
+      if (petWid === 0 || lastProbeWid === 0) return
+      if (!win.isVisible()) { win.show(); proofShownAt = Date.now(); return }
+      if (petTopWid === 0) resolvePetTopWid()   // map 后首拍解析框架祖先（同 pet/main.js）
+      if (lastProbeAt <= proofShownAt) return
+      if (isPetHit(lastProbeWid)) {
+        proofHits = 0
+        win.hide()
+        win.setIgnoreMouseEvents(true)
+        if (Date.now() - proofWarnedAt > 30000) {
+          proofWarnedAt = Date.now()
+          console.error('[l2d-pet] passthrough proof FAILED (X hit-test lands on pet window); window hidden, reasserting and retrying')
+        }
+      } else if (++proofHits >= 2) {
+        passthroughProven = true
+        resolvePetTopWid(true)   // 证实落锤前强制重解框架祖先（同 pet/main.js）
+        console.error('[l2d-pet] passthrough proven (x11 hit-test)')
+      }
+    }, 500)
+  } else {
+    win.show()
+  }
+  // 外部光标探针（Linux/X11，同 pet/main.js）：主读数滞后/冻结时以 xdotool 为独立光标源；
+  // 顺带解析 WINDOW 命中字段喂 X 层校验环与证实门
+  if (process.platform === 'linux') {
+    const { execFile } = require('node:child_process')
+    let probeFailures = 0
+    let extProbeTimer = null
+    const probeCursor = () => {
+      execFile('xdotool', ['getmouselocation', '--shell'], { timeout: 1500 }, (err, stdout) => {
+        if (err) {
+          if (++probeFailures >= 3) {
+            console.error('[l2d-pet] xdotool probe unavailable, cursor fallback to main reading')
+            if (extProbeTimer !== null) clearInterval(extProbeTimer)
+          }
+          return
+        }
+        probeFailures = 0
+        const x = /X=(\d+)/.exec(stdout)
+        const y = /Y=(\d+)/.exec(stdout)
+        const wid = /WINDOW=(\d+)/.exec(stdout)
+        if (x && y) passthrough.externalCursor(Number(x[1]), Number(y[1]))
+        if (wid && petWid !== 0) {
+          lastProbeWid = Number(wid[1])
+          lastProbeAt = Date.now()
+          // 证实未完成/窗口隐藏期不喂校验环（同 pet/main.js）
+          if (passthroughProven && win !== null && !win.isDestroyed() && win.isVisible()) {
+            passthrough.observedHit(isPetHit(lastProbeWid))
+          }
+        }
+      })
+    }
+    extProbeTimer = setInterval(probeCursor, 500)
+  }
   ipcMain.on('l2d-quit', event => {
     if (fromPet(event)) app.quit()
   })
@@ -213,7 +368,7 @@ async function createWindow() {
   })
   ipcMain.handle('l2d-cursor-get', event => {
     if (!fromPet(event)) return null
-    const point = screen.getCursorScreenPoint()
+    const point = passthrough.cursor() ?? screen.getCursorScreenPoint()
     return { x: point.x, y: point.y, bounds: win.getBounds() }
   })
 
@@ -225,6 +380,7 @@ async function createWindow() {
     for (const entry of cardWins.values()) {
       if (entry.win && !entry.win.isDestroyed()) areas.push(entry.win.getBounds())
     }
+    passthrough.setCardAreas(areas)   // 死区同步进单源决策器
     win.webContents.send('l2d-game-area', areas.length === 1 ? areas[0] : areas.length > 0 ? areas : null)
   }
   ipcMain.handle('l2d-game-bounds', (event) => {
@@ -363,13 +519,20 @@ async function createWindow() {
   }
 
   win.on('closed', () => { win = null })
-  let lastCursor = null
+  let lastMain = null
+  let lastPush = null
   const cursorTimer = setInterval(() => {
     if (win === null || win.isDestroyed()) return
     const point = screen.getCursorScreenPoint()
-    if (lastCursor !== null && lastCursor.x === point.x && lastCursor.y === point.y) return
-    lastCursor = point
-    win.webContents.send('l2d-cursor', { x: point.x, y: point.y, bounds: win.getBounds() })
+    const mainMoved = lastMain !== null && (lastMain.x !== point.x || lastMain.y !== point.y)
+    lastMain = point
+    // 单源决策先于光标推送：静止 tick 也要跑（停留计时到期不依赖光标移动）（同 pet/main.js）
+    const decision = passthrough.tick(point.x, point.y, mainMoved) ?? point
+    // 推送源跟随决策仲裁（同 pet/main.js）：主读数冻结时以 xdotool 仲裁源续推，按钮簇迁移沿不断流
+    const out = mainMoved ? point : decision
+    if (lastPush !== null && lastPush.x === out.x && lastPush.y === out.y) return
+    lastPush = out
+    win.webContents.send('l2d-cursor', { x: out.x, y: out.y, bounds: win.getBounds() })
   }, 33)
   win.on('closed', () => clearInterval(cursorTimer))
   createTray()

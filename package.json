@@ -29,6 +29,7 @@
     "public/vendor/pixi.min.js",
     "public/vendor/pixi-live2d-cubism4.min.js",
     "pet/main.js",
+    "pet/passthrough.cjs",
     "pet/preload.js",
     "pet/preload-card.js",
     "pet/package.json",

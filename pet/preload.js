@@ -2,6 +2,13 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('__petBridge', {
   setIgnore: (ignore) => ipcRenderer.send('l2d-ignore', ignore),
+  // 穿透单源决策：渲染层上报交互矩形集（模型包围盒+余量 ∪ UI 矩形 ∪ 状态标志），
+  // 主进程用 OS 光标比对自行切换穿透；状态迁移经 onInteractState 回推
+  pushRects: (rects) => ipcRenderer.send('l2d-rects', rects),
+  heartbeat: (lastInputAt) => ipcRenderer.send('l2d-heartbeat', lastInputAt),
+  onInteractState: (cb) => ipcRenderer.on('l2d-interact-state', (_e, state) => cb(state)),
+  // 渲染层异常取证：渲染进程 console 不进宿主日志，关键错误转主进程留痕
+  reportError: (msg) => ipcRenderer.send('l2d-renderer-error', msg),
   onCursor: (cb) => ipcRenderer.on('l2d-cursor', (_e, data) => cb(data)),
   getCursor: () => ipcRenderer.invoke('l2d-cursor-get'),
   quit: () => ipcRenderer.send('l2d-quit'),

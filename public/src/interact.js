@@ -2,15 +2,21 @@
  * interact.js —— 交互层。
  *
  * 覆盖：点击反应（clickPool 随机动作）、双击卖萌、摸头（头部 30% 区域）、
- * 拖拽（挂件=DOM 位移 / 桌宠=IPC 移窗）、滚轮缩放、指针穿透评估、
+ * 拖拽（挂件=DOM 位移 / 桌宠=IPC 移窗）、滚轮缩放、指针穿透矩形集上报、
  * 全局视线跟随（桌宠=主进程光标轮询 IPC / 挂件=窗口内 pointermove）。
  * 忙碌时（ctx.busy()）点击与双击被拦截为 busy 台词，摸头静默无视。
+ *
+ * 穿透判定已收编为主进程单源决策（pet/passthrough.cjs）：本模块只负责
+ * 「交互矩形集维护 + 上报」与拖拽生命周期，不再直接切换穿透。
  */
 
 import { PET, BRIDGE, BASE_W, BASE_H, store, quip } from './config.js'
 
 /** 悬停穿透判定在模型包围盒外扩的像素余量（滚轮缩放不至于出框即失效）。 */
 const HOVER_MARGIN = 48
+
+/** UI 可交互控件选择器：命中检测（uiHit）与矩形集上报（collectRects）同源共用。 */
+const UI_SELECTOR = '#l2d-model-toggle, #l2d-pin-toggle, #l2d-help-toggle, #l2d-game-toggle, #l2d-pet-menu, #l2d-game-menu, #l2d-model-panel, #l2d-help-card, #l2d-viewer, #l2d-chat-toggle, #l2d-chat-panel, #l2d-quips-card, #l2d-game'
 
 /**
  * 初始化交互并挂到 ctx（evalIgnore 供 stage 的 ticker/resize 回调使用）。
@@ -25,23 +31,10 @@ export function initInteract(ctx) {
   function uiHit() {
     if (lastPointer === null) return false
     const el = document.elementFromPoint(lastPointer.x, lastPointer.y)
-    return !!(el && el.closest('#l2d-model-toggle, #l2d-pin-toggle, #l2d-help-toggle, #l2d-game-toggle, #l2d-pet-menu, #l2d-game-menu, #l2d-model-panel, #l2d-help-card, #l2d-viewer, #l2d-chat-toggle, #l2d-chat-panel, #l2d-quips-card, #l2d-game'))
+    return !!(el && el.closest(UI_SELECTOR))
   }
 
-  // ── 穿透策略：自动（停留等待）+ 手动（穿透钮强制）──
-  // 全屏 overlay 窗口从「穿透」切到「交互」的瞬间会参与 DWM 合成，可能拆解
-  // 浏览器视频的硬件覆盖层（MPO）导致视频黑屏卡帧。等待逻辑：路过不算数，
-  // 在模型上停留 ≥600ms（位移<24px）才放行交互——看视频时鼠标扫过不再触发。
-  const DWELL_MS = 600
-  const DWELL_SLACK = 24
-  let dwellTimer = 0
-  let dwellFrom = null     // 停留计时的锚点 {x,y}
-  let interactive = false  // 当前是否已放行交互（滞回：离开包围盒+余量才回收）
-
-  /** 手动穿透：模型区恒穿透，仅 UI 可点（穿透钮自己得留着，否则关不回来）。 */
-  ctx.pinned = PET && store.getPinned()
-
-  /** 指针（画布坐标）是否落在模型包围盒+余量内。 */
+  /** 指针（画布坐标）是否落在模型包围盒+余量内（chrome 显隐等装饰判定用）。 */
   function insideModel(x, y) {
     const r = ctx.app.view.getBoundingClientRect()
     const b = ctx.modelBounds()
@@ -50,66 +43,85 @@ export function initInteract(ctx) {
     return px >= b.x - HOVER_MARGIN && px <= b.x + b.width + HOVER_MARGIN
       && py >= b.y - HOVER_MARGIN && py <= b.y + b.height + HOVER_MARGIN
   }
-  function cancelDwell() {
-    clearTimeout(dwellTimer)
-    dwellTimer = 0
-    dwellFrom = null
-  }
-  function setInteractive(v) {
-    if (interactive === v) return
-    interactive = v
-    ctx.lastIgnore = !v          // 暴露给调试探针
-    BRIDGE.setIgnore?.(!v)       // 旧桥缺该接口时静默（其余桥调用都有 ?. 兜底，此处补齐）
-    ctx.syncPinBtn?.()           // 锁钮实时反映：绿底🔒=穿透中 / 白底🔓=已解锁
-  }
-  // 调试探针：穿透状态机内部快照
-  ctx.dwellDebug = () => ({ timing: dwellTimer !== 0, from: dwellFrom, interactive, lp: lastPointer })
 
-  /** 指针穿透评估：UI 即时可点；模型区自动模式需停留等待，手动模式恒穿透。 */
-  ctx.evalIgnore = () => {
-    if (!BRIDGE || lastPointer === null || dragging) return
-    // 卫星窗死区优先于一切：光标在游戏卡窗口上时 overlay 恒穿透，点击属于卡片
-    if (inCardArea(lastPointer.x, lastPointer.y)) {
-      cancelDwell()
-      setInteractive(false)
-      return
-    }
-    if (ctx.pinned) {
-      cancelDwell()
-      setInteractive(uiHit())
-      return
-    }
-    if (uiHit()) {               // UI 控件不受等待限制
-      cancelDwell()
-      setInteractive(true)
-      return
-    }
-    const inside = insideModel(lastPointer.x, lastPointer.y)
-    if (interactive) {           // 已交互：出框即回收（滞回含余量，防边缘抖动）
-      if (!inside) setInteractive(false)
-      return
-    }
-    if (!inside) {               // 框外：保持穿透，取消计时
-      cancelDwell()
-      setInteractive(false)
-      return
-    }
-    // 框内未交互：停留计时。位移超过阈值视为路过，重新计时
-    if (dwellFrom !== null && Math.hypot(lastPointer.x - dwellFrom.x, lastPointer.y - dwellFrom.y) > DWELL_SLACK) {
-      cancelDwell()
-    }
-    if (dwellTimer === 0) {
-      dwellFrom = { x: lastPointer.x, y: lastPointer.y }
-      dwellTimer = setTimeout(() => {
-        dwellTimer = 0
-        dwellFrom = null
-        // 放行前复核：指针此刻仍在框内才转交互（静止时无事件，坐标靠光标轮询保鲜）
-        if (lastPointer !== null && !dragging && !ctx.pinned && insideModel(lastPointer.x, lastPointer.y)) {
-          setInteractive(true)
-        }
-      }, DWELL_MS)
-    }
+  /** 手动穿透：模型区恒穿透，仅 UI 可点（穿透钮自己得留着，否则关不回来）。 */
+  ctx.pinned = PET && store.getPinned()
+
+  // ── 穿透判定：主进程单源决策（Linux/X11 input-shape 失同步根治）──
+  // 渲染层职责收窄为「交互矩形集维护 + 上报」：模型包围盒+48px ∪ 可命中 UI 矩形
+  // ∪ pinned/dragging 标志，经 IPC 交主进程；主进程用 OS 光标位置比对矩形集自行
+  // setIgnoreMouseEvents（语义等价：UI 即时可点 / 模型区停留 600ms 且位移<24px
+  // 放行 / 出框滞回回收 / 卫星窗死区恒穿透，见 pet/passthrough.cjs）。判定不再
+  // 依赖 DOM 事件到达，穿透态下状态机照跑。UI 翻转点（面板/菜单/卡片开关、pin
+  // 切换、拖拽起止）都会调 evalIgnore → 立即上报；ticker/resize 等高频调用点由
+  // 「内容变化才发送」的差分自然节流。
+  let interactive = false  // 当前交互态：主进程决策的回读，仅供锁钮/探针显示
+  ctx.lastIgnore = true
+  let winOrigin = { x: 0, y: 0 }   // overlay 窗原点（屏坐标）：客户区坐标 → 屏坐标换算
+  let lastSentRects = ''
+  /** elementFromPoint 等价的「可命中」检测：隐藏按钮（opacity:0+pointer-events:none）与收起的卡片（visibility/display）一律不占解锁区。 */
+  function hitTestable(el) {
+    const cs = getComputedStyle(el)
+    return cs.visibility !== 'hidden' && cs.display !== 'none' && cs.pointerEvents !== 'none'
   }
+  const toScreenRect = (r) => ({
+    x: Math.round(r.left + winOrigin.x), y: Math.round(r.top + winOrigin.y),
+    w: Math.round(r.width), h: Math.round(r.height),
+  })
+  function collectRects() {
+    const b = ctx.modelBounds?.()
+    let model = null
+    if (b && b.width > 0) {
+      const r = ctx.app.view.getBoundingClientRect()
+      model = {
+        x: Math.round(r.left + b.x - HOVER_MARGIN + winOrigin.x),
+        y: Math.round(r.top + b.y - HOVER_MARGIN + winOrigin.y),
+        w: Math.round(b.width + HOVER_MARGIN * 2),
+        h: Math.round(b.height + HOVER_MARGIN * 2),
+      }
+    }
+    const ui = []
+    for (const el of document.querySelectorAll(UI_SELECTOR)) {
+      if (!hitTestable(el)) continue
+      ui.push(toScreenRect(el.getBoundingClientRect()))
+    }
+    return { model, ui, pinned: !!ctx.pinned, dragging }
+  }
+  function syncRects() {
+    if (!BRIDGE?.pushRects) return   // 旧桥缺该接口时静默（独立宿主未升级等场景）
+    const next = JSON.stringify(collectRects())
+    if (next === lastSentRects) return
+    lastSentRects = next
+    BRIDGE.pushRects(JSON.parse(next))
+  }
+  /** 穿透评估（兼容旧调用点）：矩形集维护 + 变化上报；判定本体在主进程。 */
+  ctx.evalIgnore = () => {
+    if (!BRIDGE) return
+    syncRects()
+  }
+  // 矩形集保鲜轮询：模型/按钮位置可能经「无事件路径」变化（呼吸动画、切换动画、
+  // 扩展操纵、拖拽冲刷后的收敛），事件驱动的 evalIgnore 调用点覆盖不到这些帧。
+  // 150ms 差分轮询兜底——无变化时 stringify 对比即返回，成本可忽略
+  setInterval(() => syncRects(), 150)
+  // 状态迁移回推：锁钮三态与调试探针的数据源（决策结果以主进程为准）
+  let lastDwellFrom = null
+  BRIDGE?.onInteractState?.((state) => {
+    interactive = !!state?.interactive
+    ctx.lastIgnore = !interactive
+    lastDwellFrom = state?.dwell ?? null
+    ctx.syncPinBtn?.()
+  })
+  // 调试探针：穿透状态机快照（interactive/from 为主进程决策回推；lp 为渲染层最近光标）
+  ctx.dwellDebug = () => ({ timing: lastDwellFrom !== null, from: lastDwellFrom, interactive, lp: lastPointer })
+
+  // 真实输入时间戳 + 心跳：主进程行为核验的证据源。穿透态下事件不达、时间戳
+  // 停走，恰是「穿透生效」的证据；交互态下光标一动必然刷新（详见 passthrough.cjs）
+  let lastInputAt = 0
+  const markInput = () => { lastInputAt = Date.now() }
+  for (const type of ['pointermove', 'pointerdown', 'pointerup', 'wheel', 'keydown']) {
+    window.addEventListener(type, markInput, { capture: true, passive: true })
+  }
+  setInterval(() => BRIDGE?.heartbeat?.(lastInputAt), 2000)
 
   // ── 忙碌拦截：8 秒冷却，避免刷屏 ──
   let busyQuipAt = 0
@@ -185,34 +197,8 @@ export function initInteract(ctx) {
   // 否则穿透模式下 ⚙/穿透 钮永远隐身再也点不到；只在迁移沿触发，防定时器被反复重置）
   let wasInside = false
 
-  // 卫星窗死区：游戏卡独立小窗的屏幕区域（主进程实时推送，开/移动/关）。
-  // overlay 是 screen-saver 层压在卡片上方——光标落在卡片区域时 overlay 必须恒穿透，
-  // 否则模型区停留解锁会把卡片的点击/拖动全吃掉（卡片想点点不动的病灶）。
-  // 每游戏独立卫星窗后主进程可能推多个矩形：数组逐个判；单矩形（旧语义）包装成单项数组
-  let cardAreas = []        // 屏幕坐标矩形 [{x,y,width,height}, ...]
-  let winOrigin = { x: 0, y: 0 }   // overlay 窗原点（屏坐标），onCursor 随帧更新
-  const setCardAreas = (b) => {
-    if (!b || typeof b !== 'object') { cardAreas = []; return }
-    cardAreas = Array.isArray(b)
-      ? b.filter((r) => r && typeof r === 'object'
-        && Number.isFinite(r.x) && Number.isFinite(r.y) && Number.isFinite(r.width) && Number.isFinite(r.height))
-      : [b]
-  }
-  BRIDGE?.onCardArea?.((b) => {
-    setCardAreas(b)
-    ctx.evalIgnore()
-  })
-  // 自愈重载兜底：页面重载后推送态丢失，主动拉一次（否则卡片开着而死区为空，点击又被吃）
-  BRIDGE?.getCardArea?.().then((b) => {
-    setCardAreas(b)
-    ctx.evalIgnore()
-  }).catch(() => { })
-  /** 指针（画布坐标）是否落在任一卫星窗死区内。 */
-  function inCardArea(x, y) {
-    const sx = x + winOrigin.x
-    const sy = y + winOrigin.y
-    return cardAreas.some((r) => sx >= r.x && sx < r.x + r.width && sy >= r.y && sy < r.y + r.height)
-  }
+  // 卫星窗死区已随单源决策上收主进程（pushCardArea → passthrough.setCardAreas），
+  // 渲染层不再自行判定卡片区域——光标在卡片上时 overlay 恒穿透由主进程保证。
 
   if (BRIDGE && BRIDGE.onCursor) {
     BRIDGE.onCursor((data) => {
@@ -231,13 +217,17 @@ export function initInteract(ctx) {
     })
     BRIDGE.getCursor?.().then((data) => {
       if (!data) return
+      winOrigin = { x: data.bounds.x, y: data.bounds.y }   // 首帧窗口原点：矩形集上报的换算基准
       ctx.lastGaze = { x: data.x - data.bounds.x, y: data.y - data.bounds.y }
       ctx.model.focus(ctx.lastGaze.x, ctx.lastGaze.y)
+      ctx.evalIgnore()   // 加载后首次上报：决策器的矩形集就绪前恒穿透（安全默认）
     }).catch(() => { })
   }
 
   // ── 拖拽：挂件=DOM 位移（带边界钳制与位置记忆）；桌宠=IPC 移动窗口 ──
   // 桌宠拖拽期间冻结穿透评估，避免窗口跟随导致松手事件丢失（粘手事故教训）
+  let draggingAt = 0        // 拖拽最近活跃时刻（pointerdown/move 刷新）：悬挂看门狗计时基准
+  let forceEndDrag = null   // 分支内的 endDrag 句柄：看门狗强制收尾用
   if (!PET) {
     let drag = null
     box.addEventListener('pointerdown', (e) => {
@@ -277,11 +267,13 @@ export function initInteract(ctx) {
         else if (!tryPat(e.clientX, e.clientY)) clickReact()
       }
       drag = null
+      ctx.evalIgnore()   // 收尾补判：盒子位移后矩形集（模型包围盒）立即上报
     }
     box.addEventListener('pointerup', (e) => endDrag(e))
     // 触屏 pointercancel / 窗口失焦也要收尾，否则 drag 悬挂成悬空拖动
     box.addEventListener('pointercancel', () => endDrag())
     window.addEventListener('blur', () => endDrag())
+    forceEndDrag = () => endDrag()
   } else if (BRIDGE) {
     let drag = null
     // overlay-pet 拖拽：桌宠窗口铺满主屏、永不移动（透明窗呈现丢帧的触发条件
@@ -321,18 +313,22 @@ export function initInteract(ctx) {
       }
       drag = null
       dragging = false
+      ctx.evalIgnore()   // 松手即补判：拖拽冻结解除后矩形集（含 dragging 标志）立即上报
     }
     box.addEventListener('pointerdown', (e) => {
       const wokeFromSleep = ctx.getState() === 'sleeping'
       ctx.pokeActivity?.()
       drag = { x: e.screenX, y: e.screenY, curX: e.screenX, curY: e.screenY, flushX: e.screenX, flushY: e.screenY, moved: false, wokeFromSleep }
       dragging = true
+      draggingAt = Date.now()
       box.setPointerCapture(e.pointerId)
+      ctx.evalIgnore()   // 拖拽冻结标志立即上报：主进程判定冻结依赖它
     })
     box.addEventListener('pointermove', (e) => {
       if (!drag) return
       drag.curX = e.screenX
       drag.curY = e.screenY
+      draggingAt = Date.now()   // 拖拽活跃证明：悬挂看门狗的计时基准
       if (!drag.moved && Math.hypot(drag.curX - drag.x, drag.curY - drag.y) > 4) {
         drag.moved = true
         ctx.setExpr('shy')
@@ -352,10 +348,23 @@ export function initInteract(ctx) {
       }
       drag = null
       dragging = false
+      ctx.evalIgnore()   // blur 兜底收尾同样补判（穿透窗上 blur 可能收不到，看门狗兜底）
     })
+    forceEndDrag = () => endDrag()
   } else {
     box.addEventListener('pointerup', (e) => { if (!tryPat(e.clientX, e.clientY)) clickReact() })
   }
+
+  // 拖拽悬挂看门狗：>30s 无 pointerup/pointermove 即强制收尾并补判穿透。
+  // 穿透窗永不聚焦收不到 blur（Linux 上尤甚），这是 blur 兜底失效后的最后保险
+  setInterval(() => {
+    if (!dragging || forceEndDrag === null || Date.now() - draggingAt <= 30000) return
+    console.error('[l2d] drag stale >30s, force endDrag')
+    BRIDGE?.reportError?.('[l2d] drag stale >30s, force endDrag (dragging since ' + new Date(draggingAt).toISOString() + ')')
+    forceEndDrag()
+    dragging = false
+    ctx.evalIgnore()
+  }, 5000)
 
   // 双击：兴奋脸 + 兴奋动作卖萌
   box.addEventListener('dblclick', () => {

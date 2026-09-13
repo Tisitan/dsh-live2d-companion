@@ -465,7 +465,9 @@ export function initChat(ctx) {
     for (const event of ['pointerdown', 'pointerup', 'click', 'dblclick', 'wheel']) {
       element.addEventListener(event, e => e.stopPropagation())
     }
-    element.addEventListener('pointerenter', () => BRIDGE?.setIgnore(false))
+    // 穿透已由主进程单源决策接管：聊天控件矩形随 evalIgnore 上报，光标在其上
+    // 主进程自会解锁交互，这里不再旁路盲写 setIgnore（防与决策器打架）
+    element.addEventListener('pointerenter', () => ctx.evalIgnore?.())
   }
   protect(toggle)
   protect(panel)
@@ -535,7 +537,7 @@ export function initChat(ctx) {
 
   function openChat() {
     panel.hidden = false
-    BRIDGE?.setIgnore(false)
+    ctx.evalIgnore?.()   // 面板矩形纳入上报即由主进程解锁交互（原 setIgnore 旁路已收编）
     requestAnimationFrame(placePanelOnce)
     void refreshStatus()
     clearInterval(statusTimer)

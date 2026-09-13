@@ -1635,17 +1635,23 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
   }
   function scheduleHide() {
     clearTimeout(hideTimer)
-    if (!panelOpen && !helpOpen && !quipsOpen) {
-      hideTimer = setTimeout(() => {
-        // 直接收菜单而非 toggleMenu(false)：后者会回调 scheduleHide 造成 1.2s 重军备循环
-        menuOpen = false
-        menu.classList.remove('open')
-        toggle.classList.add('l2d-hidden')
-        gameToggle.classList.add('l2d-hidden')
-        helpToggle.classList.add('l2d-hidden')
-        pinToggle.classList.add('l2d-hidden')
-      }, 1200)
-    }
+    hideTimer = setTimeout(() => {
+      // 直接收菜单而非 toggleMenu(false)：后者会回调 scheduleHide 造成 1.2s 重军备循环
+      menuOpen = false
+      menu.classList.remove('open')
+      // 面板/台词卡/帮助卡连带收拢：穿透态下「×/外点/Esc」三路关闭全部失联
+      // （事件不进穿透窗），超时收拢是它们唯一的关闭出口；光标此刻必然不在
+      // 卡片上（onCursor 的 nowInside 才会拦下 hideChrome），不会打断正在操作的人
+      if (panelOpen) closePanel()
+      if (quipsOpen) toggleQuips(false)
+      if (helpOpen) toggleHelp(false)
+      toggle.classList.add('l2d-hidden')
+      gameToggle.classList.add('l2d-hidden')
+      helpToggle.classList.add('l2d-hidden')
+      // 锁定态锁钮常驻（蓝圈呼吸=「不响应」告示 + 唯一常驻解锁热区）：若随三兄弟隐退，
+      // pinned 下模型区恒穿透，屏幕上不存在任何解锁入口——UX 死锁（2026-09-12 生产实证）
+      if (!ctx.pinned) pinToggle.classList.add('l2d-hidden')
+    }, 1200)
   }
   showToggle()
   scheduleHide()

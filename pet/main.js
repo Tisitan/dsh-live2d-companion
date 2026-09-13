@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, screen } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
+const { createPassthrough } = require('./passthrough.cjs')
 
 const TARGET = process.env.L2D_URL
   || ('http://127.0.0.1:3080/live2d/pet.html'
@@ -26,6 +27,10 @@ if (process.env.L2D_SOFT === '1' || petConfig.soft === true) {
 // Chromium 会误判窗口被遮挡而掐停渲染器出帧（窗口在动、画面停更 = 闪）。
 // 对正常机器无副作用，与主进程限频合并双保险。
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
+// GPU 故障会话的模型渲染兜底：允许 SwiftShader 软件 WebGL（Chromium 128+ 默认禁用）。
+// 硬件 GPU 可用时依旧优先走 GPU，本开关只是放行软件回退——2026-09-13 生产实证：
+// 会话级 WebGL blocklist 下无此开关则 initStage 失败、桌宠全程 headless 隐形。
+app.commandLine.appendSwitch('enable-unsafe-swiftshader')
 
 let win = null
 
@@ -77,6 +82,7 @@ app.whenReady().then(() => {
     resizable: false,
     skipTaskbar: true,
     hasShadow: false,
+    show: false,   // fail-closed：穿透证实前不显示（见下方证实门；22:51 全屏捕获事故根治）
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -87,7 +93,16 @@ app.whenReady().then(() => {
     },
   })
   win.setAlwaysOnTop(true, 'screen-saver')
-  win.setIgnoreMouseEvents(true)   // 勿加 {forward:true}：electron#48035 光标闪烁
+  win.setIgnoreMouseEvents(true)   // 初始恒穿透（盲写）；运行期由单源决策接管，证实门兜底
+  // Linux WM 偶发把全屏 overlay 窗最小化且 skipTaskbar 无入口找回 → 立即弹回；
+  // Windows 无框窗不触发 minimize 事件，该守卫跨平台无害
+  win.on('minimize', () => {
+    console.error('[l2d-pet] minimized by WM, restoring')
+    if (!win.isDestroyed()) win.restore()
+  })
+  // 最小化还原同样重置 X 层穿透态（实验室实证：minimize/restore 循环后命中回本窗）——
+  // 还原后立即重申，不等 5s 稳态重申兜底
+  win.on('restore', () => passthrough.reassert())
   // 显示器参数变化（分辨率/缩放/拔插屏）：窗口跟随新主屏，渲染层 resize 自会重排
   screen.on('display-metrics-changed', () => {
     if (win === null || win.isDestroyed()) return
@@ -111,9 +126,189 @@ app.whenReady().then(() => {
   // 注意：绝不能用 {forward:true}——forward 让穿透窗仍参与鼠标消息流，其覆盖下的
   // 任何窗口光标都会在 CSS 光标与默认箭头间高速闪烁（electron#48035，v20 起未修，
   // 43 实测仍犯）。穿透态的光标追踪由主进程 33ms OS 轮询驱动，forward 本就是冗余
+  // l2d-ignore 通道保留为应急逃生门：运行期穿透开关已由下方单源决策接管（passthrough）
   ipcMain.on('l2d-ignore', (event, ignore) => {
     if (fromPet(event)) win.setIgnoreMouseEvents(Boolean(ignore))
   })
+  // ── 穿透单源决策：渲染层只上报「交互矩形集」，主进程用 OS 光标位置比对矩形集
+  // 自行驱动 setIgnoreMouseEvents——判定不再依赖 DOM 事件到达，X11 input-shape
+  // 盲写失同步时由行为核验重试 + 安全态兜底（详见 pet/passthrough.cjs 头注）。
+  // 状态迁移回推渲染层：锁钮三态与 dwellDebug 探针靠它保鲜。
+  const passthrough = createPassthrough({
+    apply: (ignore) => { if (win !== null && !win.isDestroyed()) win.setIgnoreMouseEvents(ignore) },
+    notify: (state) => { if (win !== null && !win.isDestroyed()) win.webContents.send('l2d-interact-state', state) },
+    log: (...args) => console.error(new Date().toISOString().slice(11, 23), ...args),
+    debug: (...args) => { if (process.env.L2D_DEBUG === '1') console.log(new Date().toISOString().slice(11, 23), ...args) },
+    // 窗口 1px 微移 wiggle：X11 Configure 事件强制 Chromium 重同步光标读数缓存
+    // （getCursorScreenPoint 冻结自愈，见 passthrough.cjs 头注 d）；1px 往返视觉无感。
+    // 自移编排（第六轮实证）：往返 300ms 与重申防抖 300ms 病态对齐——去程 move 的
+    // toggle 在返程重置前空放、返程后又双双被防抖饿死。freezeProbe 已静音事件重申
+    // 500ms，此处往返全部落地后 50ms 补一刀无防抖 reassertNow，确定性愈合
+    wiggle: () => {
+      if (win === null || win.isDestroyed()) return
+      const b = win.getBounds()
+      win.setBounds({ x: b.x + 1, y: b.y, width: b.width, height: b.height })
+      setTimeout(() => {
+        if (win !== null && !win.isDestroyed()) win.setBounds({ x: b.x, y: b.y, width: b.width, height: b.height })
+        setTimeout(() => passthrough.reassertNow(), 50)
+      }, 300)
+    },
+  })
+  ipcMain.on('l2d-rects', (event, rects) => {
+    if (fromPet(event)) passthrough.setRects(rects)
+  })
+  ipcMain.on('l2d-heartbeat', (event, at) => {
+    if (fromPet(event)) passthrough.heartbeat(at)
+  })
+  // 渲染层关键错误转发留痕（渲染进程 console 不进宿主日志，排障时不可见）
+  ipcMain.on('l2d-renderer-error', (event, msg) => {
+    if (fromPet(event) && typeof msg === 'string') console.error('[l2d-pet] renderer:', msg.slice(0, 500))
+  })
+  // 窗口移动/尺寸变化会重置 X 层穿透态（2026-09-12 第四轮实证：Edge/Chrome 同症，
+  // 属 X/WM 层语义）——任何 move/resize（含 wiggle 自身）后立即重申当前态
+  win.on('move', () => passthrough.reassert())
+  win.on('resize', () => passthrough.reassert())
+  // 导航/重载同样重置穿透态（实证：启动期 map 后 ~206ms 的失守即渲染器附加所致；
+  // healthTick 的 reloadPage 是运行期重演）——导航全程各节点一律重申
+  win.webContents.on('did-navigate', () => passthrough.reassert())
+  win.webContents.on('did-start-loading', () => passthrough.reassert())
+  win.webContents.on('did-finish-load', () => passthrough.reassert())
+  win.webContents.on('did-fail-load', () => passthrough.reassert())
+  // ── 穿透证实门（fail-closed，22:51 事故根治）：窗口穿透未证实前不稳定显示。
+  // X 命中测试要求窗口 mapped，故流程=盲写穿透 → map → 探针命中读回校验：
+  // 连续 2 拍未命中本窗=证实（凭据增写 passthroughProvenAt 供宿主判健康）；
+  // 任一拍命中本窗=盲写失守 → 立即 hide + 重申 + 重试——故障会话里窗口永不
+  // 稳定显示（隐形即无害），带病重生不再捕获屏幕。非 Linux 平台 Electron 内部
+  // 读回（isIgnoreMouseEvents）即可信，登记证实后直接显示，保持原行为。──
+  // show:false 未 realize 时 native handle 可能读不出——惰性读取（创建时试一次，
+  // 证实门每拍重试直到拿到）；petWid=0 期间命中比对不采信（降级为 Electron 读回）
+  let petWid = 0
+  let petTopWid = 0   // 客户窗的 root 直子祖先（reparenting WM 的框架窗；无 reparent 时=petWid）
+  // reparenting WM（openbox 实证：客户 0x2006ef vs 框架 0x2006ee；mutter 同类）下
+  // XQueryPointer/xdotool 命中读回返回的是框架窗而非客户窗——只比客户 id 会把捕获
+  // 误判为穿透（证实门假通过、校验环全盲，fail-closed 静默失效）。一次性解析
+  // xwininfo -root -tree 取本窗的 root 直子祖先；无 reparent 时祖先即客户窗
+  // 本身（petTopWid=petWid），与非 reparenting 环境旧行为逐字节等价。
+  // 工具缺失/解析失败降级 petTopWid=petWid（旧行为），不阻断证实门。
+  // 时机铁律：必须在窗口 mapped 之后解析——map 前窗口是 root 直子，WM 的 reparent
+  // （框架创建）发生在 map 时，提前解析会把 petTopWid 误钉成客户窗（首轮实证踩中）。
+  const resolvePetTopWid = (force = false) => {
+    if (petWid === 0 || process.platform !== 'linux') return
+    if (petTopWid !== 0 && !force) return
+    try {
+      const { execFileSync } = require('node:child_process')
+      const tree = execFileSync('xwininfo', ['-root', '-tree'], { timeout: 3000, encoding: 'utf8' })
+      const entries = []
+      for (const line of tree.split('\n')) {
+        const m = /^(\s+)(0x[0-9a-f]+)\s/i.exec(line)
+        if (m) entries.push({ indent: m[1].length, wid: parseInt(m[2], 16) })
+      }
+      const idx = entries.findIndex((e) => e.wid === petWid)
+      if (idx >= 0) {
+        const minIndent = Math.min(...entries.map((e) => e.indent))
+        for (let i = idx; i >= 0; i--) {
+          if (entries[i].indent === minIndent) { petTopWid = entries[i].wid; break }
+        }
+      }
+      if (petTopWid === 0) petTopWid = petWid
+      if (process.env.L2D_DEBUG === '1') console.error(`[l2d-pet] resolved window ids: client=0x${petWid.toString(16)} top=0x${petTopWid.toString(16)}`)
+    } catch { petTopWid = petWid }
+  }
+  const refreshPetWid = () => {
+    if (petWid !== 0 || process.platform !== 'linux') return
+    try {
+      const handle = win.getNativeWindowHandle()
+      if (handle && handle.length >= 4) petWid = handle.readUInt32LE(0)
+    } catch { }
+  }
+  // 命中判定：读回 id 命中客户窗或其框架祖先都算命中本窗（两种 WM 语义通吃）
+  const isPetHit = (w) => w !== 0 && (w === petWid || (petTopWid !== 0 && w === petTopWid))
+  refreshPetWid()
+  let lastProbeWid = 0        // 探针最近一次命中窗口 id（0=未产出/不可判）
+  let lastProbeAt = 0         // 探针读回时刻（证实判定要求新于最近 show，防隐藏期陈旧读回假通过）
+  let proofShownAt = 0        // 证实门最近一次 show 的时刻
+  let proofHits = 0           // 连续「未命中本窗」拍数
+  let proofWarnedAt = 0
+  const markProven = (via) => {
+    console.error(`[l2d-pet] passthrough proven (${via})`)
+    resolvePetTopWid(true)   // 证实落锤前强制重解框架祖先（防 map 初期 reparent 竞态残留）
+    // 凭据增写证实证实时间戳：宿主重生前据此判「上次是否带病死亡」
+    try {
+      if (L2D_PIDFILE !== '') {
+        const cur = JSON.parse(fs.readFileSync(L2D_PIDFILE, 'utf8'))
+        if (cur?.pid === process.pid) {
+          cur.passthroughProvenAt = Date.now()
+          fs.writeFileSync(L2D_PIDFILE, JSON.stringify(cur))
+        }
+      }
+    } catch { }
+  }
+  let passthroughProven = process.platform !== 'linux'   // 非 Linux： Electron 读回即可信
+  if (!passthroughProven) {
+    win.show()   // map 以验证（窗口期亚秒级；失守即收拢，见下）
+    proofShownAt = Date.now()
+    const proofTimer = setInterval(() => {
+      if (passthroughProven || win === null || win.isDestroyed()) { clearInterval(proofTimer); return }
+      refreshPetWid()
+      // 注意：本环境实证 isIgnoreMouseEvents() 读回会同步死锁主进程（mojo WidgetHost
+      // 异常态），Linux 证实门只做 X 层命中读回 + 盲写重申，不碰 Electron 读回
+      win.setIgnoreMouseEvents(true)
+      if (petWid === 0 || lastProbeWid === 0) return   // 窗口 id 未取到/探针未产出，等下一拍
+      if (!win.isVisible()) { win.show(); proofShownAt = Date.now(); return }   // 失守收拢后重新 map；探针采样需窗口在位，下一拍再判
+      if (petTopWid === 0) resolvePetTopWid()   // map 后首拍解析框架祖先（reparent 已发生）
+      if (lastProbeAt <= proofShownAt) return   // 读回早于本次显示=隐藏期陈旧值，采信会把失守误判成证实
+      if (isPetHit(lastProbeWid)) {
+        proofHits = 0
+        win.hide()
+        win.setIgnoreMouseEvents(true)
+        if (Date.now() - proofWarnedAt > 30000) {
+          proofWarnedAt = Date.now()
+          console.error('[l2d-pet] passthrough proof FAILED (X hit-test lands on pet window); window hidden, reasserting and retrying')
+        }
+      } else if (++proofHits >= 2) {
+        passthroughProven = true
+        markProven('x11 hit-test')
+      }
+    }, 500)
+  } else {
+    win.show()
+    markProven('electron readback (non-linux)')
+  }
+  // 外部光标探针（Linux/X11）：getCursorScreenPoint 读数走 Chromium 事件流缓存，
+  // 穿透窗收不到事件时滞后/冻结（2026-09-12 生产实证）。xdotool 直读 X 服务器
+  // 不受影响，作为决策器的独立光标源；顺带解析 WINDOW 命中字段喂 X 层校验环
+  // 与证实门。Windows/macOS 无此问题且无 xdotool，仅 Linux 启用。
+  if (process.platform === 'linux') {
+    const { execFile } = require('node:child_process')
+    let probeFailures = 0
+    let extProbeTimer = null
+    const probeCursor = () => {
+      execFile('xdotool', ['getmouselocation', '--shell'], { timeout: 1500 }, (err, stdout) => {
+        if (err) {
+          if (++probeFailures >= 3) {
+            console.error('[l2d-pet] xdotool probe unavailable, cursor fallback to main reading')
+            if (extProbeTimer !== null) clearInterval(extProbeTimer)
+          }
+          return
+        }
+        probeFailures = 0
+        const x = /X=(\d+)/.exec(stdout)
+        const y = /Y=(\d+)/.exec(stdout)
+        const wid = /WINDOW=(\d+)/.exec(stdout)
+        if (x && y) passthrough.externalCursor(Number(x[1]), Number(y[1]))
+        if (wid && petWid !== 0) {
+          lastProbeWid = Number(wid[1])
+          lastProbeAt = Date.now()
+          // 证实未完成/窗口隐藏期不喂校验环：探测期的捕获读数归证实门处置，
+          // 校验环此时采信只会与 hide/show 重试循环互相误报
+          if (passthroughProven && win !== null && !win.isDestroyed() && win.isVisible()) {
+            passthrough.observedHit(isPetHit(lastProbeWid))
+          }
+        }
+      })
+    }
+    extProbeTimer = setInterval(probeCursor, 500)
+  }
   ipcMain.on('l2d-quit', (event) => {
     if (fromPet(event)) app.quit()
   })
@@ -137,7 +332,7 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('l2d-cursor-get', (event) => {
     if (!fromPet(event)) return null
-    const p = screen.getCursorScreenPoint()
+    const p = passthrough.cursor() ?? screen.getCursorScreenPoint()
     return { x: p.x, y: p.y, bounds: win.getBounds() }
   })
 
@@ -166,6 +361,7 @@ app.whenReady().then(() => {
     for (const entry of cardWins.values()) {
       if (entry.win && !entry.win.isDestroyed()) areas.push(entry.win.getBounds())
     }
+    passthrough.setCardAreas(areas)   // 死区同步进单源决策器
     win.webContents.send('l2d-game-area', areas.length === 1 ? areas[0] : areas.length > 0 ? areas : null)
   }
   // IPC sender 反查：close/moveby 等来自卡片窗的消息，用 sender 在多窗表里找归属窗（找不到拒收）
@@ -329,13 +525,25 @@ app.whenReady().then(() => {
   })
   win.loadURL(TARGET).catch(() => { })
 
-  let lastCursor = null
+  let lastMain = null
+  let lastPush = null
+  let diagTicks = 0
   setInterval(() => {
     if (win === null || win.isDestroyed()) return
     const p = screen.getCursorScreenPoint()
-    if (lastCursor !== null && lastCursor.x === p.x && lastCursor.y === p.y) return
-    lastCursor = p
-    win.webContents.send('l2d-cursor', { x: p.x, y: p.y, bounds: win.getBounds() })
+    const mainMoved = lastMain !== null && (lastMain.x !== p.x || lastMain.y !== p.y)
+    lastMain = p
+    // 单源决策先于光标推送：停留计时到期等判定不能依赖「光标在动」，静止 tick 也要跑
+    const decision = passthrough.tick(p.x, p.y, mainMoved) ?? p
+    if (process.env.L2D_DEBUG === '1' && ++diagTicks % 90 === 0) {
+      console.log(`[l2d-pet] poll diag: cursor=${p.x},${p.y} moved=${mainMoved} state=${JSON.stringify(passthrough.snapshot())}`)
+    }
+    // 推送源跟随决策仲裁：主读数活推主读数（33ms 顺滑）；冻结时推仲裁源（xdotool 接管，
+    // 渲染层 nowInside 迁移沿不断流，按钮簇照常出现）。Windows 无探针，decision 恒=p，行为不变
+    const out = mainMoved ? p : decision
+    if (lastPush !== null && lastPush.x === out.x && lastPush.y === out.y) return
+    lastPush = out
+    win.webContents.send('l2d-cursor', { x: out.x, y: out.y, bounds: win.getBounds() })
   }, 33)
 
   const origin = new URL(TARGET).origin

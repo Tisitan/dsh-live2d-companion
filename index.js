@@ -1,11 +1,11 @@
-import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { createReadStream, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { mkdir, readdir, lstat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, normalize, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { registerGame, getGame, listGames, defaultQuipKey } from './games/registry.mjs'
-import { findLivePet } from './pet-lifecycle.mjs'
+import { findLivePet, readPidRecord } from './pet-lifecycle.mjs'
 import gomokuGame from './games/gomoku/index.mjs'
 import chessGame from './games/chess/index.mjs'
 
@@ -56,6 +56,27 @@ let petExitHookArmed = false
 let petRespawnTimer = null
 /** 重拉滑窗（1 小时最多 3 次）：崩溃循环保护，撞顶即放弃等人工/remount。 */
 const petRespawnHistory = []
+/** 带病死亡连续计数：上一实例「穿透未证实即死亡」（启动期捕获失守信号）累计 2 次暂停重拉。 */
+let petSickRespawns = 0
+/** 桌宠 stdout/stderr 落盘（废 stdio:'ignore'——22:51 事故零日志的排查盲区根治）。 */
+const PET_LOG_FILE = join(dirname(PET_PID_FILE), 'pet.log')
+const PET_LOG_MAX_BYTES = 1024 * 1024
+
+/** 打开桌宠日志 fd（>1MB 先轮转 pet.log.old）；失败返回 null 退化为 ignore 并 warn。 */
+function openPetLogFd(logger) {
+  try {
+    if (statSync(PET_LOG_FILE).size > PET_LOG_MAX_BYTES) {
+      try { rmSync(PET_LOG_FILE + '.old', { force: true }) } catch { }
+      renameSync(PET_LOG_FILE, PET_LOG_FILE + '.old')
+    }
+  } catch { }
+  try {
+    return openSync(PET_LOG_FILE, 'a')
+  } catch (error) {
+    logger.warn(`live2d pet log open failed: ${String(error)} — pet stdio not captured`)
+    return null
+  }
+}
 
 /** 显示模式 → config 布尔对。 */
 const DISPLAY_MODES = {
@@ -1368,24 +1389,34 @@ export function apply(ctx, config) {
 
   if (config?.pet === true) {
     const petDir = config?.petDir ?? fileURLToPath(new URL('./pet', import.meta.url))
-    const exe = join(petDir, 'node_modules', 'electron', 'dist', 'electron.exe')
+    const exe = join(petDir, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : 'electron')
     if (existsSync(exe)) {
       ensurePetCredentialDir(ctx.logger)
       const killPetTree = (pid) => {
+        if (process.platform === 'win32') {
+          try {
+            spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => { })
+          } catch { }
+          return
+        }
+        // -pid：POSIX 下 detached 子进程自成进程组，负 pid 即进程组杀法（连带 renderer/GPU 全树）；ESRCH=已退出，属正常
         try {
-          spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => { })
+          process.kill(-pid, 'SIGKILL')
         } catch { }
       }
       // spawn 主路径（effect 首拉与意外退场重拉共用）：exit 时区分「卸载处置」与「意外死亡」——
       // 卸载路径 schedulePetKill 已先把 managedPetPid 置 null，exit 时判 false 不重拉
       const spawnPet = () => {
         const petUrl = `http://127.0.0.1:${ctx.webServer.port}/live2d/pet.html`
+        const logFd = openPetLogFd(ctx.logger)
         const child = spawn(exe, ['.'], {
           cwd: petDir,
           detached: true,
-          stdio: 'ignore',
+          stdio: logFd === null ? 'ignore' : ['ignore', logFd, logFd],
           env: { ...process.env, L2D_URL: petUrl, L2D_PIDFILE: PET_PID_FILE },
         })
+        // 子进程已继承 fd 副本，宿主侧立即关闭防泄漏
+        if (logFd !== null) { try { closeSync(logFd) } catch { } }
         // spawn 的 ENOENT 走异步 error 事件，try/catch 接不住——不监听会 uncaughtException 崩宿主
         child.on('error', (error) => ctx.logger.warn(`live2d pet spawn failed: ${String(error)}`))
         child.on('exit', (code) => {
@@ -1414,6 +1445,8 @@ export function apply(ctx, config) {
             ctx.logger.warn('live2d pet respawn abandoned: 3 respawns within 1h (crash loop suspected)')
             return
           }
+          // spawn 决策前先留档凭据（findLivePet 探活会清理陈旧凭据，之后读不到）
+          const lastRec = readPidRecord(PET_PID_FILE)
           void findLivePet({ pidFile: PET_PID_FILE, expectedExe: exe }).then((found) => {
             if (found.status === 'alive') {
               if (managedPetPid === null) managedPetPid = found.pid
@@ -1422,6 +1455,17 @@ export function apply(ctx, config) {
             }
             if (Date.now() - lastPetSpawnAt < 30000) {
               ctx.logger.info('live2d pet respawn throttled (spawned within 30s)')
+              return
+            }
+            // 带病重生保护（22:51 灾难循环修正）：上一实例早夭且穿透从未证实
+            // （凭据无 passthroughProvenAt）= 启动期失守信号，连续 2 次暂停重拉。
+            // 与崩溃滑窗语义不同：这是「带病窗口×自愈设计」悖论的专用闸
+            const sick = lastRec !== null
+              && lastRec.passthroughProvenAt === undefined
+              && Date.now() - (lastRec.bornAt ?? 0) < 120000
+            petSickRespawns = sick ? petSickRespawns + 1 : 0
+            if (petSickRespawns >= 2) {
+              ctx.logger.warn('live2d pet respawn paused: previous instances died before passthrough was proven (startup capture protection); waiting for remount or manual fix')
               return
             }
             petRespawnHistory.push(Date.now())

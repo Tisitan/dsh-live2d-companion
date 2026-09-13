@@ -51,6 +51,19 @@ export async function initStage(ctx) {
     const saved = store.getFpsMode()
     ctx.fpsMode = FPS_MODES[saved] ? saved : 'balanced'
   }
+  // 软件渲染自保（2026-09-13 生产实证：SwiftShader 全屏 30fps 软渲把 GPU 进程烧到 385%）：
+  // 检出 SwiftShader/llvmpipe 等软件后端即本会话压到 saver 档（不持久化、不覆盖用户存档，
+  // 面板手动调档仍可超越）；硬件 GL 会话零影响
+  try {
+    const gl = app.renderer?.context?.gl
+    const dbg = gl?.getExtension('WEBGL_debug_renderer_info')
+    const rname = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) ?? '') : ''
+    if (/swiftshader|llvmpipe|softpipe|software/i.test(rname)) {
+      ctx.fpsMode = 'saver'
+      console.error(`[l2d] software GL backend (${rname.slice(0, 80)}), fps clamped to saver for this session`)
+      try { BRIDGE?.reportError?.('[l2d] software GL backend: ' + rname.slice(0, 120)) } catch { }
+    }
+  } catch { }
   // 放开 PIXI 默认 minFPS=10 的地板：否则 maxFPS 设 8/6/4 会被静默钳回 10
   // （minFPS 同时是 deltaTime 尖峰钳制，4 档 = 单帧最多补 250ms，动画不会跳飞）
   app.ticker.minFPS = 4
@@ -219,9 +232,13 @@ export async function initStage(ctx) {
   }
 
   // 尺寸自愈：iframe/容器尺寸变化（预览弹窗开合、绑定栏展开等）不一定触发
-  // window resize，用 ResizeObserver 兜底重新布局，防止预览按旧尺寸裁切
+  // window resize，用 ResizeObserver 兜底重新布局，防止预览按旧尺寸裁切。
+  // 布局变化连动穿透矩形集重报（模型包围盒随尺寸变，单源决策输入必须保鲜）
   if (typeof ResizeObserver !== 'undefined') {
-    new ResizeObserver(() => ctx.layout()).observe(ctx.box)
+    new ResizeObserver(() => {
+      ctx.layout()
+      ctx.evalIgnore?.()
+    }).observe(ctx.box)
   }
 
   window.addEventListener('resize', () => {

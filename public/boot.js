@@ -44,7 +44,45 @@ async function main() {
 
   await loadQuips()
   initUI(ctx)
-  await initStage(ctx)
+  try {
+    await initStage(ctx)
+  } catch (stageError) {
+    // 渲染层降级（GPU/WebGL 故障、PIXI 构造失败等）：模型画不出≠交互体系陪葬。
+    // initInteract 必须照常装配——穿透矩形集上报/心跳/输入证据是主进程看门狗的
+    // 证据链，缺位即「启动期捕获不可自愈」（2026-09-12 22:51 事故实证链一环）。
+    console.error('[l2d] stage init failed, continuing headless:', stageError)
+    try { BRIDGE?.reportError?.('[l2d] stage init failed: ' + String(stageError?.message || stageError).slice(0, 300)) } catch { }
+    // 按缺口填空（initStage 可能在 PIXI 构造/模型加载等不同深度失败，已置的件不覆盖）
+    if (!ctx.app) {
+      const view = document.createElement('canvas')
+      view.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none'
+      ctx.box.appendChild(view)
+      ctx.app = { view }
+    }
+    if (!ctx.model) {
+      ctx.model = {
+        x: 0, y: 0,
+        focus() { }, expression() { }, scale: { set() { } },
+        motion: () => Promise.reject(new Error('headless: no model')),
+        getBounds: () => ({ x: 0, y: 0, width: 0, height: 0 }),
+      }
+    }
+    ctx.modelBounds = () => null
+    ctx.setExpr = () => { }
+    ctx.playMotion = () => { }
+    ctx.stopMotions = () => { }
+    ctx.setEyeBlinkEnabled = () => { }
+    ctx.layout = () => { }
+    ctx.petHome = () => ({ cx: 0, cy: 0 })
+    ctx.switchModel = async () => false
+    ctx.getModelPath = () => ''
+    try {
+      Object.defineProperty(ctx, 'modelPath', { get: () => '', enumerable: true, configurable: true })
+    } catch { }
+    ctx.scale = ctx.targetScale = 1
+    ctx.fpsMode = 'balanced'
+    ctx.setFpsMode = () => { }
+  }
   initState(ctx)
   // 预览模式（面板 iframe ?preview=1）：只保留 渲染+状态机，
   // 不接 SSE、不装交互、不问候不碎碎念不加载扩展——由父页面按钮手动驱动状态。
