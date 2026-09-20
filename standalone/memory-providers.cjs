@@ -4,6 +4,7 @@ const path = require('node:path')
 const MAX_FILE_BYTES = 512 * 1024
 const MAX_CONTEXT_CHARS = 1200
 const MAX_INDEXED_CANDIDATES = 80
+const MAX_BROAD_INDEXED_CANDIDATES = 60
 const MAX_SEMANTIC_CANDIDATES = 12
 const MAX_SEMANTIC_CHARS = 5000
 const STOP_TERMS = new Set([
@@ -56,10 +57,10 @@ function preferredCategory(query) {
   return ''
 }
 
-function chunksFrom(text, source, mtime = 0, category = 'general') {
+function chunksFrom(text, source, mtime = 0, category = 'general', tier = 0) {
   return String(text || '').split(/\n\s*\n+/).map(value => value.trim())
     .filter(value => value && !/^#{1,6}\s+.{1,80}$/.test(value) && !/^>\s*更新于/.test(value))
-    .map(value => ({ source, category, text: value.slice(0, 700), mtime }))
+    .map(value => ({ source, category, text: value.slice(0, 700), mtime, tier }))
 }
 
 async function readLimited(file) {
@@ -89,7 +90,7 @@ async function indexedMemories(profile, queryTerms, broad = false) {
   }).filter(item => item.entry && (broad || item.matches > 0) && typeof item.entry.file === 'string'
     && /^memory-[a-z0-9._-]+\.md$/i.test(item.entry.file))
     .sort((a, b) => b.score - a.score || String(b.entry.createdAt || '').localeCompare(String(a.entry.createdAt || '')))
-    .slice(0, broad ? 24 : MAX_INDEXED_CANDIDATES)
+    .slice(0, broad ? MAX_BROAD_INDEXED_CANDIDATES : MAX_INDEXED_CANDIDATES)
   const candidates = []
   for (const item of selected) {
     const loaded = await readLimited(path.join(profile.storage.memories, item.entry.file))
@@ -106,7 +107,7 @@ function rankCandidates(candidates, queryTerms, query, limit = 4) {
     const categoryBonus = wantedCategory && item.category === wantedCategory ? 2 : 0
     return { ...item, score: matched.score + categoryBonus, matches: matched.matches }
   }).filter(item => item.matches > 0 && item.score >= 2)
-    .sort((a, b) => b.score - a.score || b.mtime - a.mtime)
+    .sort((a, b) => b.score - a.score || a.tier - b.tier || b.mtime - a.mtime)
     .slice(0, limit)
 }
 
@@ -128,7 +129,7 @@ function semanticPool(candidates, ranked) {
   const selected = [...candidates].sort((a, b) => {
     const aRank = priority.has(a.text) ? priority.get(a.text) : 999
     const bRank = priority.has(b.text) ? priority.get(b.text) : 999
-    return aRank - bRank || b.mtime - a.mtime
+    return aRank - bRank || a.tier - b.tier || b.mtime - a.mtime
   })
   const result = []
   const seen = new Set()
@@ -153,9 +154,9 @@ class LocalMemoryProvider {
     const queryTerms = terms(query)
     if (!queryTerms.size) return { memory: '', candidates: [] }
     const semantic = profile.memoryProvider === 'opencode'
-    const candidates = await indexedMemories(profile, queryTerms, semantic)
+    const structured = await indexedMemories(profile, queryTerms, semantic)
     const legacy = await readLimited(profile.storage.memory)
-    if (legacy.text) candidates.push(...chunksFrom(legacy.text, '旧版长期记忆', legacy.mtime, 'general'))
+    if (legacy.text) structured.push(...chunksFrom(legacy.text, '旧版长期记忆', legacy.mtime, 'general'))
     const diaryEntries = await fsp.readdir(profile.storage.diaries, { withFileTypes: true }).catch(() => [])
     const diaryFiles = []
     for (const entry of diaryEntries) {
@@ -165,14 +166,27 @@ class LocalMemoryProvider {
       if (stat?.isFile()) diaryFiles.push({ target, name: entry.name, mtime: stat.mtimeMs })
     }
     diaryFiles.sort((a, b) => b.mtime - a.mtime)
+    const diaryCandidates = []
     for (const item of diaryFiles.slice(0, 30)) {
       const loaded = await readLimited(item.target)
-      if (loaded.text) candidates.push(...chunksFrom(loaded.text, item.name.replace(/\.md$/i, ''), item.mtime, 'event'))
+      if (loaded.text) diaryCandidates.push(...chunksFrom(loaded.text, item.name.replace(/\.md$/i, ''), item.mtime, 'event', 1))
     }
-    const ranked = rankCandidates(candidates, queryTerms, query)
+    // 已提炼的结构化记忆优先；只有完全没有结构化命中时才回退日记正文，避免同一事实重复召回。
+    const rankedStructured = rankCandidates(structured, queryTerms, query)
+    const selected = [...rankedStructured]
+    if (!selected.length) {
+      const seen = new Set(selected.map(item => item.text.trim()))
+      for (const item of rankCandidates(diaryCandidates, queryTerms, query, 4)) {
+        if (seen.has(item.text.trim())) continue
+        selected.push(item)
+        seen.add(item.text.trim())
+        if (selected.length >= 4) break
+      }
+    }
+    const semanticCandidates = [...structured, ...diaryCandidates]
     return {
-      memory: formatMemory(ranked),
-      candidates: semantic ? semanticPool(candidates, ranked) : [],
+      memory: formatMemory(selected),
+      candidates: semantic ? semanticPool(semanticCandidates, selected) : [],
     }
   }
 
