@@ -14,6 +14,21 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
+set "ELECTRON_EXE=%~dp0node_modules\electron\dist\electron.exe"
+if not exist "%ELECTRON_EXE%" (
+  echo.
+  echo Downloading the Electron runtime binary...
+  node "%~dp0node_modules\electron\install.js"
+  if errorlevel 1 (
+    echo.
+    echo Electron binary download failed.
+    echo On a restricted network, set the mirror in a Command Prompt and rerun:
+    echo   set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+    echo   setup.cmd
+    pause
+    exit /b 1
+  )
+)
 echo.
 echo Setup complete. You can now run start.cmd.
 pause

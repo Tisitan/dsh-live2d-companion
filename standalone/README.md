@@ -13,6 +13,8 @@ The standalone source does not distribute Live2D models, `live2dcubismcore.min.j
 3. Run `standalone/setup.cmd`, then `standalone/start.cmd`.
 4. On first launch, copy a complete Cubism 4/5 model folder into the model directory shown by the app.
 
+`setup.cmd` installs dependencies and then downloads the Electron runtime binary. Electron 42 and later no longer download that binary during `npm install`, so if the download fails on a restricted network, set `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/` in the same Command Prompt and run `setup.cmd` again.
+
 The local server binds to a random `127.0.0.1` port. Mutating browser routes use a random HttpOnly cookie; Codex/OpenCode adapters use a separate per-launch bearer token stored in Electron's user-data directory.
 
 ## Codex and OpenCode
