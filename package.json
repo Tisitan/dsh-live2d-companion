@@ -5,7 +5,7 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "node games/chess/engine.test.mjs && node games/chess/ai.test.mjs && node games/gomoku/engine.test.mjs && node games/llm-duel.test.mjs && node pet-lifecycle.test.mjs"
+    "test": "node games/chess/engine.test.mjs && node games/chess/ai.test.mjs && node games/gomoku/engine.test.mjs && node games/llm-duel.test.mjs && node pet-lifecycle.test.mjs && node pet/passthrough-verify.mjs"
   },
   "exports": {
     ".": "./index.js",

@@ -289,42 +289,52 @@ async function createWindow() {
       }
     }, 500)
   } else {
-    // ── 非 Linux（win32/darwin）真读回证实门（同 pet/main.js）──
-    // 旧实现直接 show 且从不调用 isIgnoreMouseEvents()——「声称读过、其实没读」。
-    // 现改为真读回：盲写穿透后按 ~100ms 轮询读回，连续 2 拍读到 true 才登记证实并 show。
-    // 本形态无 PID 凭据文件（standalone 不走宿主的带病重生保护），故未证实只留错误日志。
-    const READBACK_INTERVAL_MS = 100
-    const READBACK_NEEDED = 2
-    const READBACK_TIMEOUT_MS = 3000
-    let readbacks = 0
-    const readbackDeadline = Date.now() + READBACK_TIMEOUT_MS
+    // ── 非 Linux（win32/darwin）：能力探测决定路径（同 pet/main.js，两形态对称）──
+    // Electron 43.4.0 只有 setIgnoreMouseEvents（只写），没有 isIgnoreMouseEvents 读回
+    // API（electron.d.ts:3332/6122 仅有 setter）。无条件调用不存在的 API = 每拍 TypeError
+    // → 永不证实 → show 被推迟。故先探测：
+    //   有读回 API → 真读回门（2 拍/3s 规则）；无读回 API → 乐观直通并如实标注。
     win.setIgnoreMouseEvents(true)
-    const readbackTimer = setInterval(() => {
-      if (passthroughProven || win === null || win.isDestroyed()) { clearInterval(readbackTimer); return }
-      win.setIgnoreMouseEvents(true)   // 每拍重申：读回门期间目标态恒为穿透
-      let ignored = false
-      try {
-        ignored = win.isIgnoreMouseEvents() === true
-      } catch (error) {
-        console.error('[l2d-pet] passthrough readback threw:', error)   // 读回抛异常=不可信，不计证实
-        ignored = false
-      }
-      if (ignored) {
-        if (++readbacks >= READBACK_NEEDED) {
-          passthroughProven = true
-          clearInterval(readbackTimer)
-          console.error('[l2d-pet] passthrough proven (electron readback)')
-          win.show()
+    if (typeof win.isIgnoreMouseEvents === 'function') {
+      const READBACK_INTERVAL_MS = 100
+      const READBACK_NEEDED = 2
+      const READBACK_TIMEOUT_MS = 3000
+      let readbacks = 0
+      const readbackDeadline = Date.now() + READBACK_TIMEOUT_MS
+      const readbackTimer = setInterval(() => {
+        if (passthroughProven || win === null || win.isDestroyed()) { clearInterval(readbackTimer); return }
+        win.setIgnoreMouseEvents(true)   // 每拍重申：读回门期间目标态恒为穿透
+        let ignored = false
+        try {
+          ignored = win.isIgnoreMouseEvents() === true
+        } catch (error) {
+          console.error('[l2d-pet] passthrough readback threw:', error)   // 读回抛异常=不可信，不计证实
+          ignored = false
         }
-        return
-      }
-      readbacks = 0   // 读到 false 即归零：证实要求「连续」而非「累计」
-      if (Date.now() < readbackDeadline) return
-      clearInterval(readbackTimer)
-      // 超时未证实：留错误日志 + 降级 show（不死锁 UX；错误必须可见）
-      console.error(`[l2d-pet] passthrough readback FAILED (isIgnoreMouseEvents() never read true within ${READBACK_TIMEOUT_MS / 1000}s); showing degraded window`)
+        if (ignored) {
+          if (++readbacks >= READBACK_NEEDED) {
+            passthroughProven = true
+            clearInterval(readbackTimer)
+            console.error('[l2d-pet] passthrough proven (electron readback)')
+            win.show()
+          }
+          return
+        }
+        readbacks = 0   // 读到 false 即归零：证实要求「连续」而非「累计」
+        if (Date.now() < readbackDeadline) return
+        clearInterval(readbackTimer)
+        // 超时未证实：留错误日志 + 降级 show（不死锁 UX；错误必须可见）。
+        // 本形态无 PID 凭据文件（standalone 不走宿主的带病重生保护），故无凭据可记。
+        console.error(`[l2d-pet] passthrough readback FAILED (isIgnoreMouseEvents() never read true within ${READBACK_TIMEOUT_MS / 1000}s); showing degraded window`)
+        win.show()
+      }, READBACK_INTERVAL_MS)
+    } else {
+      // 乐观直通：本平台无读回 API，穿透证实只能是乐观声明——如实标注，不谎称读过
+      console.error('[l2d-pet] no mouse-ignore readback API on this platform; passthrough proof is an optimistic claim (non-linux)')
+      passthroughProven = true
+      console.error('[l2d-pet] passthrough proven (no-readback-api optimistic (non-linux))')
       win.show()
-    }, READBACK_INTERVAL_MS)
+    }
   }
   // 外部光标探针（Linux/X11，同 pet/main.js）：主读数滞后/冻结时以 xdotool 为独立光标源；
   // 顺带解析 WINDOW 命中字段喂 X 层校验环与证实门
