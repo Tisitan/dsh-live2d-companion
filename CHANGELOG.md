@@ -5,7 +5,7 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 简版，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [1.2.1] - 2026-09-24
 
 ### Fixed
 
@@ -21,6 +21,9 @@
 - **托盘唤出与 second-instance 改用 `showInactive`（win32）**：standalone 托盘「显示桌宠」、
   托盘单击、两形态 `second-instance` 唤出不再抢前台焦点。证实门路径的 `show()` 不动
   （那里有「先 map 才能做命中读回」的语义）；linux 保持 `show()`。
+
+Windows 实测验证（120 / Win11 25H2）：点击模型不抢前台（双样本 GetForegroundWindow 取证）、
+聊天面板打字与三条关闭路径的焦点收回、托盘 showInactive、穿透与 desync 零回归。
 
 ### Docs
 
