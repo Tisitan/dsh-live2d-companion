@@ -38,6 +38,7 @@
     "pet/package.json",
     "pet/package-lock.json",
     "standalone/main.cjs",
+    "standalone/tray-icon.png",
     "standalone/preload.cjs",
     "standalone/preload-card.cjs",
     "standalone/server.cjs",

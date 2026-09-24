@@ -159,9 +159,9 @@ function createPassthrough(io, tuning = {}) {
       safeDuration = duration
       interState = false
       dwellAnchor = null
-      // 入态愈合必须用 toggle-through：同值 apply(true) 会被 Electron 去重吞掉
+      // 入态愈合在 Linux 必须用 toggle-through：同值 apply(true) 会被 Electron 去重吞掉
       // （X 层已失守时毫无效果——2026-09-13 生产实证：安全态入态同值写未愈，
-      // 捕获持续到守护扑杀）
+      // 捕获持续到守护扑杀）。Windows/macOS 无去重/失同步病，forceReapply 内部改直写
       forceReapply(300)
       notifyState()
       io.log(`[l2d-pet] desync persists after ${syncFails} retries, safe mode: passthrough pinned ${duration / 1000}s (level ${safeLevel})`)
@@ -170,12 +170,23 @@ function createPassthrough(io, tuning = {}) {
     forceReapply(300)
   }
 
-  /** toggle-through 强制重申：同值盲写会被 Electron 内部去重吞掉（第六轮实证：X 层被
-   *  移动重置后，同值 setIgnoreMouseEvents 毫无效果，裸 wiggle 往返 2s 不愈合）——
-   *  强制重发必须先反向再回目标值。对内部状态丢失与 X 层丢失双有效，严格优于同值重申。
-   *  @param {number} reverseMs 反向保持时长（desync 用 300 覆盖在途余波；事件重申用 120 短脉冲） */
+  /** 强制重申。分平台两路，语义差异有据：
+   *  - Linux/X11：toggle-through（先反向再回目标）——同值盲写会被 Electron 内部去重吞掉，
+   *    且 X11 input-shape 异步生效，反向脉冲是强制 XShape 真实重发的唯一手段（第六轮实证：
+   *    X 层被移动重置后同值 setIgnoreMouseEvents 毫无效果，裸 wiggle 往返 2s 不愈合）。
+   *    对内部状态丢失与 X 层丢失双有效，严格优于同值重申。
+   *  - Windows/macOS：直写一次到位。这两平台 setIgnoreMouseEvents 同步可靠，不存在 X11
+   *    input-shape 失同步病，故无「必须反向脉冲」的动机；而反向脉冲会在真实窗口上放行鼠标
+   *    ~reverseMs（一个凭空的输入捕获窗：点击会落到桌宠而非其下窗口），纯有害。
+   *  @param {number} reverseMs 反向保持时长（仅 Linux 使用；desync 用 300 覆盖在途余波；事件重申用 120 短脉冲） */
   function forceReapply(reverseMs) {
     const target = !interState
+    if (process.platform !== 'linux') {
+      // 直写：无反向脉冲即无捕获窗，故无需 quietHit 静默；记账必须走 applyPassthrough
+      // （passAppliedAt/lastApplyAt 需同步更新，否则稳态重申会立刻重复触发）
+      applyPassthrough(target)
+      return
+    }
     const epoch = ++retryEpoch
     if (target) passAppliedAt = Date.now()   // 反向重试：静默期自回锁时刻重新起算
     else passAppliedAt = 0
@@ -258,6 +269,7 @@ function createPassthrough(io, tuning = {}) {
     /** 宿主窗口 move/resize/restore 事件入口：窗口移动会重置 X 层穿透态（实证），立即
      *  toggle-through 强制重申（同值重申被 Electron 去重吞掉；120ms 短反向脉冲实证
      *  不足以完成 XShape 重发，须与 desync 同规格 300ms——第六轮实验室对照）。
+     *  上述 300ms 反向规格仅 Linux 适用（Windows/macOS 走直写，见 forceReapply）。
      *  300ms 防抖避让事件风暴；reassertMuteUntil 内（wiggle 自移编排）不动作。 */
     reassert() {
       const now = Date.now()

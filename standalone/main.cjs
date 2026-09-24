@@ -83,8 +83,10 @@ async function verifyAssets() {
 }
 
 function createTray() {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><circle cx="16" cy="16" r="15" fill="#7257d5"/><circle cx="11" cy="14" r="2" fill="white"/><circle cx="21" cy="14" r="2" fill="white"/><path d="M10 21 Q16 26 22 21" fill="none" stroke="white" stroke-width="2" stroke-linecap="round"/></svg>`
-  const icon = nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`).resize({ width: 16, height: 16 })
+  // PNG 资源而非 data:image/svg+xml —— Windows 托盘对 SVG data URL 支持不稳
+  // （nativeImage 在部分 Electron/Windows 组合下解出空图，托盘图标整块空白）。
+  // 图标由 standalone/make-tray-icon.mjs 用 node 内置 zlib 生成，无任何 npm 依赖。
+  const icon = nativeImage.createFromPath(path.join(__dirname, 'tray-icon.png')).resize({ width: 16, height: 16 })
   tray = new Tray(icon)
   tray.setToolTip('Live2D 独立桌宠')
   const stateItems = [
@@ -115,9 +117,11 @@ async function createWindow() {
     return
   }
 
-  // 与 DSH 桌宠保持同一套 overlay 架构：透明窗口固定铺满主屏，拖拽只改变
+  // 与 DSH 桌宠保持同一套 overlay 架构：透明窗口固定铺满主屏工作区，拖拽只改变
   // 画布中的模型坐标。窗口从不随物理鼠标消息移动，从根因上避开 DWM 闪烁。
-  const area = screen.getPrimaryDisplay().bounds
+  // 四元组同源取 workArea（与 pet/main.js 语义对齐）：旧实现全取 bounds，会把窗口
+  // 铺到任务栏之下（任务栏区域也被覆盖），且与 pet 侧的 workArea 语义不一致。
+  const area = screen.getPrimaryDisplay().workArea
   win = new BrowserWindow({
     width: area.width, height: area.height,
     x: area.x, y: area.y,
@@ -140,8 +144,21 @@ async function createWindow() {
   })
   // 最小化还原同样重置 X 层穿透态（同 pet/main.js）——还原后立即重申
   win.on('restore', () => passthrough.reassert())
+  // 显示器参数变化（分辨率/缩放/拔插屏）：窗口跟随新主屏工作区，渲染层 resize 自会重排。
+  // 与 pet/main.js 同款完整治疗，两形态语义对齐：
+  // 必须去抖——事件到达的那一刻 WM/DWM 转场尚未完成，此刻读到的是旧尺寸；按旧值
+  // setBounds 会让无框透明窗在瞬态里被误判 FULLSCREEN（Linux 侧 Cinnamon 随之藏掉
+  // 面板，2026-09-16 翻转本旋转实证）。定时器内重新取当下的 display 对象与工作区，
+  // 绝不复用闭包旧值；WM 若仍把本窗标成全屏则立刻自摘。
+  let metricsTimer = null
   screen.on('display-metrics-changed', () => {
-    if (win !== null && !win.isDestroyed()) win.setBounds(screen.getPrimaryDisplay().bounds)
+    clearTimeout(metricsTimer)
+    metricsTimer = setTimeout(() => {
+      if (win === null || win.isDestroyed()) return
+      win.setBounds(screen.getPrimaryDisplay().workArea)
+      // 防御：WM 若仍把本窗标成全屏，立刻自摘——面板消失的唯一成因
+      if (win && !win.isDestroyed() && win.isFullScreen()) win.setFullScreen(false)
+    }, 500)
   })
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   // 锁视觉缩放：捏合手势误判会把整页放大导致命中坐标系错位（同 pet/main.js）
@@ -244,8 +261,8 @@ async function createWindow() {
   let proofShownAt = 0
   let proofHits = 0
   let proofWarnedAt = 0
-  let passthroughProven = process.platform !== 'linux'
-  if (!passthroughProven) {
+  let passthroughProven = false   // 全平台一律「未证实」起步（fail-closed，同 pet/main.js）
+  if (process.platform === 'linux') {
     win.show()
     proofShownAt = Date.now()
     const proofTimer = setInterval(() => {
@@ -272,7 +289,42 @@ async function createWindow() {
       }
     }, 500)
   } else {
-    win.show()
+    // ── 非 Linux（win32/darwin）真读回证实门（同 pet/main.js）──
+    // 旧实现直接 show 且从不调用 isIgnoreMouseEvents()——「声称读过、其实没读」。
+    // 现改为真读回：盲写穿透后按 ~100ms 轮询读回，连续 2 拍读到 true 才登记证实并 show。
+    // 本形态无 PID 凭据文件（standalone 不走宿主的带病重生保护），故未证实只留错误日志。
+    const READBACK_INTERVAL_MS = 100
+    const READBACK_NEEDED = 2
+    const READBACK_TIMEOUT_MS = 3000
+    let readbacks = 0
+    const readbackDeadline = Date.now() + READBACK_TIMEOUT_MS
+    win.setIgnoreMouseEvents(true)
+    const readbackTimer = setInterval(() => {
+      if (passthroughProven || win === null || win.isDestroyed()) { clearInterval(readbackTimer); return }
+      win.setIgnoreMouseEvents(true)   // 每拍重申：读回门期间目标态恒为穿透
+      let ignored = false
+      try {
+        ignored = win.isIgnoreMouseEvents() === true
+      } catch (error) {
+        console.error('[l2d-pet] passthrough readback threw:', error)   // 读回抛异常=不可信，不计证实
+        ignored = false
+      }
+      if (ignored) {
+        if (++readbacks >= READBACK_NEEDED) {
+          passthroughProven = true
+          clearInterval(readbackTimer)
+          console.error('[l2d-pet] passthrough proven (electron readback)')
+          win.show()
+        }
+        return
+      }
+      readbacks = 0   // 读到 false 即归零：证实要求「连续」而非「累计」
+      if (Date.now() < readbackDeadline) return
+      clearInterval(readbackTimer)
+      // 超时未证实：留错误日志 + 降级 show（不死锁 UX；错误必须可见）
+      console.error(`[l2d-pet] passthrough readback FAILED (isIgnoreMouseEvents() never read true within ${READBACK_TIMEOUT_MS / 1000}s); showing degraded window`)
+      win.show()
+    }, READBACK_INTERVAL_MS)
   }
   // 外部光标探针（Linux/X11，同 pet/main.js）：主读数滞后/冻结时以 xdotool 为独立光标源；
   // 顺带解析 WINDOW 命中字段喂 X 层校验环与证实门

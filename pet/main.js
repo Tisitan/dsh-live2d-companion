@@ -67,15 +67,17 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(() => {
-  // overlay-pet：窗口铺满主屏、永不移动——透明窗呈现丢帧的触发条件
+  // overlay-pet：窗口铺满主屏工作区、永不移动——透明窗呈现丢帧的触发条件
   // 「按住鼠标的物理消息流 × 窗口移动」在架构上不存在。模型位置=画布坐标，
   // 由渲染层记忆（localStorage l2d-pet-pos）。指针穿透照旧按模型区域切换。
+  // 尺寸与原点必须同源取 workArea：旧实现「尺寸 workArea、原点 bounds」在任务栏位于
+  // 左/上时原点错配（bounds.x/y=0 而 workArea.x/y=任务栏厚度），窗口整体偏移出屏。
   const disp = screen.getPrimaryDisplay()
   win = new BrowserWindow({
     width: disp.workArea.width,
     height: disp.workArea.height,
-    x: disp.bounds.x,
-    y: disp.bounds.y,
+    x: disp.workArea.x,
+    y: disp.workArea.y,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -185,11 +187,15 @@ app.whenReady().then(() => {
   win.webContents.on('did-finish-load', () => passthrough.reassert())
   win.webContents.on('did-fail-load', () => passthrough.reassert())
   // ── 穿透证实门（fail-closed，22:51 事故根治）：窗口穿透未证实前不稳定显示。
-  // X 命中测试要求窗口 mapped，故流程=盲写穿透 → map → 探针命中读回校验：
+  // Linux：X 命中测试要求窗口 mapped，故流程=盲写穿透 → map → 探针命中读回校验：
   // 连续 2 拍未命中本窗=证实（凭据增写 passthroughProvenAt 供宿主判健康）；
   // 任一拍命中本窗=盲写失守 → 立即 hide + 重申 + 重试——故障会话里窗口永不
-  // 稳定显示（隐形即无害），带病重生不再捕获屏幕。非 Linux 平台 Electron 内部
-  // 读回（isIgnoreMouseEvents）即可信，登记证实后直接显示，保持原行为。──
+  // 稳定显示（隐形即无害），带病重生不再捕获屏幕。
+  // 非 Linux：Electron 读回（isIgnoreMouseEvents）本身即可信，但必须真读——旧实现
+  // 直接置 passthroughProven=true 却从未调用读回（「声称读过、其实没读」），凭据里的
+  // 证实戳是空口无凭，宿主 index.js:1463-1470 的带病重生保护据此误判健康。
+  // 现改为真读回门：盲写后轮询读回，连续 2 拍读到 true 才登记证实；超时未证实则
+  // 如实上报 + 凭据记 unproven + 降级 show。──
   // show:false 未 realize 时 native handle 可能读不出——惰性读取（创建时试一次，
   // 证实门每拍重试直到拿到）；petWid=0 期间命中比对不采信（降级为 Electron 读回）
   let petWid = 0
@@ -242,19 +248,21 @@ app.whenReady().then(() => {
   const markProven = (via) => {
     console.error(`[l2d-pet] passthrough proven (${via})`)
     resolvePetTopWid(true)   // 证实落锤前强制重解框架祖先（防 map 初期 reparent 竞态残留）
-    // 凭据增写证实证实时间戳：宿主重生前据此判「上次是否带病死亡」
+    // 凭据增写证实时间戳：宿主重生前据此判「上次是否带病死亡」。
+    // 同时落一个布尔（与时间戳同生共死）：读凭据的人不必靠「字段缺席」反推未证实。
     try {
       if (L2D_PIDFILE !== '') {
         const cur = JSON.parse(fs.readFileSync(L2D_PIDFILE, 'utf8'))
         if (cur?.pid === process.pid) {
+          cur.passthroughProven = true
           cur.passthroughProvenAt = Date.now()
           fs.writeFileSync(L2D_PIDFILE, JSON.stringify(cur))
         }
       }
     } catch { }
   }
-  let passthroughProven = process.platform !== 'linux'   // 非 Linux： Electron 读回即可信
-  if (!passthroughProven) {
+  let passthroughProven = false   // 全平台一律「未证实」起步（fail-closed）
+  if (process.platform === 'linux') {
     win.show()   // map 以验证（窗口期亚秒级；失守即收拢，见下）
     proofShownAt = Date.now()
     const proofTimer = setInterval(() => {
@@ -281,8 +289,55 @@ app.whenReady().then(() => {
       }
     }, 500)
   } else {
-    win.show()
-    markProven('electron readback (non-linux)')
+    // ── 非 Linux（win32/darwin）真读回证实门 ──
+    // 读回按 ~100ms 一拍轮询，连续 2 拍读到 true 才登记证实（单拍可能是 set 尚未落地
+    // 的瞬时真值）；超时 3s 未证实即认账——不假装成功。
+    const READBACK_INTERVAL_MS = 100
+    const READBACK_NEEDED = 2
+    const READBACK_TIMEOUT_MS = 3000
+    let readbacks = 0
+    const readbackDeadline = Date.now() + READBACK_TIMEOUT_MS
+    win.setIgnoreMouseEvents(true)
+    const readbackTimer = setInterval(() => {
+      if (passthroughProven || win === null || win.isDestroyed()) { clearInterval(readbackTimer); return }
+      win.setIgnoreMouseEvents(true)   // 每拍重申：读回门期间目标态恒为穿透
+      let ignored = false
+      try {
+        ignored = win.isIgnoreMouseEvents() === true
+      } catch (error) {
+        // 读回本身抛异常=不可信，绝不计入证实（这正是旧实现「假读回」的漏洞面）
+        console.error('[l2d-pet] passthrough readback threw:', error)
+        ignored = false
+      }
+      if (ignored) {
+        if (++readbacks >= READBACK_NEEDED) {
+          passthroughProven = true
+          clearInterval(readbackTimer)
+          markProven('electron readback')
+          win.show()
+        }
+        return
+      }
+      readbacks = 0   // 读到 false 即归零：证实要求「连续」而非「累计」
+      if (Date.now() < readbackDeadline) return
+      clearInterval(readbackTimer)
+      // 超时未证实：错误必须留痕（主进程侧上报通道=console.error → pet.log，
+      // 与渲染层 l2d-renderer-error 的落点同一通道），凭据如实记 unproven，
+      // 再降级 show 保证 UX 不死锁（用户至少能看见桌宠，而不是一个永不出现的窗）。
+      // markProven 未被调用 → passthroughProvenAt 缺席，宿主据此判「上次带病死亡」。
+      console.error(`[l2d-pet] passthrough readback FAILED (isIgnoreMouseEvents() never read true within ${READBACK_TIMEOUT_MS / 1000}s); showing degraded window, credential recorded unproven`)
+      try {
+        if (L2D_PIDFILE !== '') {
+          const cur = JSON.parse(fs.readFileSync(L2D_PIDFILE, 'utf8'))
+          if (cur?.pid === process.pid) {
+            delete cur.passthroughProvenAt   // 如实记 unproven：不留任何证实戳
+            cur.passthroughProven = false
+            fs.writeFileSync(L2D_PIDFILE, JSON.stringify(cur))
+          }
+        }
+      } catch { }
+      win.show()
+    }, READBACK_INTERVAL_MS)
   }
   // 外部光标探针（Linux/X11）：getCursorScreenPoint 读数走 Chromium 事件流缓存，
   // 穿透窗收不到事件时滞后/冻结（2026-09-12 生产实证）。xdotool 直读 X 服务器

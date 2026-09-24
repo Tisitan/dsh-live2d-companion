@@ -333,6 +333,55 @@ const wait = async (p, ms, x = 500, y = 500) => { await sleep(ms); p.tick(x, y, 
     assert(p.snapshot().safeMode === true, '⑲c3 退避后时长确实翻倍（260ms 时仍在安全态）')
   }
 
+  // ⑳ forceReapply 平台分派（Windows 兼容批次）：win32 直写一次到位，linux 保持 toggle-through
+  {
+    const realPlatform = process.platform
+    // process.platform 是 configurable 的只读属性：改写后立即回读自证生效，
+    // mock 失效时本组必然红（绝不允许「没真改却假绿」）
+    const setPlatform = (value) => {
+      Object.defineProperty(process, 'platform', { value, configurable: true })
+      if (process.platform !== value) throw new Error(`process.platform mock failed (wanted ${value}, got ${process.platform})`)
+    }
+    try {
+      // ── win32：直写，无反向脉冲（反向会凭空真实放行鼠标 ~300ms）──
+      setPlatform('win32')
+      const w = make()
+      w.setRects({ model: null, ui: [], pinned: false, dragging: false })
+      w.tick(50, 50, true)                       // 冷启动重申穿透，interState=false → target=true
+      const n0 = w.applied.length
+      w.reassertNow()
+      assert(w.applied.length === n0 + 1 && w.applied[n0] === true, '⑳a win32 强制重申直写一次到位（无 toggle 反向脉冲）')
+      await sleep(450)                           // 反向脉冲若存在会在 300ms 落地
+      assert(w.applied.length === n0 + 1, '⑳b win32 无 300ms 回摆（直写不挂定时器）')
+
+      // ── win32 交互态一侧：目标 false 同样直写，不得出现 apply(true) 脉冲 ──
+      const w2 = make()
+      w2.setRects({ model: R(400, 400, 200, 200), ui: [], pinned: false, dragging: false })
+      w2.tick(500, 500, true)
+      await wait(w2, 700)                        // 停留满 600ms 放行 → interState=true
+      assert(w2.lastNotify?.interactive === true, '⑳c win32 交互态就位')
+      const m0 = w2.applied.length
+      w2.reassertNow()
+      assert(w2.applied.length === m0 + 1 && w2.applied[m0] === false, '⑳d win32 交互态重申直写 apply(false)，无穿透脉冲')
+      await sleep(450)
+      assert(w2.applied.length === m0 + 1, '⑳e win32 交互态同样无回摆')
+
+      // ── linux：toggle-through 语义原样保持（先反向脉冲，300ms 后回目标）──
+      setPlatform('linux')
+      const l = make()
+      l.setRects({ model: null, ui: [], pinned: false, dragging: false })
+      l.tick(50, 50, true)
+      const k0 = l.applied.length
+      l.reassertNow()
+      assert(l.applied.length === k0 + 1 && l.applied[k0] === false, '㉑a linux 强制重申先发反向脉冲（toggle-through 不变）')
+      await sleep(450)
+      assert(l.applied.length === k0 + 2 && l.applied[k0 + 1] === true, '㉑b linux 300ms 后回目标穿透态（toggle-through 不变）')
+    } finally {
+      setPlatform(realPlatform)                  // 恢复真实平台，后续/外部行为不受污染
+    }
+    assert(process.platform === realPlatform, '㉑c 平台 mock 已复原')
+  }
+
   console.log(`\n结果：${passed} 通过, ${failed} 失败`)
   process.exit(failed > 0 ? 1 : 0)
 })()
