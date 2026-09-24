@@ -382,6 +382,55 @@ const wait = async (p, ms, x = 500, y = 500) => { await sleep(ms); p.tick(x, y, 
     assert(process.platform === realPlatform, '㉑c 平台 mock 已复原')
   }
 
+  // ㉒ 行为核验宽限平台分治（120 Windows 实测修复）：非 Linux 宽限必须 > 心跳周期
+  {
+    const realPlatform = process.platform
+    const setPlatform = (value) => {
+      Object.defineProperty(process, 'platform', { value, configurable: true })
+      if (process.platform !== value) throw new Error(`process.platform mock failed (wanted ${value}, got ${process.platform})`)
+    }
+    // 上游约束：输入证据唯一通道是 public/src/interact.js 的 setInterval(heartbeat, 2000)。
+    // 该常量若改动，本组断言必须同步复核（与 passthrough.cjs 的 ⚠️ 注释呼应）
+    const HEARTBEAT_MS = 2000
+    const DESYNC_MSG = 'interactive but no input reached renderer'
+    try {
+      // ── win32：生效宽限 > 心跳周期，且行为上 900ms 内不误报、超限后照常判定 ──
+      setPlatform('win32')
+      const w = make()
+      assert(w.snapshot().inputGraceMs > HEARTBEAT_MS, `㉒a win32 生效宽限 ${w.snapshot().inputGraceMs}ms > 心跳周期 ${HEARTBEAT_MS}ms（结构性误报消除）`)
+      w.setRects({ model: R(400, 400, 200, 200), ui: [], pinned: false, dragging: false })
+      w.tick(500, 500, true)
+      await wait(w, 700)                          // 停留满 600ms 放行 → interState=true
+      assert(w.lastNotify?.interactive === true, '㉒b win32 交互态就位')
+      const wlogs = w.logs.length
+      w.tick(501, 500, true)                      // 光标移动 → expectInputAt 起算
+      await wait(w, 900)                          // 900ms < 2500ms：旧 700ms 宽限下此处必炸
+      assert(!w.logs.slice(wlogs).some((l) => l.includes(DESYNC_MSG)), '㉒c win32 900ms 内不误报（旧宽限下必炸）')
+      await wait(w, 2000)                         // 累计 ~2900ms > 2500ms
+      assert(w.logs.slice(wlogs).some((l) => l.includes(DESYNC_MSG)), '㉒d win32 累计超宽限后照常判定失同步（核验未被关掉）')
+
+      // ── linux：宽限保持 700 不变，行为上 900ms 内即判定 ──
+      setPlatform('linux')
+      const l = make()
+      assert(l.snapshot().inputGraceMs === 700, '㉒e linux 生效宽限 = 700ms（零变化）')
+      l.setRects({ model: R(400, 400, 200, 200), ui: [], pinned: false, dragging: false })
+      l.tick(500, 500, true)
+      await wait(l, 700)
+      assert(l.lastNotify?.interactive === true, '㉒f linux 交互态就位')
+      const llogs = l.logs.length
+      l.tick(501, 500, true)
+      await wait(l, 900)
+      assert(l.logs.slice(llogs).some((x) => x.includes(DESYNC_MSG)), '㉒g linux 900ms 内即判定失同步（宽限 700 不变）')
+
+      // ── 显式 tuning 覆盖仍优先于平台默认（离线验证注入通道未被平台分治破坏）──
+      const t = make({ inputGraceMs: 1234 })
+      assert(t.snapshot().inputGraceMs === 1234, '㉒h tuning.inputGraceMs 显式覆盖优先于平台默认')
+    } finally {
+      setPlatform(realPlatform)
+    }
+    assert(process.platform === realPlatform, '㉒i 平台 mock 已复原')
+  }
+
   console.log(`\n结果：${passed} 通过, ${failed} 失败`)
   process.exit(failed > 0 ? 1 : 0)
 })()

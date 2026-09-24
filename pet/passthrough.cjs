@@ -12,9 +12,11 @@
 //   模型矩形停留 600ms（位移<24px）放行 / 出框滞回回收。
 //
 // 看门狗（三重 + X 层命中校验 + 稳态重申 + 冻结探针）：
-//   a) 行为核验——交互态下光标移动后 700ms 内渲染层必须有真实输入到达
+//   a) 行为核验——交互态下光标移动后须在宽限内看到渲染层真实输入到达
 //      （心跳上报的时间戳），缺失即重申施加；穿透态下渲染层仍持续收输入
-//      同为失同步证据，反向重申施加；
+//      同为失同步证据，反向重申施加。宽限按平台分治（Linux 700ms /
+//      非 Linux 2500ms）：证据唯一通道是渲染层心跳（周期 2000ms），
+//      宽限必须大于心跳周期，否则结构性误报——详见 INPUT_GRACE_MS_LINUX 注释；
 //   b) 拖拽冻结由渲染层 dragging 标志驱动，渲染层自带 30s 悬挂强制收尾；
 //   c) 连续 3 次失同步进入安全态（恒穿透 60s，防全屏捕获输入），到期自动
 //      重试恢复，再失步则重进；
@@ -33,8 +35,23 @@
 /** 停留放行阈值：模型上静止 ≥600ms 且位移 ≤24px 才放行交互（看视频路过不黑屏）。 */
 const DWELL_MS = 600
 const DWELL_SLACK = 24
-/** 行为核验宽限：交互态下光标移动后等待渲染层输入证据的时间。 */
-const INPUT_GRACE_MS = 700
+/** 行为核验宽限（Linux/X11）：交互态下光标移动后等待渲染层输入证据的时间。
+ *  收紧有利及早捕获真失同步——Linux 侧有 X 层命中读回作为独立第二通道，且
+ *  forceReapply 的 toggle-through 真能愈合（实验室实测 hover 期失同步 1 次捕获即自愈）。 */
+const INPUT_GRACE_MS_LINUX = 700
+/** 行为核验宽限（非 Linux：win32/darwin）。
+ *  **120 Windows 实测证据（2026-09-24）**：输入证据的唯一通道是渲染层心跳
+ *  `public/src/interact.js` 的 `setInterval(heartbeat, 2000)`，700ms 宽限 < 2000ms 心跳周期
+ *  = **结构性误报**（宽限内根本等不到下一拍心跳）。Windows 上 forceReapply 是直写
+ *  （无反向脉冲可愈合，见下方平台分派），但 syncFails 照常累加 → 3 次进安全态恒穿透
+ *  60s/120s 退避，桌宠点不动（实测复现两轮）。
+ *  放宽无代价：Windows 无 X11 input-shape 失同步病，本核验在 win32 上只是兜底，
+ *  多等的 1.8s 不会漏掉任何需要处置的失同步（真实失同步另有稳态重申 5s 兜底）。
+ *  ⚠️ 心跳周期（interact.js 的 2000ms）若未来改动，必须同步复核本常量。 */
+const INPUT_GRACE_MS_NON_LINUX = 2500
+/** 按平台取行为核验宽限。调用时求值而非模块加载时求值：离线验证需在同一进程内
+ *  mock process.platform 后新建决策器来覆盖两条分支（模块级常量会被加载期固化）。 */
+const defaultInputGraceMs = () => (process.platform === 'linux' ? INPUT_GRACE_MS_LINUX : INPUT_GRACE_MS_NON_LINUX)
 /** 反向核验静默期：施加穿透后等待 X11 input-shape 生效的时间。 */
 const PASS_QUIET_MS = 500
 /** 反向核验余波窗：施加穿透瞬间仍在途/队列中的输入不算失效证据（X11 shape 异步生效）。 */
@@ -81,7 +98,7 @@ const SAFE_BACKOFF_WINDOW_MS = 300000
  */
 function createPassthrough(io, tuning = {}) {
   const cursorFreezeMs = tuning.cursorFreezeMs ?? CURSOR_FREEZE_MS
-  const inputGraceMs = tuning.inputGraceMs ?? INPUT_GRACE_MS
+  const inputGraceMs = tuning.inputGraceMs ?? defaultInputGraceMs()
   const passQuietMs = tuning.passQuietMs ?? PASS_QUIET_MS
   const syncFailLimit = tuning.syncFailLimit ?? SYNC_FAIL_LIMIT
   const safeModeMs = tuning.safeModeMs ?? SAFE_MODE_MS
@@ -367,7 +384,9 @@ function createPassthrough(io, tuning = {}) {
       // ── 行为核验（Electron 无 isIgnoreMouseEvents 读回，用输入证据判失同步）──
       if (interState) {
         // 正向：交互态下有新输入到达=穿透确已解除（顺手核销+清零计数）；
-        // 光标动了却迟迟无输入，宽限期后重申施加
+        // 光标动了却迟迟无输入，宽限期后重申施加。
+        // 宽限期必须 > 心跳周期（2000ms）：证据只能搭心跳车到达，宽限短于心跳即
+        // 结构性误报（win32 实测进安全态）——取值见 INPUT_GRACE_MS_NON_LINUX
         if (lastInputAt > lastSeenInput) {
           lastSeenInput = lastInputAt
           syncFails = 0
@@ -437,10 +456,11 @@ function createPassthrough(io, tuning = {}) {
         lastHit: lastHit ? { isPet: lastHit.isPet, age: Date.now() - lastHit.at } : null,
         hitMismatch,
         lastApplyAge: Date.now() - lastApplyAt,
+        inputGraceMs,   // 生效值（平台分治/tuning 覆盖后）：排障与离线验证的可观测点
         lastTick: lastTick,
       }
     },
   }
 }
 
-module.exports = { createPassthrough, DWELL_MS, DWELL_SLACK }
+module.exports = { createPassthrough, DWELL_MS, DWELL_SLACK, INPUT_GRACE_MS_LINUX, INPUT_GRACE_MS_NON_LINUX, defaultInputGraceMs }

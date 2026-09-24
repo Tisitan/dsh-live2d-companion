@@ -96,8 +96,11 @@ app.whenReady().then(() => {
   })
   win.setAlwaysOnTop(true, 'screen-saver')
   win.setIgnoreMouseEvents(true)   // 初始恒穿透（盲写）；运行期由单源决策接管，证实门兜底
-  // Linux WM 偶发把全屏 overlay 窗最小化且 skipTaskbar 无入口找回 → 立即弹回；
-  // Windows 无框窗不触发 minimize 事件，该守卫跨平台无害
+  // Linux WM 偶发把全屏 overlay 窗最小化且 skipTaskbar 无入口找回 → 立即弹回。
+  // 该守卫跨平台**必需**（旧注释「Windows 无框窗不触发 minimize 事件」已被实测证伪）：
+  // 2026-09-24 Win11 25H2 实测——Win+D / 显示桌面会触发无框透明窗的 minimize 事件，
+  // 连续两次 Win+D 触发两次 minimize，靠本守卫 win.restore() 正常救场（未救则桌宠
+  // 无入口找回，等同消失）；同次实测显式 SC_MINIMIZE / SW_MINIMIZE 路径不触发该事件。
   win.on('minimize', () => {
     console.error('[l2d-pet] minimized by WM, restoring')
     if (!win.isDestroyed()) win.restore()

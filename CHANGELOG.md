@@ -40,6 +40,20 @@
   `nativeImage` 在部分 Electron/Windows 组合下解出空图，托盘图标整块空白；
   改为 `createFromPath('tray-icon.png')`（`nativeImage` 官方仅支持 PNG/JPEG）。
   图标由 `standalone/make-tray-icon.mjs` 用 node 内置 zlib 生成，无任何 npm 依赖。
+- **desync 看门狗宽限按平台分治（120 Windows 实测修复）**：正向核验要求「交互态下
+  光标移动后 `inputGraceMs` 内渲染层须有输入证据」，但输入证据的唯一通道是渲染层心跳
+  （`public/src/interact.js` 的 `setInterval(heartbeat, 2000)`）——700ms 宽限 < 2000ms
+  心跳周期，属**结构性误报**（宽限内根本等不到下一拍心跳）。Windows 上 `forceReapply`
+  是直写（无反向脉冲可愈合），`syncFails` 却照常累加 → 3 次进安全态恒穿透 60s/120s
+  退避，桌宠点不动（120 实测复现两轮）。现将非 Linux 平台宽限抬到 2500ms
+  （> 心跳周期 + 余量），Linux 保持 700ms 不变（Linux 有 X 层命中读回作独立第二通道，
+  且 toggle-through 真能愈合，收紧有利及早捕获真失同步）。⚠️ 心跳周期若未来改动，
+  必须同步复核该常量。
+- **minimize 守卫注释更正（实测修正注释，非行为变更）**：旧注释断言「Windows 无框窗
+  不触发 minimize 事件」，2026-09-24 Win11 25H2 实测证伪——Win+D / 显示桌面会触发
+  无框透明窗的 `minimize` 事件（连续两次 Win+D 触发两次），靠 `win.restore()` 守卫
+  正常救场；同次实测显式 `SC_MINIMIZE` / `SW_MINIMIZE` 路径不触发。守卫代码本身未改动，
+  仅注释改为如实描述，并明确该守卫跨平台**必需**。
 
 ### Changed
 
@@ -51,6 +65,15 @@
 - Windows 实机验证尚未执行（排在 120 测试项之后），本版 win32 分支改动均未经真实 Windows 桌面确认。
 - win32 下 desync 愈合写为同值写，是否会被 Electron 去重吞掉存疑——若被吞，
   该路径的失同步愈合在 Windows 上可能失效（Linux 侧由 toggle-through 规避，不受影响）。
+  2026-09-24 120 实测补充：该直写确为空转；其直接后果（desync 累加进安全态）已由本版
+  宽限分治消解误报源，但「同值写是否被去重吞掉」本身仍未定论。
+- **点击桌宠会抢前台焦点**：未设 `WS_EX_NOACTIVATE`，点桌宠后原前台窗口失焦，可能打断
+  用户正在输入的场景。是否加该扩展样式（代价：桌宠不再接受键盘输入/无法聚焦）待主人裁决。
+- **workArea 变化后存在 ~560ms 越界瞬态**：`display-metrics-changed` 的 500ms 去抖期内
+  窗口仍按旧工作区摆放，任务栏位置/分辨率切换的瞬间桌宠可能短暂越界（约 560ms 后归位）。
+  去抖本身是为规避瞬态误判 FULLSCREEN 的既定取舍，此处仅记录现象，非缺陷。
+- **托盘图标默认落入 Win11 溢出区**：Windows 11 默认隐藏新注册的托盘图标，需用户在
+  「任务栏设置 → 其他系统托盘图标」里手动固定。系统行为，非本项目缺陷。
 
 ## [1.1.0] - 2026-09-13
 
