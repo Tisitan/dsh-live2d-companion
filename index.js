@@ -797,7 +797,7 @@ export function apply(ctx, config) {
       id: myId,
       role: 'user',
       content: [{ type: 'text', text: promptText }],
-      source: { kind: 'plugin', plugin: 'dsh-live2d-companion' },
+      source: { kind: 'plugin:dsh-live2d-companion' },
     }))
     let timeoutHandle
     try {

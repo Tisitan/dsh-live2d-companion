@@ -72,8 +72,8 @@ app.whenReady().then(() => {
   // 由渲染层记忆（localStorage l2d-pet-pos）。指针穿透照旧按模型区域切换。
   const disp = screen.getPrimaryDisplay()
   win = new BrowserWindow({
-    width: disp.bounds.width,
-    height: disp.bounds.height,
+    width: disp.workArea.width,
+    height: disp.workArea.height,
     x: disp.bounds.x,
     y: disp.bounds.y,
     frame: false,
@@ -103,10 +103,20 @@ app.whenReady().then(() => {
   // 最小化还原同样重置 X 层穿透态（实验室实证：minimize/restore 循环后命中回本窗）——
   // 还原后立即重申，不等 5s 稳态重申兜底
   win.on('restore', () => passthrough.reassert())
-  // 显示器参数变化（分辨率/缩放/拔插屏）：窗口跟随新主屏，渲染层 resize 自会重排
+  // 显示器参数变化（分辨率/缩放/拔插屏）：窗口跟随新主屏，渲染层 resize 自会重排。
+  // 必须去抖：事件到达的那一刻 WM 转场尚未完成，此刻读到的是旧尺寸；按旧值 setBounds
+  // 会让无框透明窗在瞬态里被误判 FULLSCREEN，Cinnamon 随之藏掉面板
+  // （2026-09-16 翻转本旋转实证）。定时器内重新取当下的 display 对象与工作区，
+  // 绝不复用闭包旧值。
+  let metricsTimer = null
   screen.on('display-metrics-changed', () => {
-    if (win === null || win.isDestroyed()) return
-    win.setBounds(screen.getPrimaryDisplay().bounds)
+    clearTimeout(metricsTimer)
+    metricsTimer = setTimeout(() => {
+      if (win === null || win.isDestroyed()) return
+      win.setBounds(screen.getPrimaryDisplay().workArea)
+      // 防御：WM 若仍把本窗标成全屏，立刻自摘——面板消失的唯一成因
+      if (win && !win.isDestroyed() && win.isFullScreen()) win.setFullScreen(false)
+    }, 500)
   })
   // 窗口锁定：禁开新窗、禁跳转到宿主源以外的地址（加载的是 http 页面，纵深防御）
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
