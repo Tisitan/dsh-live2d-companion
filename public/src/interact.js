@@ -356,7 +356,9 @@ export function initInteract(ctx) {
   }
 
   // 拖拽悬挂看门狗：>30s 无 pointerup/pointermove 即强制收尾并补判穿透。
-  // 穿透窗永不聚焦收不到 blur（Linux 上尤甚），这是 blur 兜底失效后的最后保险
+  // 归因更正：blur 兜底失效的原因是**穿透态下窗口收不到输入/焦点事件**（X11 input-shape
+  // 把事件路由给了下层窗口），而非旧注释所称「穿透窗永不聚焦」——聚焦与 input-shape
+  // 是两回事。这是 blur 兜底失效后的最后保险
   setInterval(() => {
     if (!dragging || forceEndDrag === null || Date.now() - draggingAt <= 30000) return
     console.error('[l2d] drag stale >30s, force endDrag')

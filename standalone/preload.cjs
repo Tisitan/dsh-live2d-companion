@@ -13,6 +13,9 @@ contextBridge.exposeInMainWorld('__petBridge', {
   restart: () => ipcRenderer.send('l2d-restart'),
   getSoft: () => ipcRenderer.invoke('l2d-soft-get'),
   setSoft: (on) => ipcRenderer.send('l2d-soft-set', on),
+  // 键盘面动态放行（win32，同 pet/preload.js）：overlay 以 focusable:false 创建，
+  // 打开含输入控件的面板时临时放行；source 区分来源，主进程按 OR 汇总
+  setOverlayFocusable: (source, on) => ipcRenderer.send('l2d-overlay-focusable', source, on),
   openGame: (gameId = 'gomoku') => ipcRenderer.send('l2d-game-open', gameId),
   onCardArea: (cb) => ipcRenderer.on('l2d-game-area', (_e, bounds) => cb(bounds)),
   getCardArea: () => ipcRenderer.invoke('l2d-game-bounds'),

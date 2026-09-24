@@ -5,6 +5,38 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 简版，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Fixed
+
+- **win32 overlay 不再抢前台焦点（NOACTIVATE + 键盘面动态放行）**：overlay 窗此前从未设
+  `focusable:false`（120 实测确认：点击桌宠即抢走前台焦点，打断用户正在输入的场景；
+  全史 59 commit 均如此）。现 win32 下以 `focusable:false` 创建（隐含 `skipTaskbar:true`，
+  本就 skipTaskbar，无损失），并在打开含输入控件的面板（聊天 / 设置 / 台词编辑）时经
+  `l2d-overlay-focusable` 临时 `setFocusable(true)` + `focus()`，关闭即收回。按面板来源
+  OR 汇总——三面板彼此独立、可同时打开，单布尔会在关一个面板时误撤另一个的焦点；
+  导航/重载时清空来源表兜底，防来源表残留导致焦点永久放行。linux/darwin 零行为变化
+  （d.ts 载明 Linux 的 `focusable:false` 语义是「停止与 wm 交互、所有工作区恒置顶」，
+  与 win32 的 NOACTIVATE 不是一回事）。
+- **托盘唤出与 second-instance 改用 `showInactive`（win32）**：standalone 托盘「显示桌宠」、
+  托盘单击、两形态 `second-instance` 唤出不再抢前台焦点。证实门路径的 `show()` 不动
+  （那里有「先 map 才能做命中读回」的语义）；linux 保持 `show()`。
+
+### Docs
+
+- README「游戏中心」更正「不抢前台焦点」旧表述：卫星窗自 7becb95 起为 `focusable:true`，
+  点击会正常取得前台焦点（下拉/输入原生可用所必需）；overlay 经本次 win32 修复后不抢。
+- `public/game-card.html` 的 NOACTIVATE 注释更正为历史描述（卫星窗已非 NOACTIVATE，
+  闪烁病结论与焦点无关）。
+- `public/src/interact.js` 与 `docs/fix-2026-09-12-linux-passthrough.md` 的「穿透窗永不聚焦」
+  归因更正为「穿透态收不到输入/焦点事件」——行为不变，只修归因。
+
+### Known issues / 待实测
+
+- 运行期 `setFocusable` 切换在分数 DPI 下曾是框架扰动源（卫星窗时代因此冻结运行期切换，
+  见 README「卫星窗：分数 DPI 尺寸稳定化」）。overlay 全屏固定尺寸、`resizable:false`、
+  永不 resize，风险面不同，但**是否仍会触发框架度量对账自激须在 120 实机确认**。
+
 ## [1.2.0] - 2026-09-24
 
 覆盖自 454073b 以来的变化（53b71a3 / 73f3b84 / 42fc029）。

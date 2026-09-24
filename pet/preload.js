@@ -15,6 +15,12 @@ contextBridge.exposeInMainWorld('__petBridge', {
   restart: () => ipcRenderer.send('l2d-restart'),
   getSoft: () => ipcRenderer.invoke('l2d-soft-get'),
   setSoft: (on) => ipcRenderer.send('l2d-soft-set', on),
+  // 键盘面动态放行（win32）：overlay 以 focusable:false 创建（NOACTIVATE 语义，
+  // 治「点击桌宠抢前台」，120 实测），但 NOACTIVATE 下 input/select 吃不到键盘焦点，
+  // 故打开含输入控件的面板时临时放行。source 标识面板来源——chat / settings / quips
+  // 可同时打开，主进程按来源 OR 汇总，避免「关一个面板把另一个的焦点也撤了」。
+  // 非 win32 平台主进程直接忽略（渲染层拿不到平台信息，无脑发送即可）。
+  setOverlayFocusable: (source, on) => ipcRenderer.send('l2d-overlay-focusable', source, on),
   // 游戏卫星窗：overlay 纯装饰化，对局卡独立小窗（焦点/穿透问题物理隔离）；
   // gameId 透传主进程选窗（gomoku/chess，非法值主进程回落 gomoku）
   openGame: (gameId) => ipcRenderer.send('l2d-game-open', gameId),

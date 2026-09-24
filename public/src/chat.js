@@ -537,6 +537,9 @@ export function initChat(ctx) {
 
   function openChat() {
     panel.hidden = false
+    // 键盘面动态放行（win32）：聊天面板含文本输入，需临时放行窗口焦点
+    // （overlay 以 focusable:false 创建；非 win32 主进程忽略此消息）
+    BRIDGE?.setOverlayFocusable?.('chat', true)
     ctx.evalIgnore?.()   // 面板矩形纳入上报即由主进程解锁交互（原 setIgnore 旁路已收编）
     requestAnimationFrame(placePanelOnce)
     void refreshStatus()
@@ -550,6 +553,7 @@ export function initChat(ctx) {
 
   function closeChat() {
     panel.hidden = true
+    BRIDGE?.setOverlayFocusable?.('chat', false)
     clearInterval(statusTimer)
     statusTimer = 0
     ctx.evalIgnore?.()

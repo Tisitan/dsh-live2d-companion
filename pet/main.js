@@ -63,7 +63,10 @@ if (!gotLock) {
     } catch { }
   })
 app.on('second-instance', () => {
-  if (win !== null && !win.isDestroyed()) win.show()
+  if (win === null || win.isDestroyed()) return
+  // win32：showInactive 唤出但不抢前台焦点（120 实测修复）；其他平台保持 show() 语义
+  if (process.platform === 'win32') win.showInactive()
+  else win.show()
 })
 
 app.whenReady().then(() => {
@@ -84,6 +87,12 @@ app.whenReady().then(() => {
     resizable: false,
     skipTaskbar: true,
     hasShadow: false,
+    // 键盘面动态放行（win32 only）：以 NOACTIVATE 语义创建，治「点击桌宠抢前台」
+    // （120 实测确认：overlay 全史从未 focusable:false，历来点一下就抢走前台焦点）。
+    // focusable:false 在 win32 隐含 skipTaskbar:true（本就 skipTaskbar:true，无损失）。
+    // linux 不动：d.ts 载明其语义差异——focusable:false 会让窗口「停止与 wm 交互、
+    // 在所有工作区恒置顶」，与 win32 的 NOACTIVATE 不是一回事，改了即动 Linux 行为。
+    ...(process.platform === 'win32' ? { focusable: false } : {}),
     show: false,   // fail-closed：穿透证实前不显示（见下方证实门；22:51 全屏捕获事故根治）
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -122,6 +131,38 @@ app.whenReady().then(() => {
       // 防御：WM 若仍把本窗标成全屏，立刻自摘——面板消失的唯一成因
       if (win && !win.isDestroyed() && win.isFullScreen()) win.setFullScreen(false)
     }, 500)
+  })
+  // ── 键盘面动态放行（win32 only）──
+  // overlay 以 focusable:false 创建（NOACTIVATE：点击不抢前台，120 实测缺陷根治），
+  // 但 NOACTIVATE 下 input/select 吃不到键盘焦点，故打开含输入控件的面板时临时放行。
+  // 按来源 OR 汇总而非单布尔：chat / settings / quips 三个面板彼此独立、可同时打开，
+  // 单布尔会在「关一个面板」时把另一个仍开着的面板的焦点一并撤掉（键盘失能）。
+  // 非 win32 直接 return：linux 上 focusable 语义不同（停止与 wm 交互），必须零变化。
+  // ⚠️ 未知面（留给 120 回归）：卫星窗时代曾因「运行期 setFocusable 切换 = WS_EX_NOACTIVATE
+  // 样式变更 = 框架扰动源」在分数 DPI 下加剧自激 resize，故当时冻结了运行期切换
+  // （README「卫星窗：分数 DPI 尺寸稳定化」）。overlay 风险面不同——全屏固定尺寸、
+  // resizable:false、永不 resize、无拖拽 setBounds——但样式变更是否仍会触发框架度量对账
+  // 自激，本地（Linux）无法验证，须在 120 实机确认。
+  const focusSurfaces = new Set()
+  const syncOverlayFocusable = () => {
+    if (win === null || win.isDestroyed()) return
+    const want = focusSurfaces.size > 0
+    win.setFocusable(want)
+    if (want) win.focus()   // 面板打开=显式打字意图，顺带把焦点交给面板
+  }
+  ipcMain.on('l2d-overlay-focusable', (event, source, on) => {
+    if (process.platform !== 'win32') return
+    if (!fromPet(event) || typeof source !== 'string') return
+    if (on) focusSurfaces.add(source)
+    else focusSurfaces.delete(source)
+    syncOverlayFocusable()
+  })
+  // 安全网：导航/重载后渲染层的面板状态全部失效（来源表会残留 true → 焦点被永久放行），
+  // 清空来源表并把窗口收回 NOACTIVATE
+  win.webContents.on('did-start-loading', () => {
+    if (focusSurfaces.size === 0) return
+    focusSurfaces.clear()
+    syncOverlayFocusable()
   })
   // 窗口锁定：禁开新窗、禁跳转到宿主源以外的地址（加载的是 http 页面，纵深防御）
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))

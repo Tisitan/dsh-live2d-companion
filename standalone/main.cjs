@@ -82,6 +82,16 @@ async function verifyAssets() {
   return true
 }
 
+/** 显式唤出桌宠（托盘「显示桌宠」/ 托盘单击 / second-instance）。
+ *  win32 用 showInactive：唤出但不抢前台焦点（120 实测修复——用户从托盘叫出桌宠时
+ *  不该把正在用的窗口踢到后台）。其他平台保持 show() 语义不变。
+ *  证实门路径的 show 不走此处：那里有「必须先 map 才能做命中读回」的语义。 */
+function showPet() {
+  if (win === null || win.isDestroyed()) return
+  if (process.platform === 'win32') win.showInactive()
+  else win.show()
+}
+
 function createTray() {
   // PNG 资源而非 data:image/svg+xml —— Windows 托盘对 SVG data URL 支持不稳
   // （nativeImage 在部分 Electron/Windows 组合下解出空图，托盘图标整块空白）。
@@ -94,13 +104,13 @@ function createTray() {
     ['完成', 'done'], ['报错', 'error'], ['睡眠', 'sleeping'],
   ].map(([label, value]) => ({ label, click: () => standalone.setState(value) }))
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '显示桌宠', click: () => win?.show() },
+    { label: '显示桌宠', click: () => showPet() },
     { label: '切换状态', submenu: stateItems },
     { type: 'separator' },
     { label: '打开模型目录', click: () => shell.openPath(standalone.modelDir) },
     { label: '退出', click: () => app.quit() },
   ]))
-  tray.on('click', () => win?.show())
+  tray.on('click', () => showPet())
 }
 
 async function createWindow() {
@@ -127,6 +137,10 @@ async function createWindow() {
     x: area.x, y: area.y,
     frame: false, transparent: true, alwaysOnTop: true, resizable: false,
     skipTaskbar: true, hasShadow: false,
+    // 键盘面动态放行（win32 only，同 pet/main.js）：NOACTIVATE 创建治「点击桌宠抢前台」；
+    // focusable:false 在 win32 隐含 skipTaskbar:true（本就 true，无损失）。
+    // linux 不动（d.ts：focusable:false 语义是「停止与 wm 交互、所有工作区恒置顶」）
+    ...(process.platform === 'win32' ? { focusable: false } : {}),
     show: false,   // fail-closed：穿透证实前不显示（同 pet/main.js 证实门）
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -162,6 +176,34 @@ async function createWindow() {
       // 防御：WM 若仍把本窗标成全屏，立刻自摘——面板消失的唯一成因
       if (win && !win.isDestroyed() && win.isFullScreen()) win.setFullScreen(false)
     }, 500)
+  })
+  // ── 键盘面动态放行（win32 only，同 pet/main.js）──
+  // overlay 以 focusable:false 创建（NOACTIVATE：点击不抢前台），但 NOACTIVATE 下
+  // input/select 吃不到键盘焦点，故打开含输入控件的面板时临时放行。
+  // 按来源 OR 汇总：chat / settings / quips 可同时打开，单布尔会误撤另一面板的焦点。
+  // 非 win32 直接 return（linux 的 focusable 语义不同，必须零变化）。
+  // ⚠️ 未知面（留给 120 回归）：卫星窗时代运行期 setFocusable 切换在分数 DPI 下曾是
+  // 框架扰动源，故被冻结（README「卫星窗：分数 DPI 尺寸稳定化」）。overlay 风险面不同
+  // （全屏固定尺寸、resizable:false、永不 resize），但须在 120 实机确认无自激 resize。
+  const focusSurfaces = new Set()
+  const syncOverlayFocusable = () => {
+    if (win === null || win.isDestroyed()) return
+    const want = focusSurfaces.size > 0
+    win.setFocusable(want)
+    if (want) win.focus()   // 面板打开=显式打字意图
+  }
+  ipcMain.on('l2d-overlay-focusable', (event, source, on) => {
+    if (process.platform !== 'win32') return
+    if (!fromPet(event) || typeof source !== 'string') return
+    if (on) focusSurfaces.add(source)
+    else focusSurfaces.delete(source)
+    syncOverlayFocusable()
+  })
+  // 安全网：导航/重载后渲染层面板状态全失效，清空来源表避免焦点被永久放行
+  win.webContents.on('did-start-loading', () => {
+    if (focusSurfaces.size === 0) return
+    focusSurfaces.clear()
+    syncOverlayFocusable()
   })
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   // 锁视觉缩放：捏合手势误判会把整页放大导致命中坐标系错位（同 pet/main.js）
@@ -619,7 +661,7 @@ async function createWindow() {
 }
 
 if (gotLock) {
-  app.on('second-instance', () => win?.show())
+  app.on('second-instance', () => showPet())
   app.whenReady().then(createWindow).catch(error => {
     dialog.showErrorBox('Live2D 桌宠启动失败', String(error?.stack || error))
     app.quit()

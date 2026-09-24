@@ -797,6 +797,8 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     quipsOpen = show ?? !quipsOpen
     if (!quipsOpen) quipsPlaced = false   // 重开恢复锚定
     quipsCard.classList.toggle('open', quipsOpen)
+    // 键盘面动态放行（win32）：台词卡含预设名输入与正文编辑区，需临时放行窗口焦点
+    BRIDGE?.setOverlayFocusable?.('quips', quipsOpen)
     if (quipsOpen) { showToggle(); positionQuips(); void openQuips() }
     else scheduleHide()
     ctx.evalIgnore?.()
@@ -1863,6 +1865,8 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
 
   function openPanel() {
     panelOpen = true
+    // 键盘面动态放行（win32）：设置面板含输入控件（导入/档案/帧率等），需临时放行窗口焦点
+    BRIDGE?.setOverlayFocusable?.('settings', true)
     showToggle()
     panel.classList.add('open')
     positionPanel()
@@ -1876,6 +1880,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
     panelOpen = false
     panelPlaced = false   // 重开恢复锚定
     panel.classList.remove('open')
+    BRIDGE?.setOverlayFocusable?.('settings', false)
     scheduleHide()
     ctx.evalIgnore?.()
   }
