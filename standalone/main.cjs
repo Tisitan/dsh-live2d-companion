@@ -568,7 +568,9 @@ async function createWindow() {
         if (cardWin.isDestroyed() || !entry.expectedSize) return
         const cur = cardWin.getSize()
         if (cur[0] !== entry.expectedSize[0] || cur[1] !== entry.expectedSize[1]) {
-          cardWin.setSize(entry.expectedSize[0], entry.expectedSize[1])
+          // setSize 无法绕过固定窗口被 Electron 更新后的 min/max 约束。
+          const { x, y } = cardWin.getBounds()
+          cardWin.setBounds({ x, y, width: entry.expectedSize[0], height: entry.expectedSize[1] })
         }
       }, 80)
     })

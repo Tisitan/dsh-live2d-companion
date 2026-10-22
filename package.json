@@ -5,7 +5,7 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "node games/chess/engine.test.mjs && node games/chess/ai.test.mjs && node games/gomoku/engine.test.mjs && node games/llm-duel.test.mjs && node pet-lifecycle.test.mjs && node pet/passthrough-verify.mjs && node host-auth.test.mjs && node --test index-injection.test.mjs plugin-api.test.mjs mode-config.test.mjs && node standalone/test.cjs && node --test standalone/regression.test.cjs standalone/chat.test.cjs && node --test pet/page-reloader.test.cjs && node --test frontend-game.test.mjs frontend-stage.test.mjs"
+    "test": "node games/chess/engine.test.mjs && node games/chess/ai.test.mjs && node games/gomoku/engine.test.mjs && node games/llm-duel.test.mjs && node pet-lifecycle.test.mjs && node pet/passthrough-verify.mjs && node host-auth.test.mjs && node --test index-injection.test.mjs plugin-api.test.mjs mode-config.test.mjs && node standalone/test.cjs && node --test standalone/regression.test.cjs standalone/chat.test.cjs && node --test pet/page-reloader.test.cjs && node --test frontend-game.test.mjs frontend-stage.test.mjs frontend-interact.test.mjs"
   },
   "exports": {
     ".": "./index.js",

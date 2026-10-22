@@ -65,8 +65,10 @@ async function main() {
   await until(() => pet.isVisible(), 'visible overlay')
   pet.webContents.setAudioMuted(true)
   const workArea = screen.getPrimaryDisplay().workArea
-  assert.deepEqual(pet.getBounds(), workArea)
-  check('overlay covers primary work area', true)
+  const initialBounds = pet.getBounds()
+  // Fractional scale converts integer physical pixels to rounded DIP bounds.
+  for (const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(initialBounds[key] - workArea[key]) <= 1, 'work area ' + key)
+  check('overlay covers primary work area within one DIP rounding', true)
   check('always-on-top and fixed size', pet.isAlwaysOnTop() && !pet.isResizable())
   const prefs = pet.webContents.getLastWebPreferences()
   check('sandbox and context isolation', prefs.sandbox && prefs.contextIsolation && !prefs.nodeIntegration)
@@ -138,7 +140,7 @@ async function main() {
   app.once('will-quit', () => {
     check('normal quit removes owned PID record', !fs.existsSync(pidFile))
     console.log('WINDOW_SMOKE_RESULT=' + JSON.stringify({ platform: process.platform,
-      electron: process.versions.electron, dpi: style.dpi, requestedScale, checks,
+      electron: process.versions.electron, dpi: style.dpi, requestedScale, initialBounds, workArea, checks,
       realModelRendered: false, limitations: ['CI virtual desktop, no physical GPU/monitor validation'], success: true }))
   })
   app.quit()

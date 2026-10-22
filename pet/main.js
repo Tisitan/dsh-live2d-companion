@@ -596,7 +596,10 @@ app.whenReady().then(() => {
         if (cardWin.isDestroyed() || !entry.expectedSize) return
         const s = cardWin.getSize()
         if (s[0] !== entry.expectedSize[0] || s[1] !== entry.expectedSize[1]) {
-          cardWin.setSize(entry.expectedSize[0], entry.expectedSize[1])
+          // 固定尺寸窗偏移后，Electron 会把 min/max 约束也改为新尺寸；
+          // setSize 缩小会被该约束吞掉。与拖拽路径一样，用 setBounds 一并校正。
+          const { x, y } = cardWin.getBounds()
+          cardWin.setBounds({ x, y, width: entry.expectedSize[0], height: entry.expectedSize[1] })
         }
       }, 80)
     })
