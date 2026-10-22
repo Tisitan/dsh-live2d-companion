@@ -90,6 +90,11 @@ jobs:
       - name: Install pinned Electron test runtime
         working-directory: pet
         run: npm ci
+      # 1024x720 at 150% cannot fit a 760x650 DIP game card. Keep the primary
+      # native-window matrix on a desktop large enough for the designed card.
+      - name: Set disposable runner display resolution
+        shell: powershell
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
       - name: Verify real desktop pet and native window behavior
         env:
           L2D_SMOKE_SCALE: ${{ matrix.scale }}

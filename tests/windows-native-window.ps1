@@ -5,6 +5,8 @@ Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class WindowProbe {
+  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int left, top, right, bottom; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out Rect rect);
   [DllImport("user32.dll")] public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
@@ -20,6 +22,8 @@ if ($Operation -eq 'click') {
   Start-Sleep -Milliseconds 100
 }
 $extended = [WindowProbe]::GetWindowLongPtr([IntPtr]$WindowHandle, -20).ToInt64()
+$rect = New-Object WindowProbe+Rect
+[void][WindowProbe]::GetWindowRect([IntPtr]$WindowHandle, [ref]$rect)
 @{
   handle = $WindowHandle
   extendedStyle = $extended
@@ -28,4 +32,5 @@ $extended = [WindowProbe]::GetWindowLongPtr([IntPtr]$WindowHandle, -20).ToInt64(
   topmost = ($extended -band 0x8) -ne 0
   foreground = [WindowProbe]::GetForegroundWindow().ToInt64()
   dpi = [WindowProbe]::GetDpiForWindow([IntPtr]$WindowHandle)
+  physicalBounds = @{ x = $rect.left; y = $rect.top; width = $rect.right - $rect.left; height = $rect.bottom - $rect.top }
 } | ConvertTo-Json -Compress

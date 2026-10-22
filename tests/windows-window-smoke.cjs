@@ -46,6 +46,7 @@ async function native(win, operation = 'inspect', point = {}) {
   return JSON.parse(stdout.trim())
 }
 let server
+const cardGeometry = []
 const watchdog = setTimeout(() => { console.error('Native window smoke timed out'); app.exit(1) }, 120000)
 
 async function main() {
@@ -117,15 +118,25 @@ async function main() {
   await invoke('__petBridge.openGame("gomoku")')
   await pause(150)
   check('same game reuses one card', cards().length === 1)
+  await pause(300)
   const bounds = card.getBounds()
-  await card.webContents.executeJavaScript('__cardBridge.moveBy(-31, 19)')
-  await until(() => card.getBounds().x === bounds.x - 31, 'card move')
-  // Moving on fractional DPI can emit an intermediate frame-size change. The
-  // production guard intentionally waits 80 ms before restoring the frame.
-  await until(() => card.getSize()[0] === bounds.width && card.getSize()[1] === bounds.height, 'post-drag card size settles')
-  const moved = card.getBounds()
-  assert.deepEqual(moved, { ...bounds, x: bounds.x - 31, y: bounds.y + 19 })
-  check('card IPC drag preserves its native size', true)
+  cardGeometry.push({ phase: 'baseline', dip: bounds, native: await native(card) })
+  for (let i = 0; i < 10; i++) {
+    const before = card.getBounds(), dx = i % 2 ? 31 : -31, dy = i % 2 ? -19 : 19
+    await card.webContents.executeJavaScript(`__cardBridge.moveBy(${dx}, ${dy})`)
+    await until(() => Math.abs(card.getBounds().x - (before.x + dx)) <= 1, 'card move')
+    cardGeometry.push({ phase: 'move-' + i, dip: card.getBounds(), native: await native(card) })
+    // Moving on fractional DPI can emit an intermediate frame-size change. The
+    // production guard intentionally waits 80 ms before restoring the frame.
+    await until(() => card.getSize()[0] === bounds.width && card.getSize()[1] === bounds.height, 'post-drag card size settles')
+    await pause(300)
+    const moved = card.getBounds()
+    assert.equal(moved.width, bounds.width)
+    assert.equal(moved.height, bounds.height)
+    assert.ok(Math.abs(moved.x - (before.x + dx)) <= 1 && Math.abs(moved.y - (before.y + dy)) <= 1)
+  }
+  await pause(1000)
+  check('ten card drag cycles preserve size without cumulative drift', card.getSize()[0] === bounds.width && card.getSize()[1] === bounds.height)
   card.setSize(bounds.width + 20, bounds.height + 20)
   await until(() => card.getSize()[0] === bounds.width && card.getSize()[1] === bounds.height, 'card size guard')
   check('card size guard restores dimensions', true)
@@ -143,14 +154,14 @@ async function main() {
   app.once('will-quit', () => {
     check('normal quit removes owned PID record', !fs.existsSync(pidFile))
     console.log('WINDOW_SMOKE_RESULT=' + JSON.stringify({ platform: process.platform,
-      electron: process.versions.electron, dpi: style.dpi, requestedScale, initialBounds, workArea, checks,
+      electron: process.versions.electron, dpi: style.dpi, requestedScale, initialBounds, workArea, cardGeometry, checks,
       realModelRendered: false, limitations: ['CI virtual desktop, no physical GPU/monitor validation'], success: true }))
   })
   app.quit()
 }
 main().catch(async error => {
   console.error(error.stack)
-  console.error('WINDOW_SMOKE_RESULT=' + JSON.stringify({ checks, success: false }))
+  console.error('WINDOW_SMOKE_RESULT=' + JSON.stringify({ checks, cardGeometry, success: false }))
   clearTimeout(watchdog)
   try { await server?.close() } catch {}
   app.exit(1)
