@@ -102,9 +102,13 @@ jobs:
             echo "Release tag already exists; refusing to overwrite it." >&2
             exit 1
           fi
-          gh release create "$RELEASE_TAG" dist/*.tgz dist/*.zip dist/SHA256SUMS \
-            --target "$RELEASE_SHA" --title "Live2D Companion $RELEASE_TAG" \
-            --notes-file "docs/releases/$RELEASE_TAG.md" --draft
+          # Draft releases may defer tag creation until publication. Create the
+          # exact ref atomically first; GitHub rejects an existing tag.
+          gh api --method POST "repos/$GH_REPO/git/refs" \
+            -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$RELEASE_SHA" > /dev/null
           git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$RELEASE_SHA"
+          gh release create "$RELEASE_TAG" dist/*.tgz dist/*.zip dist/SHA256SUMS \
+            --verify-tag --title "Live2D Companion $RELEASE_TAG" \
+            --notes-file "docs/releases/$RELEASE_TAG.md" --draft
           gh release edit "$RELEASE_TAG" --draft=false --latest
