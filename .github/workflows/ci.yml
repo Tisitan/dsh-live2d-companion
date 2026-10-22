@@ -70,3 +70,27 @@ jobs:
       - name: Audit standalone lockfile
         working-directory: standalone
         run: npm audit --package-lock-only --audit-level=high
+
+  windows-desktop:
+    name: Real Electron / Windows / scale ${{ matrix.scale }}
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        scale: ['1', '1.5']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install pinned Electron test runtime
+        working-directory: pet
+        run: npm ci
+      - name: Verify real desktop pet and native window behavior
+        env:
+          L2D_SMOKE_SCALE: ${{ matrix.scale }}
+        run: node pet/node_modules/electron/cli.js tests/windows-window-smoke.cjs
