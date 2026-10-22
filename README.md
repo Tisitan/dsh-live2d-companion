@@ -381,7 +381,9 @@ export default function apply(api) {
 
 游戏卡片卫星窗在 Windows **分数缩放（125%/150%，含 RDP 会话）**下曾出现「窗口持续自动变大」：根因是 Chromium↔Windows 的框架度量对账在分数 DPI 下被窗口操作触发后**自激滚雪球**（实测每 5ms 一次 resize，760×650 起步疯长突破 2000px；与页面缩放/捏合缩放/拖拽代码均无关，探针证据：`zoomFactor=1`、`visualViewport.scale=1`、窗口物理 bounds 自增）。
 
-治疗组合（缺一不可的链条 + 一道兜底）：`hasShadow:false`（切除 DWM 阴影隐形边框——对账误差主要来源，同款配置的全屏 overlay 窗从不自激）+ 拖拽全程 `setBounds` **钉死加载完成时的实测尺寸**（`setPosition` 是对账循环的触发器）+ 冻结运行期 `setFocusable` 切换（WS_EX_NOACTIVATE 样式变更同属框架扰动源，创建态 `focusable:true` 让下拉/输入原生可用）+ **80ms 尺寸看门狗**（残留 ±1px 级抽搐的零容忍矫正）。底层 1px 对账抽搐是 Electron/Windows 深水区行为，用户态无法根除，但正反馈链已断。
+1.2.2 补测发现，仅关闭阴影仍会保留 Windows 隐藏系统边框；而 `getSize()` 在分数缩放下返回向外取整的 DIP 矩形，受窗口位置影响，不能反复当作新尺寸输入。Windows 卡片现使用 `thickFrame:false`、外框尺寸语义及固定的创建尺寸；拖动始终通过 `setBounds` 复用目标宽高。80ms 看门狗也用 `setBounds`，避免 `setSize` 被固定窗口的 min/max 约束阻止。卡片保持 `focusable:true`，输入控件正常取得焦点。
+
+默认卡片仍为 760×650；工作区更小时，创建尺寸和位置会限制在工作区内，棋盘按比例显示并允许滚动访问侧栏。已打开卡片的运行中换屏/DPI 变化仍需实机验证。Windows CI 同时记录 DIP 与原生像素：DIP 可有 1 单位舍入差异，连续拖动后的物理宽高必须保持一致。
 
 ## 许可
 

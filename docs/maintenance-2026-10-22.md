@@ -20,6 +20,8 @@
 | 桌宠重试 | loadURL 拒绝和 did-fail-load 双重计时重试 | 单一重试计时器、禁止并发加载、窗口关闭释放轮询 |
 | 拖动记忆 | 真实 Haru 拖动后保存中心落后最后一次移动，重载回跳 | 松手时实测模型边界；失焦复用收尾冲刷；pointerup/cancel/blur 三项回归及真实 XTest 拖动验证 |
 | 卡片尺寸 | 固定窗口放大后 min/max 随之变更，setSize 缩小被约束吞掉 | 宿主与独立版用 setBounds 同时保留位置并恢复预期尺寸 |
+| Windows 分数缩放 | 隐藏系统边框与读回尺寸的向外舍入导致拖动后实际变大 | 关闭 thickFrame，直接指定固定外框尺寸，避免读回值反灌；原生 HWND 像素严格比对 |
+| 小屏卡片 | 工作区小于 760×650 时窗口越界，响应式被覆盖导致控件裁切 | 创建宽高和位置限制在工作区；保留常规布局，小屏按比例显示棋盘并允许滚动 |
 
 ## GitHub 积压
 
@@ -44,7 +46,8 @@
 - 代理：官方 `deepseek-ai/deepseek-harness` 提交 `687f282e8625c6b8d11ff58211a90524be2e4317` 中 `web-document.ts` / `preload-app.ts` 原样编译，在 Electron 43.8.3 与匹配官方依赖的 44.7.0 中注册真实 `dsh-app://` 协议。验证主进程 cookie 交换、HttpOnly 隔离、API/资源/SSE、跨源拒绝、重载、DSH 首页与真实 Haru 模型挂载。测试壳只替代窗口外围 IPC，代理与预载实现没有改写。
 - 模型：Live2D 官方 CubismWebSamples `4-r.7` 的 Haru/Hiyori 和官方托管 Cubism Core 5.2。实际加载 MOC 与 2048 纹理，分别测得 84/134 个 drawable；动作改变 27 个实时参数，F03 表情与往返切换通过。模型与 Core 仅存独立测试目录，不进入源码或发布包。
 - Linux：Xvfb + Openbox + XTest，运行实际 `pet/main.js`。原生点击穿透/悬停捕获、透明像素、置顶、最小化恢复、卡片开关/去重/拖动和真实模型位置保存有行为证据；没有操作用户正在使用的显示器。
-- Windows：CI 新增实际 Electron 43.8.3 主进程与原生 HWND / 系统点击检查，100% / 150% 强制缩放覆盖输入焦点与固定尺寸窗口。软件缩放允许至多 1 DIP 的屏幕尺寸换算误差，记录实测值。
+- Windows：CI 新增实际 Electron 43.8.3 主进程与原生 HWND / 系统点击检查，1920×1080 的 100% / 150% 强制缩放及 1024×768 的 150% 小工作区覆盖输入焦点、固定尺寸与创建位置。DIP 矩形允许至多 1 单位向外舍入，十轮拖动后的原生像素宽高必须严格不变，尺寸看门狗另测恢复。
+- 卡片页面：`tests/card-layout-smoke.cjs` 在实际 Electron 中覆盖两棋种、五档视口（760×650 至 320×400）、原生滚轮、控件可达性与缩放后的落子坐标。局部 API 使用确定性 fixture，不连接 DSH。
 
 剩余边界：完整 Windows/macOS DSH Desktop 安装壳、物理 GPU/多屏拔插/系统级分数 DPI、音频和用户实际桌面。官方 Linux 无 Desktop 成品；当前真实模型测试为 SwiftShader 软件 WebGL，不据此声称硬件驱动已验收。既有 Node 18 宿主声明保留；Electron 安装工具链需要 Node 22.12 或更新。
 

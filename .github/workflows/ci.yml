@@ -87,7 +87,7 @@ jobs:
             height: 1080
           - scale: '1.5'
             width: 1024
-            height: 720
+            height: 768
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -107,3 +107,6 @@ jobs:
         env:
           L2D_SMOKE_SCALE: ${{ matrix.scale }}
         run: node pet/node_modules/electron/cli.js tests/windows-window-smoke.cjs
+      - name: Verify actual game card layout and scaled board input
+        if: matrix.scale == '1'
+        run: node pet/node_modules/electron/cli.js tests/card-layout-smoke.cjs
