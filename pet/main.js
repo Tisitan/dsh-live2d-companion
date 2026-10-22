@@ -2,6 +2,10 @@ const { app, BrowserWindow, ipcMain, screen } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
 const { createPassthrough } = require('./passthrough.cjs')
+const { createHostAuth } = require('./host-auth.cjs')
+const { createPageReloader } = require('./page-reloader.cjs')
+const AUTH_URL = process.env.L2D_AUTH_URL || ''
+delete process.env.L2D_AUTH_URL
 
 const TARGET = process.env.L2D_URL
   || ('http://127.0.0.1:3080/live2d/pet.html'
@@ -522,17 +526,22 @@ app.whenReady().then(() => {
       cardWins.delete(gameId)
     }
     const disp = screen.getPrimaryDisplay().workArea
-    const size = CARD_SIZES[gameId]
+    const desired = CARD_SIZES[gameId]
+    // workArea 与窗口尺寸均为 DIP；高缩放/小屏时缩小内容区，由卡片内部滚动。
+    const size = { width: Math.min(desired.width, disp.width), height: Math.min(desired.height, disp.height) }
     // 新窗级联偏移：默认位右下角起，按已开窗数每窗 (+28,+28) 防完全重叠；出屏回落默认位
     const baseX = disp.x + disp.width - (size.width + 16)
     const baseY = disp.y + Math.max(0, Math.round((disp.height - size.height) / 2))
     let x = baseX + cardWins.size * 28
     let y = baseY + cardWins.size * 28
     if (x + size.width > disp.x + disp.width || y + size.height > disp.y + disp.height) { x = baseX; y = baseY }
+    x = Math.max(disp.x, Math.min(x, disp.x + disp.width - size.width))
+    y = Math.max(disp.y, Math.min(y, disp.y + disp.height - size.height))
     const cardWin = new BrowserWindow({
       width: size.width,
       height: size.height,
-      useContentSize: true,   // 尺寸语义=内容区：减少客户区↔框架换算面（分数 DPI 对账稳定化）
+      // Windows 无系统边框时直接指定外框 DIP，避免内容区换算额外增加边缘。
+      useContentSize: process.platform !== 'win32',
       x, y,
       frame: false,
       alwaysOnTop: true,
@@ -541,6 +550,8 @@ app.whenReady().then(() => {
       focusable: true,           // 恒 true：setFocusable 切换在分数 DPI 下有窗口管理副作用
       backgroundColor: '#ffffff',
       hasShadow: false,          // DWM 阴影的隐形边框是分数 DPI 框架对账误差来源（overlay 窗同款配置从不自激）
+      // opaque 无框窗默认仍有 WS_THICKFRAME；去掉隐藏边框，避免分数 DPI 移动时尺寸反复换算。
+      ...(process.platform === 'win32' ? { thickFrame: false } : {}),
       roundedCorners: false,     // 减少 DWM 框架度量参与面，分数 DPI 下对账更稳（单窗案排查后保留）
       webPreferences: {
         preload: path.join(__dirname, 'preload-card.js'),
@@ -577,22 +588,29 @@ app.whenReady().then(() => {
       setTimeout(() => { if (!cardWin.isDestroyed()) cardWin.loadURL(cardUrl).catch(() => { }) }, 2000 * entry.loadRetries)
     })
     // 渲染器就绪后重锁：webContents 创建前设置的视觉缩放锁可能被首个导航静默丢弃；
-    // 同时记本窗实测尺寸（每窗一份 expectedSize，拖拽期钉死用）
+    // Windows 的 getSize 会受屏幕位置的向外舍入影响，不能反灌为下一次目标尺寸。
     cardWin.webContents.on('did-finish-load', () => {
       cardWin?.webContents.setVisualZoomLevelLimits(1, 1).catch(() => { })
-      entry.expectedSize = cardWin && !cardWin.isDestroyed() ? cardWin.getSize() : null
+      if (!cardWin.isDestroyed()) {
+        entry.expectedSize = process.platform === 'win32' ? [size.width, size.height] : cardWin.getSize()
+        if (process.platform === 'win32') {
+          const { x, y } = cardWin.getBounds()
+          cardWin.setBounds({ x, y, width: size.width, height: size.height })
+        }
+      }
       entry.loadRetries = 0
     })
-    // 尺寸看门狗（每窗一份）：分数 DPI 下 Chromium↔Windows 的框架对账会残留 ±1px 级
-    // 抽搐（雪崩已被 hasShadow:false + 拖拽钉尺寸打断），任何路径引起的尺寸偏移
-    // 80ms 平息后一律钉回本窗实测尺寸——窗口设计上固定尺寸，视觉层零容忍
+    // 尺寸看门狗：80ms 平息后恢复目标尺寸，不能用偏移后的尺寸更新目标。
     cardWin.on('resize', () => {
       clearTimeout(entry.guardTimer)
       entry.guardTimer = setTimeout(() => {
         if (cardWin.isDestroyed() || !entry.expectedSize) return
         const s = cardWin.getSize()
         if (s[0] !== entry.expectedSize[0] || s[1] !== entry.expectedSize[1]) {
-          cardWin.setSize(entry.expectedSize[0], entry.expectedSize[1])
+          // 固定尺寸窗偏移后，Electron 会把 min/max 约束也改为新尺寸；
+          // setSize 缩小会被该约束吞掉。与拖拽路径一样，用 setBounds 一并校正。
+          const { x, y } = cardWin.getBounds()
+          cardWin.setBounds({ x, y, width: entry.expectedSize[0], height: entry.expectedSize[1] })
         }
       }, 80)
     })
@@ -617,36 +635,48 @@ app.whenReady().then(() => {
   // IPC 移窗：app-region:drag 不可靠（吞点击/本版未生效），moveBy 是老桌宠验证方案；
   // 卫星窗不透明，移动无透明窗的 DWM 丢帧问题。
   // 分数 DPI 下纯 setPosition 会触发 Chromium↔Windows 尺寸对账循环（窗口疯长），
-  // 故拖拽全程用 setBounds 把尺寸钉死在加载完成时的实测值——位置照动、尺寸免谈。
+  // 故拖拽全程用 setBounds 固定目标尺寸；Windows 使用创建时请求值，避免读回舍入累积。
   ipcMain.on('l2d-game-moveby', (event, dx, dy) => {
     const entry = cardEntryBySender(event)   // 多窗反查：按 sender 找归属窗，找不到拒收
     if (!entry || entry.win.isDestroyed()) return
     if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
     const [x, y] = entry.win.getPosition()
     if (entry.expectedSize) {
-      // 拖拽钉尺寸：setBounds 同时钉住本窗加载完成时的实测尺寸（位置照动、尺寸免谈）
+      // 移动时始终复用目标尺寸，不将 getBounds/getSize 的舍入结果重新作为尺寸输入。
       entry.win.setBounds({ x: Math.round(x + dx), y: Math.round(y + dy), width: entry.expectedSize[0], height: entry.expectedSize[1] })
     } else {
       entry.win.setPosition(Math.round(x + dx), Math.round(y + dy))
     }
     pushCardArea()   // 死区跟随窗口移动
   })
-  win.on('closed', () => { win = null })
-
   // 加载自愈：宿主未就绪/重载失败时指数退避重试，不再干等 80 秒自杀——
   // 宿主晚于桌宠启动、宿主重启中途页面 404 等瞬态都能自己爬回来
-  let loadRetries = 0
-  const reloadPage = () => {
-    if (win === null || win.isDestroyed()) return
-    win.loadURL(TARGET).catch(() => { })
-  }
+  const hostAuth = createHostAuth({ session: win.webContents.session, target: TARGET, authUrl: AUTH_URL })
+  const pageReloader = createPageReloader({
+    isClosed: () => win === null || win.isDestroyed(),
+    async load() {
+      await hostAuth.ensureAuthenticated()
+      if (win !== null && !win.isDestroyed()) await win.loadURL(TARGET)
+    },
+    onError() {
+      // Never include the bootstrap URL or raw network error in logs.
+      console.error('[l2d-pet] host unavailable or login required; retrying')
+    },
+  })
+  const reloadPage = pageReloader.reload
+  let cursorTimer = null
+  let healthTimer = null
+  win.on('closed', () => {
+    pageReloader.dispose()
+    clearInterval(cursorTimer)
+    clearTimeout(healthTimer)
+    win = null
+  })
   win.webContents.on('did-fail-load', (_event, _code, _desc, _url, isMainFrame) => {
     if (!isMainFrame) return
-    const delay = Math.min(30000, 2000 * 2 ** loadRetries)
-    loadRetries += 1
-    setTimeout(reloadPage, delay)
+    pageReloader.schedule()
   })
-  win.webContents.on('did-finish-load', () => { loadRetries = 0; pageMisses = 0 })
+  win.webContents.on('did-finish-load', () => { pageReloader.loaded(); pageMisses = 0 })
   // 渲染进程崩溃/假死看门狗：直接退出释放单实例锁，比留僵尸透明窗卡死下次启动强
   win.webContents.on('render-process-gone', (_event, details) => {
     console.error(`[l2d-pet] render-process-gone: reason=${details.reason} exitCode=${details.exitCode}`)
@@ -656,12 +686,12 @@ app.whenReady().then(() => {
     console.error('[l2d-pet] renderer unresponsive')
     app.quit()
   })
-  win.loadURL(TARGET).catch(() => { })
+  void reloadPage()
 
   let lastMain = null
   let lastPush = null
   let diagTicks = 0
-  setInterval(() => {
+  cursorTimer = setInterval(() => {
     if (win === null || win.isDestroyed()) return
     const p = screen.getCursorScreenPoint()
     const mainMoved = lastMain !== null && (lastMain.x !== p.x || lastMain.y !== p.y)
@@ -679,7 +709,6 @@ app.whenReady().then(() => {
     win.webContents.send('l2d-cursor', { x: out.x, y: out.y, bounds: win.getBounds() })
   }, 33)
 
-  const origin = new URL(TARGET).origin
   let failures = 0
   let pageMisses = 0
   const probePage = async () => {
@@ -707,20 +736,24 @@ app.whenReady().then(() => {
   })
   // 自递归 tick 而非 setInterval：上一轮 fetch/探针未决时不叠并发（慢网络下计数不失真）
   const healthTick = async () => {
+    if (win === null || win.isDestroyed()) return
     try {
-      const r = await fetch(origin + '/live2d/state', { cache: 'no-store', signal: AbortSignal.timeout(5000) })
+      const r = await hostAuth.fetchState()
+      try { await r.body?.cancel() } catch { }
       failures = r.ok ? 0 : failures + 1
+      if (r.status === 401) void reloadPage()
     } catch {
       failures += 1
     }
+    if (win === null || win.isDestroyed()) return
     // 80 秒宽限（低配机重启 DSH 可能超过 40 秒）：先自愈重载页面；
     // 持续 120 秒仍不通认定宿主已死才退出（宿主下次启动会重新 spawn）
     if (failures >= 10) reloadPage()
     if (failures >= 15) app.quit()
     await probePage()
-    setTimeout(() => { void healthTick() }, 8000)
+    if (win !== null && !win.isDestroyed()) healthTimer = setTimeout(() => { void healthTick() }, 8000)
   }
-  setTimeout(() => { void healthTick() }, 8000)
+  healthTimer = setTimeout(() => { void healthTick() }, 8000)
 })
 
 app.on('window-all-closed', () => app.quit())

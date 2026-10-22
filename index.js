@@ -1,11 +1,12 @@
-import { createReadStream, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createReadStream, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { mkdir, readdir, lstat, writeFile } from 'node:fs/promises'
-import { dirname, extname, join, normalize, sep } from 'node:path'
+import { dirname, extname, join, normalize, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { registerGame, getGame, listGames, defaultQuipKey } from './games/registry.mjs'
 import { findLivePet, readPidRecord } from './pet-lifecycle.mjs'
+import { createAuthenticatedRegistrar } from './host-auth.mjs'
 import gomokuGame from './games/gomoku/index.mjs'
 import chessGame from './games/chess/index.mjs'
 
@@ -13,7 +14,7 @@ registerGame(gomokuGame)
 registerGame(chessGame)
 
 export const name = 'dsh-live2d-companion'
-export const inject = ['webServer', 'agentPresets', 'agentLoop', 'agentDefaultModel', 'settings', 'llm']
+export const inject = ['connection', 'webServer', 'agentPresets', 'agentLoop', 'agentDefaultModel', 'settings', 'llm']
 
 const PUBLIC_DIR = normalize(fileURLToPath(new URL('./public', import.meta.url)))
 const MODEL_DIR = join(PUBLIC_DIR, 'model')
@@ -24,7 +25,7 @@ const DEFAULT_MODEL = 'nori/ARGNori.model3.json'
 const MAX_SELECTION_BYTES = 64 * 1024
 const MAX_IMPORT_FILE_BYTES = 128 * 1024 * 1024
 // 显示模式切换的写入目标：本 profile 的用户补丁层（热重载，改文件即重挂载本插件）
-const PATCH_FILE = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'profiles', 'web', 'cordis.patch.yml')
+const PATCH_FILE = join(process.env.DSH_PROFILE_DIR || join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'profiles', process.env.DSH_PROFILE || 'web'), 'cordis.patch.yml')
 // 桌宠进程凭据：桌宠拿单实例锁后写、退场清理，宿主跨重启凭它收养存活实例
 const PET_PID_FILE = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'live2d-companion', 'pet.pid')
 
@@ -91,28 +92,32 @@ const DISPLAY_MODES = {
  * 块内重写 widget/pet 两行；无 config 块则补建。找不到条目返回 undefined。
  * 缩进不写死：全部从上下文行派生，用户手改过的 patch.yml（缩进风格不同）不会被写坏。
  */
-function rewriteLive2dConfig(src, cfg) {
-  const indentOf = (l) => l.match(/^\s*/)[0]
+export function rewriteLive2dConfig(src, cfg) {
+  const indentOf = line => line.match(/^[ \t]*/)[0]
+  const meaningful = line => line.trim() !== '' && !line.trimStart().startsWith('#')
   const lines = src.split('\n')
-  const idIdx = lines.findIndex((l) => /^\s*-\s*id:\s*live2d-companion\s*$/.test(l))
-  if (idIdx === -1) return undefined
-  let end = lines.length
-  for (let i = idIdx + 1; i < lines.length; i++) {
-    if (/^\s*-\s+id:/.test(lines[i]) || /^\s*-\s*insert:/.test(lines[i])) { end = i; break }
-  }
-  const block = lines.slice(idIdx, end).filter((l) => !/^\s+(widget|pet):/.test(l))
-  const configIdx = block.findIndex((l) => /^\s*config:\s*$/.test(l))
+  const ids = lines.flatMap((line, i) => /^\s*-\s*id:\s*live2d-companion\s*(?:#.*)?$/.test(line) ? [i] : [])
+  if (ids.length !== 1) return undefined
+  const idIdx = ids[0]
+  const entryIndent = indentOf(lines[idIdx])
+  let end = idIdx + 1
+  while (end < lines.length && (!meaningful(lines[end]) || indentOf(lines[end]).length > entryIndent.length)) end++
+  const block = lines.slice(idIdx, end)
+  const keyIndent = ' '.repeat(lines[idIdx].indexOf('id:'))
+  const configIdx = block.findIndex(line => indentOf(line) === keyIndent && /^config:/.test(line.trimStart()))
   if (configIdx === -1) {
-    const nameIdx = block.findIndex((l) => /^\s*name:/.test(l))
-    // 以 name 行缩进为基准补建 config 块
-    const base = indentOf(block[nameIdx === -1 ? 0 : nameIdx])
-    block.splice(nameIdx === -1 ? 1 : nameIdx + 1, 0, `${base}config:`, `${base}  widget: ${cfg.widget}`, `${base}  pet: ${cfg.pet}`)
+    block.push(`${keyIndent}config:`, `${keyIndent}  widget: ${cfg.widget}`, `${keyIndent}  pet: ${cfg.pet}`)
   } else {
-    // 键缩进沿用 config 下既有子键；没有则 config 行缩进 +2
-    const cIndent = indentOf(block[configIdx])
-    const child = block.slice(configIdx + 1).find((l) => l.trim() !== '' && indentOf(l).length > cIndent.length)
-    const kIndent = child ? indentOf(child) : cIndent + '  '
-    block.splice(configIdx + 1, 0, `${kIndent}widget: ${cfg.widget}`, `${kIndent}pet: ${cfg.pet}`)
+    // Complex/inline YAML is refused instead of being silently rewritten incorrectly.
+    if (!/^config:\s*(?:#.*)?$/.test(block[configIdx].trimStart())) return undefined
+    let configEnd = configIdx + 1
+    while (configEnd < block.length && (!meaningful(block[configEnd]) || indentOf(block[configEnd]).length > keyIndent.length)) configEnd++
+    const children = block.slice(configIdx + 1, configEnd)
+    const indents = children.filter(meaningful).map(indentOf)
+    const childIndent = indents.sort((a, b) => a.length - b.length)[0] || keyIndent + '  '
+    const kept = children.filter(line => !(indentOf(line) === childIndent && /^(widget|pet):/.test(line.trimStart())))
+    block.splice(configIdx + 1, configEnd - configIdx - 1,
+      `${childIndent}widget: ${cfg.widget}`, `${childIndent}pet: ${cfg.pet}`, ...kept)
   }
   lines.splice(idIdx, end - idIdx, ...block)
   return lines.join('\n')
@@ -133,6 +138,7 @@ const MIME = {
 }
 
 const INDEX_TAG = '<script src="/live2d/boot.js" type="module"></script>'
+const DESKTOP_INDEX_BOOTSTRAP = "void import('/live2d/boot.js').catch(e=>console.error('[l2d] desktop bootstrap failed:',e))"
 const DONE_HOLD_MS = 6000
 const ERROR_HOLD_MS = 4500
 
@@ -155,7 +161,23 @@ function normalizeModelRef(model) {
 /** Resolve a normalized model reference to its absolute file path. */
 function modelFile(ref) {
   const rel = normalizeModelRef(ref)
-  return rel === undefined ? undefined : join(MODEL_DIR, ...rel.split('/'))
+  const file = rel === undefined ? undefined : join(MODEL_DIR, ...rel.split('/'))
+  return file !== undefined && safePublicPath(file) ? file : undefined
+}
+
+/** Check every existing component, not only the leaf: directory symlinks escape a lexical prefix check. */
+function safePublicPath(file) {
+  const rel = relative(PUBLIC_DIR, file)
+  if (rel === '..' || rel.startsWith('..' + sep) || rel.startsWith(sep)) return false
+  let current = PUBLIC_DIR
+  for (const part of ['', ...rel.split(sep).filter(Boolean)]) {
+    if (part) current = join(current, part)
+    try { if (lstatSync(current).isSymbolicLink()) return false } catch (error) {
+      if (error.code === 'ENOENT') return true
+      return false
+    }
+  }
+  return true
 }
 
 /** Reject path segments that could escape the model directory or the import target. */
@@ -163,6 +185,7 @@ function safePathSegment(segment, maxLength) {
   if (typeof segment !== 'string' || segment === '' || segment === '.' || segment === '..') return false
   if (segment.length > maxLength || segment.includes('\0')) return false
   if (segment.includes('/') || segment.includes('\\') || segment.includes(':')) return false
+  if (/[<>"|?*\x00-\x1f]/.test(segment) || /[. ]$/.test(segment)) return false
   // Windows 保留名（含带后缀形式）：writeFile 必失败且会触发未捕获异常路径
   if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(segment)) return false
   return !segment.startsWith('.')
@@ -246,6 +269,7 @@ function sanitizeQuips(body) {
 }
 
 export function apply(ctx, config) {
+  const registerRoute = createAuthenticatedRegistrar(ctx)
   const configModel = normalizeModelRef(config?.model) ?? DEFAULT_MODEL
   let modelPath = configModel
   if (existsSync(SELECTION_FILE)) {
@@ -299,7 +323,9 @@ export function apply(ctx, config) {
 
   /** SSE 写帧：断连竞态下 write 可能抛 ERR_STREAM_DESTROYED，吞掉并剔除死客户端，绝不上抛宿主。 */
   function sseWrite(res, frame) {
-    try { res.write(frame) } catch { sseClients.delete(res) }
+    try {
+      if (!res.write(frame)) { sseClients.delete(res); res.destroy() }
+    } catch { sseClients.delete(res) }
   }
 
   function broadcastRaw(type, id) {
@@ -349,22 +375,26 @@ export function apply(ctx, config) {
   function isLocalWriteReq(req) {
     if (!isLocalReq(req)) return false
     const origin = req.headers.origin
-    if (!origin || origin === 'null') return true
+    if (!origin) return req.headers['sec-fetch-site'] !== 'cross-site'
+    if (origin === 'null') return false
     try {
-      const host = new URL(origin).hostname
-      return host === '127.0.0.1' || host === 'localhost' || host === '[::1]'
+      const source = new URL(origin)
+      const protocol = req.socket.encrypted ? 'https:' : 'http:'
+      return source.origin === `${protocol}//${req.headers.host}`
     } catch { return false }
   }
 
   function readJsonBody(req) {
     return new Promise((resolve, reject) => {
       let body = ''
+      let bytes = 0
       let oversized = false
       req.setEncoding('utf8')
       req.on('data', chunk => {
         if (oversized) return // 超限即停读入内存，等 end 统一拒绝
+        bytes += Buffer.byteLength(chunk, 'utf8')
         body += chunk
-        if (body.length > MAX_SELECTION_BYTES) { oversized = true; body = '' }
+        if (bytes > MAX_SELECTION_BYTES) { oversized = true; body = '' }
       })
       req.on('end', () => {
         if (oversized) {
@@ -372,7 +402,9 @@ export function apply(ctx, config) {
           return
         }
         try {
-          resolve(JSON.parse(body || '{}'))
+          const parsed = JSON.parse(body || '{}')
+          if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('expected a JSON object')
+          resolve(parsed)
         } catch (error) {
           reject(error)
         }
@@ -406,6 +438,7 @@ export function apply(ctx, config) {
   async function collectModels() {
     const models = []
     async function walk(dir, rel) {
+      if (!safePublicPath(dir)) return
       let entries
       try {
         entries = await readdir(dir, { withFileTypes: true })
@@ -513,7 +546,7 @@ export function apply(ctx, config) {
   }, { global: true })
 
   ctx.effect(() => {
-    const dispose = ctx.webServer.register({
+    const dispose = registerRoute({
       kind: 'exact',
       path: '/live2d/state-stream',
       handler(req, res) {
@@ -523,6 +556,8 @@ export function apply(ctx, config) {
           connection: 'keep-alive',
         })
         sseClients.add(res)
+        res.on('error', () => { sseClients.delete(res) })
+        res.on('close', () => { sseClients.delete(res) })
         sseWrite(res, `data: ${JSON.stringify({ state: current, model: modelPath, sessions: sessionsSnapshot() })}\n\n`)
         req.on('close', () => { sseClients.delete(res) })
       },
@@ -548,7 +583,7 @@ export function apply(ctx, config) {
     return () => clearInterval(hb)
   })
 
-  ctx.effect(() => ctx.webServer.register({
+  ctx.effect(() => registerRoute({
     kind: 'exact',
     path: '/live2d/config',
     handler(req, res) {
@@ -563,7 +598,7 @@ export function apply(ctx, config) {
 
   // 显示模式切换：改写 cordis.patch.yml 本插件 config，补丁层热重载即时重挂载。
   // pet→ 桌宠 spawn/回收随重挂载自动发生；widget→ 挂件注入随下次 index 请求生效（前端提示刷新页面）。
-  ctx.effect(() => ctx.webServer.register({
+  ctx.effect(() => registerRoute({
     kind: 'exact',
     path: '/live2d/mode',
     handler(req, res) {
@@ -578,7 +613,7 @@ export function apply(ctx, config) {
       }
       readJsonBody(req).then(parsed => {
         try {
-          const cfg = DISPLAY_MODES[parsed.mode]
+          const cfg = Object.hasOwn(DISPLAY_MODES, parsed.mode) ? DISPLAY_MODES[parsed.mode] : undefined
           if (cfg === undefined) {
             sendJson(res, 400, { error: 'mode must be one of pet/widget/both' })
             return
@@ -589,7 +624,7 @@ export function apply(ctx, config) {
           }
           const next = rewriteLive2dConfig(readFileSync(PATCH_FILE, 'utf8'), cfg)
           if (next === undefined) {
-            sendJson(res, 500, { error: 'live2d-companion entry not found in cordis.patch.yml' })
+            sendJson(res, 500, { error: 'mode switch needs one live2d-companion entry with a block-style config in cordis.patch.yml' })
             return
           }
           // 手动切到含桌宠的模式：解除 spawn 节流，确保热重挂载时桌宠立刻回来
@@ -608,7 +643,7 @@ export function apply(ctx, config) {
     },
   }))
 
-  ctx.effect(() => ctx.webServer.register({
+  ctx.effect(() => registerRoute({
     kind: 'exact',
     path: '/live2d/state',
     handler(req, res) {
@@ -616,7 +651,7 @@ export function apply(ctx, config) {
     },
   }))
 
-  ctx.effect(() => ctx.webServer.register({
+  ctx.effect(() => registerRoute({
     kind: 'exact',
     path: '/live2d/models',
     async handler(req, res) {
@@ -633,7 +668,7 @@ export function apply(ctx, config) {
     },
   }))
 
-  ctx.effect(() => ctx.webServer.register({
+  ctx.effect(() => registerRoute({
     kind: 'exact',
     path: '/live2d/model',
     handler(req, res) {
@@ -646,7 +681,7 @@ export function apply(ctx, config) {
         sendJson(res, 403, { error: 'this route is local-only' })
         return
       }
-      readJsonBody(req).then(parsed => {
+      readJsonBody(req).then(async parsed => {
         try {
           if (parsed.reset === true) {
             rmSync(SELECTION_FILE, { force: true })
@@ -658,24 +693,26 @@ export function apply(ctx, config) {
           // 删除模型目录：只删真模型目录（内含 .model3.json），当前在用则回落默认
           if (typeof parsed.delete === 'string') {
             const dir = parsed.delete
-            if (!safePathSegment(dir, 128)) {
+            const parts = splitSafeRelPath(dir)
+            if (!parts || !safePublicPath(join(MODEL_DIR, ...parts))) {
               sendJson(res, 400, { error: 'dir is invalid' })
               return
             }
-            const target = join(MODEL_DIR, dir)
+            const target = join(MODEL_DIR, ...parts)
             if (!existsSync(target)) {
               sendJson(res, 404, { error: `model dir not found: ${dir}` })
               return
             }
-            if (!readdirSync(target).some((f) => f.endsWith('.model3.json'))) {
+            if (!readdirSync(target, { withFileTypes: true }).some((f) => f.isFile() && f.name.toLowerCase().endsWith('.model3.json'))) {
               sendJson(res, 400, { error: `${dir} does not look like a model dir` })
               return
             }
             rmSync(target, { recursive: true, force: true })
             let reset = false
-            if (modelPath.startsWith(dir + '/')) {
+            if (modelPath.startsWith(parts.join('/') + '/')) {
               rmSync(SELECTION_FILE, { force: true })
-              modelPath = configModel
+              const fallback = modelFile(configModel)
+              modelPath = fallback && existsSync(fallback) ? configModel : (await collectModels())[0]?.path || ''
               broadcastModel()
               reset = true
             }
@@ -716,6 +753,7 @@ export function apply(ctx, config) {
   //   落子动画与解说语句同帧出现；解说 25s 超时/失败静默落回本地台词池，对局永不卡死
   /** 当前对局槽表：gameId → 对局条目（多窗各玩各的；页内卡按选中游戏分槽）。 */
   const gameRefs = new Map()
+  let disposed = false
   /** 旧式无 game 请求的归属槽（既有单槽语义=最近开的局）；该槽不存在时回落 gomoku。 */
   let lastGameSlot = 'gomoku'
   const fallbackSlot = () => (gameRefs.has(lastGameSlot) ? lastGameSlot : 'gomoku')
@@ -750,7 +788,7 @@ export function apply(ctx, config) {
     for (const g of targets) { try { await g.handle?.dispose() } catch { } }
   }
   // 插件重挂载/卸载时拆除全部对局 agent，防孤儿会话
-  ctx.effect(() => () => { void disposeGame() })
+  ctx.effect(() => () => { disposed = true; void disposeGame() })
 
   /** 称呼消毒：1~12 个文字/数字/常见符号，拒绝控制字符与提示词注入面。 */
   const sanitizeTitle = (raw) => (typeof raw === 'string' && /^[\p{L}\p{N} _\-~·]{1,12}$/u.test(raw.trim())) ? raw.trim() : '主人'
@@ -873,7 +911,7 @@ export function apply(ctx, config) {
     return { move, text: banter || null }
   }
 
-  ctx.effect(() => ctx.webServer.register({
+  ctx.effect(() => registerRoute({
     kind: 'exact',
     path: '/live2d/game/list',
     handler(req, res) {
@@ -882,7 +920,7 @@ export function apply(ctx, config) {
     },
   }))
 
-  ctx.effect(() => ctx.webServer.register({
+  ctx.effect(() => registerRoute({
     kind: 'exact',
     path: '/live2d/game/models',
     async handler(req, res) {
@@ -910,7 +948,7 @@ export function apply(ctx, config) {
     },
   }))
 
-  ctx.effect(() => ctx.webServer.register({
+  ctx.effect(() => registerRoute({
     kind: 'exact',
     path: '/live2d/game/presets',
     async handler(req, res) {
@@ -926,7 +964,7 @@ export function apply(ctx, config) {
     },
   }))
 
-  ctx.effect(() => ctx.webServer.register({
+  ctx.effect(() => registerRoute({
     kind: 'exact',
     path: '/live2d/game/state',
     handler(req, res) {
@@ -942,7 +980,7 @@ export function apply(ctx, config) {
   /** 开局串行闸（每游戏槽各一道）：createAgent 是异步让出点，并发 new 同槽会泄漏孤儿 agent 句柄。 */
   const newGameInFlight = new Set()
 
-  ctx.effect(() => ctx.webServer.register({
+  ctx.effect(() => registerRoute({
     kind: 'exact',
     path: '/live2d/game/new',
     handler(req, res) {
@@ -968,6 +1006,7 @@ export function apply(ctx, config) {
           }
           const userTitle = sanitizeTitle(parsed.userTitle)
           await disposeGame(gameId)   // 只拆本游戏槽：其它游戏的进行中对局不受打扰
+          if (disposed) { sendJson(res, 503, { error: 'plugin is unloading' }); return }
           const engine = def.createEngine()
           const startText = def.startLine?.(difficulty, mode)
             ?? `对局开始（${mode === 'offline' ? '本地对弈' : '在线解说'}·${DIFF_NAME[difficulty]}）。`
@@ -1013,17 +1052,18 @@ export function apply(ctx, config) {
               } catch (e) {
                 ctx.logger.warn(`live2d game: preset mount failed, bare agent fallback: ${String(e).slice(0, 200)}`)
               }
-              // 对局 agent 零工具：deny 全局工具花名册（裁剪 prompt 体积+防乱用）。
-              // 两道雷必须避：①run_code 是保留的 Code Mode 传输名，deny 它会整体 throw；
-              // ②deny 未知/作用域名也会 throw——任何一道中招 restrict 全废，所以失败必须告警不许静默
-              try {
-                const roster = agentCtx.tools.schemas().map((s) => s.name).filter((n) => n !== 'run_code')
-                if (roster.length > 0) agentCtx.tools.restrict({ deny: roster })
-              } catch (e) {
-                ctx.logger.warn(`live2d game: tool restrict failed (agent runs WITH tools!): ${String(e).slice(0, 200)}`)
-              }
+              // Restrict filters inherited/global tools, but preset-owned scoped tools remain
+              // visible in DSH. The monotonic guard denies their execution as well.
+              // Any setup failure rejects creation rather than running unrestricted.
+              agentCtx.tools.restrict({ allow: [] })
+              agentCtx.tools.guard(() => 'Live2D game commentators cannot execute tools')
             },
           })
+          if (disposed) {
+            await handle.dispose()
+            sendJson(res, 503, { error: 'plugin is unloading' })
+            return
+          }
           const g = {
             game: def, engine, ai, handle, agent: handle.agent,
             mode, difficulty, userTitle,
@@ -1046,7 +1086,7 @@ export function apply(ctx, config) {
     },
   }))
 
-  ctx.effect(() => ctx.webServer.register({
+  ctx.effect(() => registerRoute({
     kind: 'exact',
     path: '/live2d/game/move',
     handler(req, res) {
@@ -1134,7 +1174,7 @@ export function apply(ctx, config) {
 
 
 
-  ctx.effect(() => ctx.webServer.register({
+  ctx.effect(() => registerRoute({
     kind: 'exact',
     path: '/live2d/import',
     handler(req, res) {
@@ -1168,15 +1208,17 @@ export function apply(ctx, config) {
       readRawBody(req, MAX_IMPORT_FILE_BYTES).then(async buffer => {
         try {
           const target = join(MODEL_DIR, modelName, ...parts)
+          if (!safePublicPath(target)) { sendJson(res, 403, { error: 'symlink paths are not allowed' }); return }
           // 静默覆盖防御：重名导入须显式 ?overwrite=1，防误传毁模型
           if (url.searchParams.get('overwrite') !== '1' && existsSync(target)) {
             sendJson(res, 409, { error: `文件已存在：${modelName}/${parts.join('/')}（确认覆盖请加 overwrite=1）` })
             return
           }
           await mkdir(dirname(target), { recursive: true })
-          await writeFile(target, buffer)
+          await writeFile(target, buffer, { flag: url.searchParams.get('overwrite') === '1' ? 'w' : 'wx' })
           sendJson(res, 200, { imported: { model: modelName, path: parts.join('/'), bytes: buffer.length } })
         } catch (error) {
+          if (error.code === 'EEXIST') { sendJson(res, 409, { error: 'file already exists' }); return }
           // 写盘异常（锁/权限/磁盘满）兜底为 500，不许逃逸成 unhandled rejection
           sendJson(res, 500, { error: `failed to write import: ${String(error)}` })
         }
@@ -1188,7 +1230,7 @@ export function apply(ctx, config) {
 
   // 绑定档案读写：可视化编辑器保存 profile.json / 恢复自动嗅探（删除档案）。
   // profile 只收白名单形状：expressions {槽位: 表情名}、motions {槽位: [组, 序号]}、clickPool [[组, 序号]]。
-  ctx.effect(() => ctx.webServer.register({
+  ctx.effect(() => registerRoute({
     kind: 'exact',
     path: '/live2d/profile',
     handler(req, res) {
@@ -1203,8 +1245,9 @@ export function apply(ctx, config) {
       }
       readJsonBody(req).then(async parsed => {
         try {
-          const dir = typeof parsed.dir === 'string' && safePathSegment(parsed.dir, 128) ? parsed.dir : undefined
-          if (dir === undefined) {
+          const parts = splitSafeRelPath(parsed.dir)
+          const dir = parts?.join('/')
+          if (dir === undefined || !safePublicPath(join(MODEL_DIR, ...parts, 'profile.json'))) {
             sendJson(res, 400, { error: 'dir is invalid' })
             return
           }
@@ -1233,7 +1276,7 @@ export function apply(ctx, config) {
 
   // 台词预设列表：{active: 当前生效的预设名|null, presets: [预设名…]}。
   // 预设文件本体走静态路由直接读（quips-presets/<名>.json）。
-  ctx.effect(() => ctx.webServer.register({
+  ctx.effect(() => registerRoute({
     kind: 'exact',
     path: '/live2d/quips-config',
     async handler(req, res) {
@@ -1264,7 +1307,7 @@ export function apply(ctx, config) {
   //   {activate: 预设名|null}         仅切换生效预设（null=回官方默认）
   //   {delete: 预设名}                删除预设（若为生效预设则指针回 null）
   // 覆盖层与官方 quips.json 池级合并，用户自定义永不与上游更新冲突。
-  ctx.effect(() => ctx.webServer.register({
+  ctx.effect(() => registerRoute({
     kind: 'exact',
     path: '/live2d/quips',
     handler(req, res) {
@@ -1278,6 +1321,7 @@ export function apply(ctx, config) {
         return
       }
       const writeActive = async (name) => {
+        if (!safePublicPath(QUIPS_ACTIVE_FILE)) throw new Error('symlink paths are not allowed')
         await writeFile(QUIPS_ACTIVE_FILE, JSON.stringify({ active: name }, null, 2) + '\n')
       }
       readJsonBody(req).then(async parsed => {
@@ -1296,6 +1340,9 @@ export function apply(ctx, config) {
               sendJson(res, 400, { error: 'delete is invalid' })
               return
             }
+            if (!safePublicPath(join(QUIPS_PRESETS_DIR, parsed.delete + '.json'))) {
+              sendJson(res, 403, { error: 'symlink paths are not allowed' }); return
+            }
             rmSync(join(QUIPS_PRESETS_DIR, parsed.delete + '.json'), { force: true })
             let active = null
             try { active = JSON.parse(readFileSync(QUIPS_ACTIVE_FILE, 'utf8'))?.active } catch { }
@@ -1307,6 +1354,9 @@ export function apply(ctx, config) {
             if (!safePathSegment(parsed.save, 64)) {
               sendJson(res, 400, { error: 'preset name is invalid' })
               return
+            }
+            if (!safePublicPath(join(QUIPS_PRESETS_DIR, parsed.save + '.json'))) {
+              sendJson(res, 403, { error: 'symlink paths are not allowed' }); return
             }
             const clean = sanitizeQuips(parsed.data)
             if (clean === undefined) {
@@ -1329,7 +1379,7 @@ export function apply(ctx, config) {
     },
   }))
 
-  ctx.effect(() => ctx.webServer.register({
+  ctx.effect(() => registerRoute({
     kind: 'prefix',
     path: '/live2d',
     async handler(req, res) {
@@ -1349,7 +1399,7 @@ export function apply(ctx, config) {
       let rel = pathname.slice('/live2d'.length)
       if (rel === '' || rel === '/') rel = '/pet.html'
       const file = normalize(join(PUBLIC_DIR, rel))
-      if (file !== PUBLIC_DIR && !file.startsWith(PUBLIC_DIR + sep)) {
+      if (!safePublicPath(file)) {
         res.writeHead(403)
         res.end()
         return
@@ -1385,6 +1435,17 @@ export function apply(ctx, config) {
   if (config?.widget !== false) {
     ctx.effect(() => ctx.webServer.tapIndex(html =>
       html.includes(INDEX_TAG) ? html : html.replace('</body>', `${INDEX_TAG}</body>`)))
+    // 桌面壳通过 IPC 收集可序列化的注入行，不执行 HTTP index 的 tapIndex 变换。
+    // 内联脚本用动态 import 加载模块；script-src 行只支持经典脚本。
+    ctx.on('webserver/index-inject', (table) => {
+      if (!Array.isArray(table)) return
+      if (table.some(row => row?.kind === 'script' && row?.text === DESKTOP_INDEX_BOOTSTRAP)) return
+      table.push({
+        kind: 'script',
+        placement: 'body',
+        text: DESKTOP_INDEX_BOOTSTRAP,
+      })
+    })
   }
 
   if (config?.pet === true) {
@@ -1407,13 +1468,15 @@ export function apply(ctx, config) {
       // spawn 主路径（effect 首拉与意外退场重拉共用）：exit 时区分「卸载处置」与「意外死亡」——
       // 卸载路径 schedulePetKill 已先把 managedPetPid 置 null，exit 时判 false 不重拉
       const spawnPet = () => {
-        const petUrl = `http://127.0.0.1:${ctx.webServer.port}/live2d/pet.html`
+        const hostOrigin = ctx.webServer.getOrigin()
+        const petUrl = new URL('/live2d/pet.html', hostOrigin).href
+        const authUrl = ctx.connection.authenticatedUrl(new URL('/', hostOrigin).href)
         const logFd = openPetLogFd(ctx.logger)
         const child = spawn(exe, ['.'], {
           cwd: petDir,
           detached: true,
           stdio: logFd === null ? 'ignore' : ['ignore', logFd, logFd],
-          env: { ...process.env, L2D_URL: petUrl, L2D_PIDFILE: PET_PID_FILE },
+          env: { ...process.env, L2D_URL: petUrl, L2D_AUTH_URL: authUrl, L2D_PIDFILE: PET_PID_FILE },
         })
         // 子进程已继承 fd 副本，宿主侧立即关闭防泄漏
         if (logFd !== null) { try { closeSync(logFd) } catch { } }

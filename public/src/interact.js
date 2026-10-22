@@ -304,7 +304,8 @@ export function initInteract(ctx) {
       flushMove()  // 收尾冲刷：指针停在最后一帧的位移不丢
       if (drag.moved) {
         // 位置记忆 = 模型中心画布坐标（overlay 架构：窗口永不动，模型即位置）
-        const b = ctx.modelBounds()
+        // 最后一笔位移可能早于下一次 ticker；帧缓存仍是旧位置，落盘必须实测。
+        const b = ctx.model.getBounds()
         store.setPetPos({ cx: b.x + b.width / 2, cy: b.y + b.height / 2 })
         ctx.setExpr(ctx.stateExpr())
       } else if (e?.type === 'pointerup') {
@@ -341,15 +342,7 @@ export function initInteract(ctx) {
     })
     box.addEventListener('pointerup', endDrag)
     box.addEventListener('pointercancel', endDrag)
-    window.addEventListener('blur', () => {
-      if (drag?.moved) {
-        const b = ctx.modelBounds()
-        store.setPetPos({ cx: b.x + b.width / 2, cy: b.y + b.height / 2 })
-      }
-      drag = null
-      dragging = false
-      ctx.evalIgnore()   // blur 兜底收尾同样补判（穿透窗上 blur 可能收不到，看门狗兜底）
-    })
+    window.addEventListener('blur', () => endDrag())
     forceEndDrag = () => endDrag()
   } else {
     box.addEventListener('pointerup', (e) => { if (!tryPat(e.clientX, e.clientY)) clickReact() })

@@ -8,7 +8,7 @@ The standalone source does not distribute Live2D models, `live2dcubismcore.min.j
 
 ## Setup on Windows
 
-1. Install Node.js 18 or later.
+1. Install Node.js 22.12 or later (required by Electron 43.8.3).
 2. Obtain `live2dcubismcore.min.js` from Live2D's official distribution and place it in `public/vendor/`.
 3. Run `standalone/setup.cmd`, then `standalone/start.cmd`.
 4. On first launch, copy a complete Cubism 4/5 model folder into the model directory shown by the app.

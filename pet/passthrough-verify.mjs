@@ -28,6 +28,13 @@ const R = (x, y, w, h) => ({ x, y, w, h })
 const wait = async (p, ms, x = 500, y = 500) => { await sleep(ms); p.tick(x, y, false) }
 
 ;(async () => {
+  // ①–⑲ 验证 Linux 的 toggle-through/700ms 宽限语义；与运行测试的主机平台无关。
+  // 保留完整属性描述符，失败或异常也恢复原平台，后续分平台用例仍各自显式 mock。
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+  try {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    if (process.platform !== 'linux') throw new Error('Linux baseline platform mock failed')
+
   // ① 空矩形集：恒穿透（首 tick 冷启动重申=穿透）
   {
     const p = make()
@@ -332,6 +339,11 @@ const wait = async (p, ms, x = 500, y = 500) => { await sleep(ms); p.tick(x, y, 
     await sleep(260); p.tick(50, 50, false)
     assert(p.snapshot().safeMode === true, '⑲c3 退避后时长确实翻倍（260ms 时仍在安全态）')
   }
+
+  } finally {
+    Object.defineProperty(process, 'platform', originalPlatform)
+  }
+  assert(process.platform === originalPlatform.value, '⑲e Linux 基线测试结束后恢复原平台')
 
   // ⑳ forceReapply 平台分派（Windows 兼容批次）：win32 直写一次到位，linux 保持 toggle-through
   {

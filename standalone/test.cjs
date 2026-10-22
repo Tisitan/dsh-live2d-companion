@@ -34,7 +34,6 @@ async function main() {
   assert.match(mainSource, /const CARD_SIZES = \{/)
   assert.match(mainSource, /const normalizeGameId = /)
   assert.match(mainSource, /const cardEntryBySender = /)
-  assert.match(mainSource, /useContentSize:\s*true/)
   assert.match(mainSource, /hasShadow:\s*false/)
   assert.match(mainSource, /expectedSize\[0\], height: entry\.expectedSize\[1\]/)
   assert.match(mainSource, /searchParams\.set\('game', gameId\)/)
@@ -81,7 +80,11 @@ async function main() {
   assert.match(preloadSource, /restart/)
 
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'l2d-standalone-test-'))
-  const publicDir = path.resolve(__dirname, '..', 'public')
+  const publicDir = path.join(dataDir, 'public')
+  fs.cpSync(path.resolve(__dirname, '..', 'public'), publicDir, { recursive: true,
+    filter: source => !['vendor', 'model'].includes(path.basename(source)),
+  })
+  fs.cpSync(path.resolve(__dirname, '..', 'games'), path.join(dataDir, 'games'), { recursive: true })
   const server = await createStandaloneServer({ publicDir, dataDir })
   const adapterFile = path.join(dataDir, 'adapter.json')
   try {
@@ -155,7 +158,7 @@ async function main() {
     assert.equal(allProfiles.profiles.filter(item => item.model === 'test-model/test.model3.json').length, 2)
     const seedDiary = await fetch(server.origin + '/live2d/diary/save', {
       method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
-      body: JSON.stringify({ summary: '今天一起去了海边捡贝壳。' }),
+      body: JSON.stringify({ profileId, summary: '今天一起去了海边捡贝壳。' }),
     })
     assert.equal(seedDiary.status, 200)
     const gameCardPage = await fetch(server.origin + '/live2d/game-card.html')
@@ -181,7 +184,7 @@ async function main() {
     const chatPromise = fetch(server.origin + '/live2d/chat', {
       method: 'POST',
       headers: { ...browserAuth, 'content-type': 'application/json' },
-      body: JSON.stringify({ message: '还记得我们一起下棋吗？' }),
+      body: JSON.stringify({ profileId, message: '还记得我们一起下棋吗？' }),
     })
     let chatJobResponse
     for (let attempt = 0; attempt < 20; attempt++) {
@@ -210,7 +213,7 @@ async function main() {
     const unrelatedChatPromise = fetch(server.origin + '/live2d/chat', {
       method: 'POST',
       headers: { ...browserAuth, 'content-type': 'application/json' },
-      body: JSON.stringify({ message: '今天的天气怎么样？' }),
+      body: JSON.stringify({ profileId, message: '今天的天气怎么样？' }),
     })
     let unrelatedJobResponse
     for (let attempt = 0; attempt < 20; attempt++) {
@@ -231,7 +234,7 @@ async function main() {
     const diaryRecallPromise = fetch(server.origin + '/live2d/chat', {
       method: 'POST',
       headers: { ...browserAuth, 'content-type': 'application/json' },
-      body: JSON.stringify({ message: '海边捡贝壳好玩吗？' }),
+      body: JSON.stringify({ profileId, message: '海边捡贝壳好玩吗？' }),
     })
     let diaryRecallResponse
     for (let attempt = 0; attempt < 20; attempt++) {
@@ -405,7 +408,7 @@ async function main() {
     const pluginChatPromise = fetch(server.origin + '/live2d/chat', {
       method: 'POST',
       headers: { ...browserAuth, 'content-type': 'application/json' },
-      body: JSON.stringify({ message: '测试插件聊天' }),
+      body: JSON.stringify({ profileId, message: '测试插件聊天' }),
     })
     const pluginChatResult = await Promise.race([
       pluginChatPromise,
@@ -477,7 +480,7 @@ async function main() {
     const diarySummary = await Promise.race([
       fetch(server.origin + '/live2d/diary/summarize', {
         method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
-        body: JSON.stringify({ messages: [{ role: 'user', text: '今天一起下棋了' }, { role: 'assistant', text: '我玩得很开心。' }] }),
+        body: JSON.stringify({ profileId, messages: [{ role: 'user', text: '今天一起下棋了' }, { role: 'assistant', text: '我玩得很开心。' }] }),
       }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('OpenCode diary summary timed out')), 5000)),
     ])
@@ -491,7 +494,7 @@ async function main() {
 
     const diarySave = await fetch(server.origin + '/live2d/diary/save', {
       method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
-      body: JSON.stringify({ summary: '今天测试了通用角色档案。' }),
+      body: JSON.stringify({ profileId, summary: '今天测试了通用角色档案。' }),
     })
     assert.equal(diarySave.status, 200)
     const diaryResult = await diarySave.json()
@@ -557,7 +560,7 @@ async function main() {
     const semanticChat = await Promise.race([
       fetch(server.origin + '/live2d/chat', {
         method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
-        body: JSON.stringify({ message: '棋盘上的对局还记得吗？' }),
+        body: JSON.stringify({ profileId, message: '棋盘上的对局还记得吗？' }),
       }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('OpenCode semantic memory timed out')), 5000)),
     ])
@@ -582,7 +585,7 @@ async function main() {
     const fallbackChat = await Promise.race([
       fetch(server.origin + '/live2d/chat', {
         method: 'POST', headers: { ...browserAuth, 'content-type': 'application/json' },
-        body: JSON.stringify({ message: '还记得我们下围棋吗？' }),
+        body: JSON.stringify({ profileId, message: '还记得我们下围棋吗？' }),
       }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('OpenCode memory fallback timed out')), 5000)),
     ])
@@ -610,6 +613,7 @@ async function main() {
   } finally {
     await server.close()
     assert.equal(fs.existsSync(adapterFile), false)
+    fs.rmSync(dataDir, { recursive: true, force: true })
   }
 }
 

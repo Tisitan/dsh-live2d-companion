@@ -1134,6 +1134,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
       setProfileStatus('角色档案已保存并启用')
       ctx.showBubble?.('角色档案已经准备好了。', 2600, 2)
     }
+    ctx.emit?.('profile', data.active)
     return data.active
   }
   async function importProfileFiles(kind, files) {
@@ -1180,6 +1181,7 @@ body.l2d-roomy #l2d-viewer .l2d-state-btn { padding: 6px 14px; font-size: 13px; 
       if (!response.ok || !data.active) throw new Error(data.error || '档案切换失败')
       if (data.active.model !== ctx.modelPath) await ctx.switchModel(data.active.model)
       await loadProfiles(data.active.id)
+      ctx.emit?.('profile', data.active)
     } catch (error) { setProfileStatus(error.message, true) }
   })
   panel.querySelector('.l2d-profile-save').addEventListener('click', () => {

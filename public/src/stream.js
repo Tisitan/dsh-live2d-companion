@@ -55,7 +55,7 @@ export function initStream(ctx) {
         }
         // 他窗口发起的模型热切换广播（首帧快照同含）；switchModel 对同路径/并发幂等。
         // 注意与 state 判定并列而非 else-if：首帧同时携带 model 与 state，两者都要处理。
-        if (typeof data.model === 'string' && data.model !== ctx.modelPath) {
+        if (typeof data.model === 'string') {
           void ctx.switchModel(data.model).catch(() => { })
         }
         // 聚合覆盖条件：多会话时聚合即权威；单会话时须等 raw 通道静默超时

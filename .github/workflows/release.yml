@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  create:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: >-
+      (github.event_name == 'workflow_dispatch' || github.event.ref_type == 'branch') &&
+      startsWith(github.ref_name, 'release/v')
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a merged commit and matching stable version
+        id: version
+        env:
+          RELEASE_BRANCH: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$RELEASE_SHA" origin/main
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { readFileSync, appendFileSync, existsSync } from 'node:fs'
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
+          assert.equal(pkg.name, 'dsh-live2d-companion')
+          assert.match(pkg.version, /^\d+\.\d+\.\d+$/)
+          const tag = `v${pkg.version}`
+          assert.equal(process.env.RELEASE_BRANCH, `release/${tag}`)
+          assert.match(process.env.RELEASE_SHA, /^[a-f0-9]{40}$/)
+          assert.ok(existsSync(`docs/releases/${tag}.md`), 'release notes are required')
+          appendFileSync(process.env.GITHUB_OUTPUT, `tag=${tag}\nsha=${process.env.RELEASE_SHA}\n`)
+          NODE
+
+  validate:
+    needs: verify
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  publish:
+    needs: [verify, validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Build and verify release archives
+        env:
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir dist
+          npm pack --ignore-scripts --pack-destination dist --json > dist/pack.json
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { readFileSync } from 'node:fs'
+          const [pack] = JSON.parse(readFileSync('dist/pack.json', 'utf8'))
+          assert.equal(`v${pack.version}`, process.env.RELEASE_TAG)
+          assert.equal(pack.filename, `dsh-live2d-companion-${pack.version}.tgz`)
+          const files = new Set(pack.files.map(file => file.path))
+          for (const file of ['index.js', 'host-auth.mjs', 'pet/main.js', 'pet/host-auth.cjs', 'pet/page-reloader.cjs', 'standalone/server.cjs']) assert.ok(files.has(file))
+          for (const file of files) {
+            assert.ok(!/(^|\/)node_modules\//.test(file), file)
+            assert.ok(!/^public\/(model\/|vendor\/live2dcubismcore\.min\.js$)/.test(file), file)
+          }
+          NODE
+          version="${RELEASE_TAG#v}"
+          git archive --format=zip --prefix="dsh-live2d-companion-${version}/" -o "dist/dsh-live2d-companion-${version}-source.zip" HEAD
+          (cd dist && sha256sum ./*.tgz ./*.zip > SHA256SUMS)
+      - name: Publish verified archives without overwriting an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+          RELEASE_SHA: ${{ needs.verify.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if test -n "$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")"; then
+            echo "Release tag already exists; refusing to overwrite it." >&2
+            exit 1
+          fi
+          # Draft releases may defer tag creation until publication. Create the
+          # exact ref atomically first; GitHub rejects an existing tag.
+          gh api --method POST "repos/$GH_REPO/git/refs" \
+            -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$RELEASE_SHA" > /dev/null
+          git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$RELEASE_SHA"
+          gh release create "$RELEASE_TAG" dist/*.tgz dist/*.zip dist/SHA256SUMS \
+            --verify-tag --title "Live2D Companion $RELEASE_TAG" \
+            --notes-file "docs/releases/$RELEASE_TAG.md" --draft
+          gh release edit "$RELEASE_TAG" --draft=false --latest

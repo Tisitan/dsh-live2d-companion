@@ -308,16 +308,28 @@ export function attachGame(ctx) {
   let rafId = 0
   /** 走子请求在途闸：轮询响应在闸内不得覆盖本地 state（迟到快照会抹 busy/回退棋盘/骗回滚删真子） */
   let moveInFlight = false
+  let moveRequest = null
+  let viewGeneration = 0
+  let stateRequestSeq = 0
+  let creating = false
+  function invalidateView() {
+    viewGeneration++
+    moveRequest?.controller.abort()
+    moveRequest = null
+    moveInFlight = false
+    creating = false
+    fx = null
+  }
   /** 已播报解说条数（计数制取代 prevCount 传参：轮询整体替换 state 后也不重播/漏播） */
   let spokenCount = 0
   /** 最近一次状态拉取错误（renderStatus 优先展示，不然紧随的 render 会把失败文案刷掉） */
   let lastError = ''
 
   /** 激活某游戏的渲染器（游戏切换/新局/对账时调用）。 */
-  async function activateRenderer(id) {
+  async function activateRenderer(id, generation = viewGeneration) {
     if (id === activeGameId) return
     const r = await ensureRenderer(id)
-    if (!r) return
+    if (!r || generation !== viewGeneration || id !== selectedGame) return
     activeGameId = id
     activeRenderer = r
     fx = null
@@ -332,7 +344,7 @@ export function attachGame(ctx) {
     cancelAnimationFrame(rafId)
     renderStatus()
     renderLog()
-    newBtn.disabled = !!state?.busy
+    newBtn.disabled = creating || !!state?.busy
     // 两道保险：①state.game 与活跃渲染器错配（切游戏的异步窗口）直接跳帧等就位；
     // ②draw 全程隔离——渲染器画崩绝不能带走走子闸/轮询（曾致卡片硬死需重开）
     if (activeRenderer && state && (!state.game || state.game === activeGameId)) {
@@ -389,13 +401,14 @@ export function attachGame(ctx) {
         chip.title = `下一局玩「${g.name ?? g.id}」（进行中的对局不受影响）`
         chip.addEventListener('click', () => {
           if (isCardWin) return   // 卫星窗锁定：chips 已隐藏，防御性守卫（切换走 🎮 菜单另开新窗）
+          invalidateView()
           selectedGame = g.id
+          state = null
           savePrefs()
           applyProfile()          // 档案联动：强调色随游戏切换
-          moveInFlight = false   // 已切走：旧局在途保护作废，立即改看新游戏槽
           void refreshState()   // 立即拉该游戏槽：有局续局显示、无局 idle 开局引导
           chipsBox.querySelectorAll('.l2d-game-chip').forEach((c) => c.classList.toggle('on', c === chip))
-          void ensureRenderer(g.id)   // 预载渲染器
+          void activateRenderer(g.id).then(render)
         })
         chipsBox.appendChild(chip)
       }
@@ -446,24 +459,28 @@ export function attachGame(ctx) {
   }
 
   async function refreshState() {
+    const generation = viewGeneration
+    const requestedGame = selectedGame
+    const sequence = ++stateRequestSeq
+    const stale = () => generation !== viewGeneration || requestedGame !== selectedGame || sequence !== stateRequestSeq
     try {
       // 槽查询：按当前选中游戏拉对应对局（卫星窗=锁定游戏，页内卡=chip 选中）
-      const r = await fetch(`${BASE}/game/state?game=${encodeURIComponent(selectedGame)}`, { cache: 'no-store' })
+      const r = await fetch(`${BASE}/game/state?game=${encodeURIComponent(requestedGame)}`, { cache: 'no-store' })
       if (r.ok) {
         const d = await r.json()
         // 走子在途：迟到轮询快照不得覆盖（会抹 busy/回退棋盘/骗乐观回滚删真子）
         // 过时槽快照（等待期间切了游戏）同样丢弃，防旧局画面糊到新游戏上
-        if (moveInFlight || (d.game && d.game !== selectedGame)) { render(); return }
+        if (stale() || moveInFlight || creating || (d.game && d.game !== selectedGame)) return
         state = d
-        if (d.game && d.game !== activeGameId) void activateRenderer(d.game).then(render)
+        if (d.game && d.game !== activeGameId) void activateRenderer(d.game, generation).then(render)
         lastError = ''
-      } else if (state === null) {
+      } else if (!stale() && state === null) {
         lastError = '宿主拒绝了状态读取（HTTP ' + r.status + '）'
       }
     } catch {
-      if (state === null) lastError = '与宿主失联…检查 DSH 是否在运行'
+      if (!stale() && state === null) lastError = '与宿主失联…检查 DSH 是否在运行'
     }
-    render()
+    if (!stale()) render()
   }
 
   async function loadPresets() {
@@ -499,11 +516,16 @@ export function attachGame(ctx) {
   }
 
   newBtn.addEventListener('click', async () => {
+    if (creating) return
     if (modeSelect.value === 'offline' && diffSelect.value === 'alphago') {
       lastError = '阿尔法狗要在线模式哦——它由你的模型亲自执子；切「在线对弈」再来'
       render()
       return
     }
+    invalidateView()
+    const generation = viewGeneration
+    const requestedGame = selectedGame
+    creating = true
     newBtn.disabled = true
     statusEl.textContent = '正在开局…'
     try {
@@ -511,7 +533,7 @@ export function attachGame(ctx) {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          game: selectedGame,
+          game: requestedGame,
           preset: presetSelect.value || undefined,
           model: modelSelect.value || undefined,
           mode: modeSelect.value,
@@ -520,20 +542,24 @@ export function attachGame(ctx) {
         }),
       })
       const d = await r.json().catch(() => ({}))
+      if (generation !== viewGeneration || requestedGame !== selectedGame) return
       if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status)
-      await activateRenderer(d.game ?? selectedGame)
+      await activateRenderer(d.game ?? requestedGame, generation)
+      if (generation !== viewGeneration || requestedGame !== selectedGame) return
       activeRenderer?.reset?.()   // 同棋种连开新局也要清渲染器选中态（activate 同 id 会早退）
       spokenCount = 0
       lastError = ''
       state = d
     } catch (error) {
+      if (generation !== viewGeneration || requestedGame !== selectedGame) return
       state = { status: 'idle', commentary: [{ from: 'system', text: '开局失败：' + error.message }] }
+    } finally {
+      if (generation === viewGeneration && requestedGame === selectedGame) { creating = false; render() }
     }
-    render()
   })
 
   canvas.addEventListener('click', async (e) => {
-    if (!state || state.status !== 'playing' || state.busy) return
+    if (!state || state.status !== 'playing' || state.busy || moveInFlight || creating) return
     if (!activeRenderer) return
     const rect = canvas.getBoundingClientRect()
     const scaleX = canvas.width / rect.width   // 响应式缩放时坐标映射回画布系
@@ -553,38 +579,42 @@ export function attachGame(ctx) {
     if (state.mode !== 'offline') speak(THINK_QUIPS[Math.floor(Math.random() * THINK_QUIPS.length)])
     const reqGame = selectedGame   // 槽位快照：成功/失败路径都以发起时的对局为准
     const ctrl = new AbortController()
-    const timeout = setTimeout(() => ctrl.abort(), 60000)   // 阿尔法狗双问答最坏 ~40s+，60s 防闸永锁
+    const request = { game: reqGame, generation: viewGeneration, controller: ctrl }
+    moveRequest = request
+    const stale = () => moveRequest !== request || request.generation !== viewGeneration || reqGame !== selectedGame
+    // 宿主解说90s；阿尔法狗首答90s+重答45s+兜底解说90s。独立版解说60s。
+    const timeoutMs = STANDALONE ? 65000 : state.difficulty === 'alphago' ? 230000 : 95000
+    const timeout = setTimeout(() => ctrl.abort(), timeoutMs)
     try {
       const res = await fetch(BASE + '/game/move', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ game: selectedGame, ...move }),   // 槽路由：走子落到当前游戏槽
+        body: JSON.stringify({ game: reqGame, ...move }),   // 槽路由：走子落到当前游戏槽
         signal: ctrl.signal,
       })
       const d = await res.json().catch(() => ({}))
+      if (stale()) return
       if (!res.ok) throw new Error(d.error || 'HTTP ' + res.status)
-      if (d.game && d.game !== selectedGame) {   // 等待期间切了游戏：响应属于旧槽，丢弃
-        fx = null
-      } else {
-        state = { ...d, busy: false }
-        // 落子动画与解说语句同帧出现：fx 驱动渲染器动画，speakNew 同 tick 播报
-        fx = d.aiMove ? { aiMove: d.aiMove, t0: performance.now() } : null
-      }
+      if (d.game && d.game !== reqGame) return
+      state = { ...d, busy: false }
+      // 落子动画与解说语句同帧出现。
+      fx = d.aiMove ? { aiMove: d.aiMove, t0: performance.now() } : null
     } catch (error) {
-      if (reqGame !== selectedGame) {   // 等待期间切了游戏：失败属于旧槽，不碰新局状态
-        fx = null
-      } else {
-        if (activeRenderer.rollbackOptimistic) activeRenderer.rollbackOptimistic(state, move)
-        state.busy = false
-        const msg = error?.name === 'AbortError' ? '回合超时：宿主 60 秒无响应' : error.message
-        state.commentary = [...(state.commentary ?? []), { from: 'system', text: '回合失败：' + msg }]
-        fx = null
+      if (stale()) return
+      if (activeRenderer.rollbackOptimistic) activeRenderer.rollbackOptimistic(state, move)
+      state.busy = false
+      const msg = error?.name === 'AbortError' ? '请求等待超时，将自动重新同步棋盘' : error.message
+      state.commentary = [...(state.commentary ?? []), { from: 'system', text: '回合失败：' + msg }]
+      fx = null
+    } finally {
+      clearTimeout(timeout)
+      if (!stale()) {
+        moveRequest = null
+        moveInFlight = false
+        render()
+        speakNew()
       }
     }
-    clearTimeout(timeout)
-    moveInFlight = false   // 收闸：之后轮询恢复对账
-    render()
-    speakNew()
   })
 
   // ── 开卡期间 5s 轮询对账：宿主重启/他处开局后旧棋盘不留痕 ──
@@ -592,7 +622,7 @@ export function attachGame(ctx) {
   function startPoll() {
     clearInterval(pollTimer)
     pollTimer = setInterval(() => {
-      if (state?.busy) return   // 回合进行中不轮询：本地乐观帧与思考态由 move 流程自持
+      if (moveInFlight || creating) return   // 只跳过本页请求；宿主 busy 快照必须继续轮询直到完成
       void refreshState()
     }, 5000)
   }

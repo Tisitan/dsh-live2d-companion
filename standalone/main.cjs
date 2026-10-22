@@ -1,5 +1,6 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, screen, shell, Tray } = require('electron')
 const fs = require('node:fs')
+const crypto = require('node:crypto')
 const path = require('node:path')
 const { createPassthrough } = require('../pet/passthrough.cjs')
 const { createStandaloneServer } = require('./server.cjs')
@@ -7,7 +8,7 @@ const { createStandaloneServer } = require('./server.cjs')
 let win = null
 let tray = null
 let standalone = null
-let diaryFileName = ''
+const diaryFileNames = new Map()
 
 // ── 游戏卫星窗多窗注册表（与 pet/main.js 同款架构）──
 // 每游戏独立尺寸表（useContentSize 语义=内容区像素），与各游戏渲染器 canvasSize 对应：
@@ -456,17 +457,21 @@ async function createWindow() {
   })
   ipcMain.handle('l2d-diary-save', async (event, entry) => {
     if (!fromPet(event)) throw new Error('forbidden')
-    const diaryDir = typeof petConfig.diaryDir === 'string' ? path.resolve(petConfig.diaryDir) : ''
+    const diaryDir = typeof petConfig.diaryDir === 'string' && petConfig.diaryDir.trim() ? path.resolve(petConfig.diaryDir) : ''
     if (!diaryDir) throw new Error('请先选择日记保存位置')
     const summary = typeof entry?.summary === 'string'
       ? entry.summary.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trim().slice(0, 12000)
       : ''
     if (!summary) throw new Error('日记内容为空')
     await fs.promises.mkdir(diaryDir, { recursive: true })
+    if (!/^[a-f0-9-]{36}$/i.test(entry?.profileId || '')) throw new Error('角色档案无效')
+    const diaryKey = `${diaryDir}:${entry.profileId}`
+    let diaryFileName = diaryFileNames.get(diaryKey)
     if (!diaryFileName) {
       const now = new Date()
       const pad = value => String(value).padStart(2, '0')
-      diaryFileName = `diary-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.md`
+      diaryFileName = `diary-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}-${entry.profileId.slice(0, 8)}-${crypto.randomUUID().slice(0, 8)}.md`
+      diaryFileNames.set(diaryKey, diaryFileName)
     }
     const target = path.join(diaryDir, diaryFileName)
     const generated = new Date().toLocaleString('zh-CN', { hour12: false })
@@ -508,20 +513,26 @@ async function createWindow() {
       cardWins.delete(gameId)
     }
     const area = screen.getPrimaryDisplay().workArea
-    const size = CARD_SIZES[gameId]
+    const desired = CARD_SIZES[gameId]
+    // workArea 与窗口尺寸均为 DIP；高缩放/小屏时缩小内容区，由卡片内部滚动。
+    const size = { width: Math.min(desired.width, area.width), height: Math.min(desired.height, area.height) }
     // 新窗级联偏移：默认位右下角起，按已开窗数每窗 (+28,+28) 防完全重叠；出屏回落默认位
     const baseX = area.x + area.width - (size.width + 16)
     const baseY = area.y + Math.max(0, Math.round((area.height - size.height) / 2))
     let x = baseX + cardWins.size * 28
     let y = baseY + cardWins.size * 28
     if (x + size.width > area.x + area.width || y + size.height > area.y + area.height) { x = baseX; y = baseY }
+    x = Math.max(area.x, Math.min(x, area.x + area.width - size.width))
+    y = Math.max(area.y, Math.min(y, area.y + area.height - size.height))
     const cardWin = new BrowserWindow({
       width: size.width, height: size.height,
-      useContentSize: true,
+      useContentSize: process.platform !== 'win32',
       x, y,
       frame: false, alwaysOnTop: true, resizable: false,
       skipTaskbar: true, focusable: true,
       backgroundColor: '#ffffff', hasShadow: false, roundedCorners: false,
+      // Windows opaque 无框卡片不需要隐藏的系统边框及其分数 DPI 换算。
+      ...(process.platform === 'win32' ? { thickFrame: false } : {}),
       webPreferences: {
         preload: path.join(__dirname, 'preload-card.cjs'),
         contextIsolation: true, nodeIntegration: false, sandbox: true,
@@ -550,20 +561,28 @@ async function createWindow() {
       if (entry.loadRetries > 2) { cardWin.close(); return }
       setTimeout(() => { if (!cardWin.isDestroyed()) cardWin.loadURL(gameUrl.href).catch(() => { }) }, 2000 * entry.loadRetries)
     })
-    // 渲染器就绪后重锁视觉缩放，并记本窗实测尺寸（每窗一份 expectedSize，拖拽期钉死用）
+    // Windows 用创建时请求的外框尺寸，避免将位置相关的 DIP 舍入反灌为目标。
     cardWin.webContents.on('did-finish-load', () => {
       cardWin?.webContents.setVisualZoomLevelLimits(1, 1).catch(() => { })
-      entry.expectedSize = cardWin && !cardWin.isDestroyed() ? cardWin.getSize() : null
+      if (!cardWin.isDestroyed()) {
+        entry.expectedSize = process.platform === 'win32' ? [size.width, size.height] : cardWin.getSize()
+        if (process.platform === 'win32') {
+          const { x, y } = cardWin.getBounds()
+          cardWin.setBounds({ x, y, width: size.width, height: size.height })
+        }
+      }
       entry.loadRetries = 0
     })
-    // 尺寸看门狗（每窗一份）：80ms 平息后一律钉回本窗实测尺寸——固定尺寸窗，视觉层零容忍
+    // 尺寸看门狗：80ms 平息后恢复目标，不能用偏移后的尺寸更新目标。
     cardWin.on('resize', () => {
       clearTimeout(entry.guardTimer)
       entry.guardTimer = setTimeout(() => {
         if (cardWin.isDestroyed() || !entry.expectedSize) return
         const cur = cardWin.getSize()
         if (cur[0] !== entry.expectedSize[0] || cur[1] !== entry.expectedSize[1]) {
-          cardWin.setSize(entry.expectedSize[0], entry.expectedSize[1])
+          // setSize 无法绕过固定窗口被 Electron 更新后的 min/max 约束。
+          const { x, y } = cardWin.getBounds()
+          cardWin.setBounds({ x, y, width: entry.expectedSize[0], height: entry.expectedSize[1] })
         }
       }, 80)
     })
@@ -590,7 +609,7 @@ async function createWindow() {
     if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
     const [x, y] = entry.win.getPosition()
     if (entry.expectedSize) {
-      // 拖拽钉尺寸：setBounds 同时钉住本窗加载完成时的实测尺寸（位置照动、尺寸免谈）
+      // 复用固定目标，避免将 getBounds/getSize 的舍入结果重新作为尺寸输入。
       entry.win.setBounds({
         x: Math.round(x + dx), y: Math.round(y + dy),
         width: entry.expectedSize[0], height: entry.expectedSize[1],
