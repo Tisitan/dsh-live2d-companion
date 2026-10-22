@@ -20,6 +20,7 @@ function runHook(script, input, env) {
 }
 
 async function main() {
+  const hostSource = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8')
   const mainSource = fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8')
   const preloadSource = fs.readFileSync(path.join(__dirname, 'preload.cjs'), 'utf8')
   const cardPreloadSource = fs.readFileSync(path.join(__dirname, 'preload-card.cjs'), 'utf8')
@@ -29,6 +30,10 @@ async function main() {
   const stateSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'src', 'state.js'), 'utf8')
   const openCodeAdapterSource = fs.readFileSync(path.join(__dirname, 'adapters', 'opencode-live2d.js'), 'utf8')
   const installerSource = fs.readFileSync(path.join(__dirname, 'adapters', 'install-adapters.cjs'), 'utf8')
+  assert.match(hostSource, /webserver\/index-inject/)
+  assert.match(hostSource, /kind:\s*'script'/)
+  assert.match(hostSource, /placement:\s*'body'/)
+  assert.match(hostSource, /void import\('\/live2d\/boot\.js'\)\.catch/)
   assert.match(mainSource, /l2d-game-open/)
   assert.match(mainSource, /const cardWins = new Map\(\)/)
   assert.match(mainSource, /const CARD_SIZES = \{/)

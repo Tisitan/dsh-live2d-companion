@@ -133,6 +133,7 @@ const MIME = {
 }
 
 const INDEX_TAG = '<script src="/live2d/boot.js" type="module"></script>'
+const DESKTOP_INDEX_BOOTSTRAP = "void import('/live2d/boot.js').catch(e=>console.error('[l2d] desktop bootstrap failed:',e))"
 const DONE_HOLD_MS = 6000
 const ERROR_HOLD_MS = 4500
 
@@ -1385,6 +1386,17 @@ export function apply(ctx, config) {
   if (config?.widget !== false) {
     ctx.effect(() => ctx.webServer.tapIndex(html =>
       html.includes(INDEX_TAG) ? html : html.replace('</body>', `${INDEX_TAG}</body>`)))
+    // The desktop shell serves its local dist index and only transports JSON-serializable
+    // webserver/index-inject rows over IPC. tapIndex remains necessary for the HTTP form.
+    ctx.on('webserver/index-inject', (table) => {
+      if (!Array.isArray(table)) return
+      if (table.some(row => row?.kind === 'script' && row?.text === DESKTOP_INDEX_BOOTSTRAP)) return
+      table.push({
+        kind: 'script',
+        placement: 'body',
+        text: DESKTOP_INDEX_BOOTSTRAP,
+      })
+    })
   }
 
   if (config?.pet === true) {
