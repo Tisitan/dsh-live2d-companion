@@ -5,7 +5,7 @@ const vm = require('node:vm')
 const { test } = require('node:test')
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'src', 'chat.js'), 'utf8')
-  .replace(/^import .*\n/, '').replace('export function initChat', 'function initChat')
+  .replace(/^import .*\r?\n/, '').replace('export function initChat', 'function initChat')
 const flush = async () => { for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve)) }
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r }); return { promise, resolve } }
 

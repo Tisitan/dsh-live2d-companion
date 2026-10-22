@@ -4,7 +4,7 @@ import vm from 'node:vm'
 import test from 'node:test'
 
 const source = fs.readFileSync(new URL('./public/src/game.js', import.meta.url), 'utf8')
-  .replace(/^import .*\n/m, '').replace('export function attachGame', 'function attachGame')
+  .replace(/^import .*\r?\n/m, '').replace('export function attachGame', 'function attachGame')
   .replace('import(`./games/${id}.js`)', 'loadRenderer(id)')
 const flush = async () => { for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve)) }
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r }); return { promise, resolve } }

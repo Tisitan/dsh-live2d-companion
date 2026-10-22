@@ -7,7 +7,7 @@ const stageSource = fs.readFileSync(new URL('./public/src/stage.js', import.meta
 // Exercise the actual closure installed by initStage without loading WebGL or model assets.
 const switchSource = stageSource.slice(stageSource.indexOf('  ctx.switchModel = async'), stageSource.lastIndexOf('\n}'))
 const streamSource = fs.readFileSync(new URL('./public/src/stream.js', import.meta.url), 'utf8')
-  .replace(/^import .*\n/m, '').replace('export function initStream', 'function initStream')
+  .replace(/^import .*\r?\n/m, '').replace('export function initStream', 'function initStream')
 
 function fixture() {
   const pending = new Map()
