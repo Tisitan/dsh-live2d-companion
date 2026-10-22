@@ -178,12 +178,14 @@ npm.cmd install
 
 - 所有 `/live2d/*` 路由复用 DSH 的登录与 Host/Origin 校验；请从 DSH 登录入口打开网页。写入操作仍仅允许本机。桌宠由宿主启动时会自动建立自己的登录会话，健康检查使用同一 cookie 会话。
 - 手动运行 `pet/` 时，首次登录需要 `L2D_AUTH_URL` 指向同一 DSH 实例的根登录链接，`L2D_URL` 指向其 `/live2d/pet.html`。登录链接只交给主进程，勿提交到仓库。需要宿主提供 `connection.requestRejection`、`authenticatedUrl` 和 `webServer.getOrigin` 接口。
-- 同时提供 HTTP 页面和 DSH Desktop 的索引注入通道。Desktop 注入数据已按宿主协议验证；原生 Desktop 的资源代理与登录端到端流程仍需实机验收。
+- 同时提供 HTTP 页面和 DSH Desktop 的索引注入通道。官方代理/预载模块、真实前端及模型的隔离集成已通过；完整 Desktop 发行版安装器、更新器和物理桌面仍需对应环境验收。
 - 模型导入、绑定及删除支持嵌套目录；拒绝目录软链接越界和可执行上传文件；非覆盖导入使用原子排他创建。删除当前模型时选择剩余模型，避免保留已删除路径。
 - 独立版聊天记录、日记保存和迟到回复按角色档案隔离；自动保存设置不会用旧档案覆盖当前角色。日记与记忆内容仍保留在原数据目录。
 - 更新已固定 Electron `43.8.3` 并刷新锁文件。使用 `npm ci --prefix pet` 或 `npm ci --prefix standalone` 安装对应桌面依赖。
 
 开发检查：`npm test` 覆盖引擎、穿透逻辑、宿主路由、鉴权、角色切换与独立版回归；测试只使用临时目录和测试端口，不需要模型、Cubism Core、外部模型服务或正式 DSH 配置。GitHub Actions 检查 Linux / Windows 和 Node 22 / 24。无真实模型时，这些检查不能替代渲染、DPI、焦点及鼠标穿透的桌面验收。
+
+维护者发布：将版本和 `docs/releases/v<版本>.md` 合并到 main 后，从该提交创建 `release/v<版本>` 分支。Release 工作流先确认提交已在 main、分支与版本匹配，再复用全部 CI；通过后生成 GitHub Release、TGZ/源码 ZIP 和 SHA256SUMS。普通 main 推送不会发布，既有 Release 不会被覆盖，也不会自动安装到本机 DSH。
 
 ## 配置
 
