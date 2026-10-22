@@ -35,7 +35,7 @@
 - Electron `43.8.3`：临时 Xvfb 下真实 cookie 交换、健康检查、保护资源、SSE、旧 token 下 cookie 复用及隐藏 renderer 启动通过。未触碰实际桌面。
 - Electron 与 standalone 两份锁文件 `npm audit --package-lock-only`：0 个已知漏洞。保留受支持的 43 主版本，升级至 43.8.3；间接依赖包含 undici 7.30.1。
 - 打包检查包含新增运行时模块，不包含用户模型、Cubism Core、node_modules 或凭据。
-- 新增 CI：Linux Node 22/24、Windows Node 24，测试、语法、打包和审计。
+- 新增 CI：Linux Node 22/24、Windows Node 24，测试、语法、打包和审计。首次 Windows 运行发现旧鼠标穿透测试隐含 Linux 平台，现显式设置并恢复测试平台，同时保留独立的 Windows 分支断言。
 
 尚需实机确认：原生 DSH Desktop 的代理认证、Windows/macOS 窗口焦点与 DPI、真实 Live2D 模型渲染/动作/鼠标穿透。当前环境没有模型和 Cubism Core，不以空画布启动代替模型验收。既有 Node 18 宿主声明保留；Electron 安装工具链需要 Node 22.12 或更新。
 
