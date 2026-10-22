@@ -26,7 +26,7 @@
 审查了仓库全部 7 个 PR 与 1 个普通 issue；#1–5 已合并。原仓库没有 Releases 和 Actions 运行历史。
 
 - [PR #8](https://github.com/Tisitan/dsh-live2d-companion/pull/8)：纳入 Desktop 结构化索引注入修复，保留 HTTP 路径，并验证序列化、去重、widget 开关及真实宿主索引方法。感谢 CiasaSavage。
-- [Issue #7](https://github.com/Tisitan/dsh-live2d-companion/issues/7)：注入缺口已修；补测官方原样代理/预载源码、真实 `dsh-app://app` 协议与完整 DSH 前端、Haru 模型，共 16 项通过。Linux 无官方 Desktop 成品，尚不将此等同于 Windows/macOS 完整安装包验收，issue 保持打开。
+- [Issue #7](https://github.com/Tisitan/dsh-live2d-companion/issues/7)：注入缺口已修；补测官方原样代理/预载源码、真实 `dsh-app://app` 协议与完整 DSH 前端、Haru 模型，在 Electron 44.7.0 下 17 项通过。Linux 无官方 Desktop 成品，尚不将此等同于 Windows/macOS 完整安装包验收，issue 保持打开。
 - [PR #6](https://github.com/Tisitan/dsh-live2d-companion/pull/6)：有合并冲突；滚动日记计数重置仍可能重复拾取旧角色聊天，保存链路缺 profileId 绑定。本次先修复主线串档问题，未原样合并该功能 PR，也未关闭或代作者提交评审。
 
 ## 验证与边界
@@ -41,7 +41,7 @@
 
 ## 桌面与模型补测
 
-- 代理：官方 `deepseek-ai/deepseek-harness` 提交 `687f282e8625c6b8d11ff58211a90524be2e4317` 中 `web-document.ts` / `preload-app.ts` 原样编译，在 Electron 43.8.3 中注册真实 `dsh-app://` 协议。验证主进程 cookie 交换、HttpOnly 隔离、API/资源/SSE、跨源拒绝、重载、DSH 首页与真实 Haru 模型挂载。测试壳只替代窗口外围 IPC，代理与预载实现没有改写。
+- 代理：官方 `deepseek-ai/deepseek-harness` 提交 `687f282e8625c6b8d11ff58211a90524be2e4317` 中 `web-document.ts` / `preload-app.ts` 原样编译，在 Electron 43.8.3 与匹配官方依赖的 44.7.0 中注册真实 `dsh-app://` 协议。验证主进程 cookie 交换、HttpOnly 隔离、API/资源/SSE、跨源拒绝、重载、DSH 首页与真实 Haru 模型挂载。测试壳只替代窗口外围 IPC，代理与预载实现没有改写。
 - 模型：Live2D 官方 CubismWebSamples `4-r.7` 的 Haru/Hiyori 和官方托管 Cubism Core 5.2。实际加载 MOC 与 2048 纹理，分别测得 84/134 个 drawable；动作改变 27 个实时参数，F03 表情与往返切换通过。模型与 Core 仅存独立测试目录，不进入源码或发布包。
 - Linux：Xvfb + Openbox + XTest，运行实际 `pet/main.js`。原生点击穿透/悬停捕获、透明像素、置顶、最小化恢复、卡片开关/去重/拖动和真实模型位置保存有行为证据；没有操作用户正在使用的显示器。
 - Windows：CI 新增实际 Electron 43.8.3 主进程与原生 HWND / 系统点击检查，100% / 150% 强制缩放覆盖输入焦点与固定尺寸窗口。软件缩放允许至多 1 DIP 的屏幕尺寸换算误差，记录实测值。

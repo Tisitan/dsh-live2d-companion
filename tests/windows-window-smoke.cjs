@@ -120,6 +120,9 @@ async function main() {
   const bounds = card.getBounds()
   await card.webContents.executeJavaScript('__cardBridge.moveBy(-31, 19)')
   await until(() => card.getBounds().x === bounds.x - 31, 'card move')
+  // Moving on fractional DPI can emit an intermediate frame-size change. The
+  // production guard intentionally waits 80 ms before restoring the frame.
+  await until(() => card.getSize()[0] === bounds.width && card.getSize()[1] === bounds.height, 'post-drag card size settles')
   const moved = card.getBounds()
   assert.deepEqual(moved, { ...bounds, x: bounds.x - 31, y: bounds.y + 19 })
   check('card IPC drag preserves its native size', true)
