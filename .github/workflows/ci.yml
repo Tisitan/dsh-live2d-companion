@@ -72,13 +72,22 @@ jobs:
         run: npm audit --package-lock-only --audit-level=high
 
   windows-desktop:
-    name: Real Electron / Windows / scale ${{ matrix.scale }}
+    name: Real Electron / Windows / scale ${{ matrix.scale }} / ${{ matrix.width }}x${{ matrix.height }}
     runs-on: windows-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        scale: ['1', '1.5']
+        include:
+          - scale: '1'
+            width: 1920
+            height: 1080
+          - scale: '1.5'
+            width: 1920
+            height: 1080
+          - scale: '1.5'
+            width: 1024
+            height: 720
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -90,11 +99,10 @@ jobs:
       - name: Install pinned Electron test runtime
         working-directory: pet
         run: npm ci
-      # 1024x720 at 150% cannot fit a 760x650 DIP game card. Keep the primary
-      # native-window matrix on a desktop large enough for the designed card.
+      # Include a work area smaller than the design size to exercise clamping.
       - name: Set disposable runner display resolution
         shell: powershell
-        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
+        run: Set-DisplayResolution -Width ${{ matrix.width }} -Height ${{ matrix.height }} -Force
       - name: Verify real desktop pet and native window behavior
         env:
           L2D_SMOKE_SCALE: ${{ matrix.scale }}

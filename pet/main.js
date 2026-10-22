@@ -526,17 +526,22 @@ app.whenReady().then(() => {
       cardWins.delete(gameId)
     }
     const disp = screen.getPrimaryDisplay().workArea
-    const size = CARD_SIZES[gameId]
+    const desired = CARD_SIZES[gameId]
+    // workArea 与窗口尺寸均为 DIP；高缩放/小屏时缩小内容区，由卡片内部滚动。
+    const size = { width: Math.min(desired.width, disp.width), height: Math.min(desired.height, disp.height) }
     // 新窗级联偏移：默认位右下角起，按已开窗数每窗 (+28,+28) 防完全重叠；出屏回落默认位
     const baseX = disp.x + disp.width - (size.width + 16)
     const baseY = disp.y + Math.max(0, Math.round((disp.height - size.height) / 2))
     let x = baseX + cardWins.size * 28
     let y = baseY + cardWins.size * 28
     if (x + size.width > disp.x + disp.width || y + size.height > disp.y + disp.height) { x = baseX; y = baseY }
+    x = Math.max(disp.x, Math.min(x, disp.x + disp.width - size.width))
+    y = Math.max(disp.y, Math.min(y, disp.y + disp.height - size.height))
     const cardWin = new BrowserWindow({
       width: size.width,
       height: size.height,
-      useContentSize: true,   // 尺寸语义=内容区：减少客户区↔框架换算面（分数 DPI 对账稳定化）
+      // Windows 无系统边框时直接指定外框 DIP，避免内容区换算额外增加边缘。
+      useContentSize: process.platform !== 'win32',
       x, y,
       frame: false,
       alwaysOnTop: true,
@@ -583,15 +588,19 @@ app.whenReady().then(() => {
       setTimeout(() => { if (!cardWin.isDestroyed()) cardWin.loadURL(cardUrl).catch(() => { }) }, 2000 * entry.loadRetries)
     })
     // 渲染器就绪后重锁：webContents 创建前设置的视觉缩放锁可能被首个导航静默丢弃；
-    // 同时记本窗实测尺寸（每窗一份 expectedSize，拖拽期钉死用）
+    // Windows 的 getSize 会受屏幕位置的向外舍入影响，不能反灌为下一次目标尺寸。
     cardWin.webContents.on('did-finish-load', () => {
       cardWin?.webContents.setVisualZoomLevelLimits(1, 1).catch(() => { })
-      entry.expectedSize = cardWin && !cardWin.isDestroyed() ? cardWin.getSize() : null
+      if (!cardWin.isDestroyed()) {
+        entry.expectedSize = process.platform === 'win32' ? [size.width, size.height] : cardWin.getSize()
+        if (process.platform === 'win32') {
+          const { x, y } = cardWin.getBounds()
+          cardWin.setBounds({ x, y, width: size.width, height: size.height })
+        }
+      }
       entry.loadRetries = 0
     })
-    // 尺寸看门狗（每窗一份）：分数 DPI 下 Chromium↔Windows 的框架对账会残留 ±1px 级
-    // 抽搐（雪崩已被 hasShadow:false + 拖拽钉尺寸打断），任何路径引起的尺寸偏移
-    // 80ms 平息后一律钉回本窗实测尺寸——窗口设计上固定尺寸，视觉层零容忍
+    // 尺寸看门狗：80ms 平息后恢复目标尺寸，不能用偏移后的尺寸更新目标。
     cardWin.on('resize', () => {
       clearTimeout(entry.guardTimer)
       entry.guardTimer = setTimeout(() => {
@@ -626,14 +635,14 @@ app.whenReady().then(() => {
   // IPC 移窗：app-region:drag 不可靠（吞点击/本版未生效），moveBy 是老桌宠验证方案；
   // 卫星窗不透明，移动无透明窗的 DWM 丢帧问题。
   // 分数 DPI 下纯 setPosition 会触发 Chromium↔Windows 尺寸对账循环（窗口疯长），
-  // 故拖拽全程用 setBounds 把尺寸钉死在加载完成时的实测值——位置照动、尺寸免谈。
+  // 故拖拽全程用 setBounds 固定目标尺寸；Windows 使用创建时请求值，避免读回舍入累积。
   ipcMain.on('l2d-game-moveby', (event, dx, dy) => {
     const entry = cardEntryBySender(event)   // 多窗反查：按 sender 找归属窗，找不到拒收
     if (!entry || entry.win.isDestroyed()) return
     if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
     const [x, y] = entry.win.getPosition()
     if (entry.expectedSize) {
-      // 拖拽钉尺寸：setBounds 同时钉住本窗加载完成时的实测尺寸（位置照动、尺寸免谈）
+      // 移动时始终复用目标尺寸，不将 getBounds/getSize 的舍入结果重新作为尺寸输入。
       entry.win.setBounds({ x: Math.round(x + dx), y: Math.round(y + dy), width: entry.expectedSize[0], height: entry.expectedSize[1] })
     } else {
       entry.win.setPosition(Math.round(x + dx), Math.round(y + dy))

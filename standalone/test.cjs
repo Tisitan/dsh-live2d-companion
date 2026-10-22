@@ -34,7 +34,6 @@ async function main() {
   assert.match(mainSource, /const CARD_SIZES = \{/)
   assert.match(mainSource, /const normalizeGameId = /)
   assert.match(mainSource, /const cardEntryBySender = /)
-  assert.match(mainSource, /useContentSize:\s*true/)
   assert.match(mainSource, /hasShadow:\s*false/)
   assert.match(mainSource, /expectedSize\[0\], height: entry\.expectedSize\[1\]/)
   assert.match(mainSource, /searchParams\.set\('game', gameId\)/)

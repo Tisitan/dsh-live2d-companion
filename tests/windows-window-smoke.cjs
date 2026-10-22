@@ -122,25 +122,37 @@ async function main() {
   const bounds = card.getBounds()
   const nativeCard = await native(card)
   check('fixed frameless card has no native thick frame', !nativeCard.thickFrame)
+  check('initial card fits the work area', bounds.x >= workArea.x - 1 && bounds.y >= workArea.y - 1 &&
+    bounds.x + bounds.width <= workArea.x + workArea.width + 1 && bounds.y + bounds.height <= workArea.y + workArea.height + 1)
   cardGeometry.push({ phase: 'baseline', dip: bounds, native: nativeCard })
+  const stableSize = () => Math.abs(card.getSize()[0] - bounds.width) <= 1 && Math.abs(card.getSize()[1] - bounds.height) <= 1
+  const assertPhysicalSize = measurement => {
+    assert.equal(measurement.physicalBounds.width, nativeCard.physicalBounds.width, 'native pixel width must not drift')
+    assert.equal(measurement.physicalBounds.height, nativeCard.physicalBounds.height, 'native pixel height must not drift')
+  }
   for (let i = 0; i < 10; i++) {
     const before = card.getBounds(), dx = i % 2 ? 31 : -31, dy = i % 2 ? -19 : 19
     await card.webContents.executeJavaScript(`__cardBridge.moveBy(${dx}, ${dy})`)
     await until(() => Math.abs(card.getBounds().x - (before.x + dx)) <= 1, 'card move')
-    cardGeometry.push({ phase: 'move-' + i, dip: card.getBounds(), native: await native(card) })
-    // Moving on fractional DPI can emit an intermediate frame-size change. The
-    // production guard intentionally waits 80 ms before restoring the frame.
-    await until(() => card.getSize()[0] === bounds.width && card.getSize()[1] === bounds.height, 'post-drag card size settles')
+    // DIP bounds enclose the integer pixel rectangle. At 150%, moving the
+    // origin can change the reported width by one DIP with identical physical
+    // width. Test physical dimensions strictly, separately from that rounding.
+    await until(stableSize, 'post-drag card size settles')
     await pause(300)
+    const measurement = await native(card)
+    cardGeometry.push({ phase: 'move-' + i, dip: card.getBounds(), native: measurement })
+    assertPhysicalSize(measurement)
     const moved = card.getBounds()
-    assert.equal(moved.width, bounds.width)
-    assert.equal(moved.height, bounds.height)
+    assert.ok(stableSize())
     assert.ok(Math.abs(moved.x - (before.x + dx)) <= 1 && Math.abs(moved.y - (before.y + dy)) <= 1)
   }
   await pause(1000)
-  check('ten card drag cycles preserve size without cumulative drift', card.getSize()[0] === bounds.width && card.getSize()[1] === bounds.height)
+  assertPhysicalSize(await native(card))
+  check('ten card drag cycles preserve exact native pixel dimensions', stableSize())
   card.setSize(bounds.width + 20, bounds.height + 20)
-  await until(() => card.getSize()[0] === bounds.width && card.getSize()[1] === bounds.height, 'card size guard')
+  await until(stableSize, 'card size guard')
+  await pause(300)
+  assertPhysicalSize(await native(card))
   check('card size guard restores dimensions', true)
   await invoke('__petBridge.openGame("chess")')
   await until(() => cards().length === 2, 'second game card')

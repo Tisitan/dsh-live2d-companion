@@ -8,7 +8,10 @@
   /* 卫星窗形态：卡片铺满窗口，拖动走 IPC moveBy（app-region 不可靠且吞点击）。
      注意：inset:0 之后绝不能再写 top/right:auto——会把 shorthand 拆成左下锚定，
      窗口顶部/右侧露出 BODY 裸区（光标在卡缘疯狂跳变的血案现场） */
-  #l2d-game { inset: 0 !important; border-radius: 0 !important; box-shadow: none !important; }
+  #l2d-game {
+    inset: 0 !important; border-radius: 0 !important; box-shadow: none !important;
+    max-width: none !important; max-height: none !important; overflow: auto !important;
+  }
   /* 头部光标用 move 而非 grab/grabbing：grab 小手在 GPU 合成窗口上有已知的图像
      闪烁病（Chromium 老坑），move 十字是系统原生光标，永不闪。
      历史注：原文写作「NOACTIVATE+GPU 合成窗口」——卫星窗自 7becb95 起已改为
@@ -18,12 +21,10 @@
   /* 头部是整条拖动把手：禁用 chip（当前游戏）不做指针孤岛，手势统一 */
   #l2d-game .l2d-game-head .l2d-game-chip:disabled { cursor: move !important; }
   #l2d-game .l2d-game-head:active, #l2d-game .l2d-game-head .l2d-game-chip:disabled:active { cursor: move !important; }
-  /* 卫星窗是固定尺寸窗口（760×650），宽度恰好踩中 PR#3 小屏响应式的 760px
-     触发线（强制 max-width+overflow:auto → 滚动条+裁切）。卫星窗不需要响应式，中和之。
-     canvas 尺寸由各游戏 canvasSize 契约驱动（hub 按 attr 写 width/height，game.js:245），
-     CSS 只放 auto，禁止再钉死——钉 500×500 会把非正方画布拉伸变形并挤爆 650 高度 */
-  @media (max-width: 760px), (max-height: 620px) {
-    #l2d-game { max-width: none !important; max-height: none !important; overflow: visible !important; }
+  /* 工作区足够时保留 760×650 的横向布局；更小的窗口复用 game.js 的纵向布局，
+     由整卡滚动容纳棋盘和解说。canvas 保留各游戏的固有宽高比。 */
+  @media (min-width: 760px) and (min-height: 650px) {
+    #l2d-game { overflow: visible !important; }
     #l2d-game .l2d-game-body { flex-direction: row !important; }
     #l2d-game .l2d-game-side { width: 210px !important; border-left: 1px solid rgba(0,0,0,.06) !important; border-top: 0 !important; }
     #l2d-game canvas { width: auto !important; height: auto !important; }
