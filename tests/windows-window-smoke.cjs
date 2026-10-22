@@ -120,7 +120,9 @@ async function main() {
   check('same game reuses one card', cards().length === 1)
   await pause(300)
   const bounds = card.getBounds()
-  cardGeometry.push({ phase: 'baseline', dip: bounds, native: await native(card) })
+  const nativeCard = await native(card)
+  check('fixed frameless card has no native thick frame', !nativeCard.thickFrame)
+  cardGeometry.push({ phase: 'baseline', dip: bounds, native: nativeCard })
   for (let i = 0; i < 10; i++) {
     const before = card.getBounds(), dx = i % 2 ? 31 : -31, dy = i % 2 ? -19 : 19
     await card.webContents.executeJavaScript(`__cardBridge.moveBy(${dx}, ${dy})`)

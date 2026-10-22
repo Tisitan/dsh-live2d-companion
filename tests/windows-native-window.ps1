@@ -22,11 +22,13 @@ if ($Operation -eq 'click') {
   Start-Sleep -Milliseconds 100
 }
 $extended = [WindowProbe]::GetWindowLongPtr([IntPtr]$WindowHandle, -20).ToInt64()
+$style = [WindowProbe]::GetWindowLongPtr([IntPtr]$WindowHandle, -16).ToInt64()
 $rect = New-Object WindowProbe+Rect
 [void][WindowProbe]::GetWindowRect([IntPtr]$WindowHandle, [ref]$rect)
 @{
   handle = $WindowHandle
   extendedStyle = $extended
+  thickFrame = ($style -band 0x00040000) -ne 0
   noActivate = ($extended -band 0x08000000) -ne 0
   transparent = ($extended -band 0x20) -ne 0
   topmost = ($extended -band 0x8) -ne 0

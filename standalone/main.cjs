@@ -527,6 +527,8 @@ async function createWindow() {
       frame: false, alwaysOnTop: true, resizable: false,
       skipTaskbar: true, focusable: true,
       backgroundColor: '#ffffff', hasShadow: false, roundedCorners: false,
+      // Windows opaque 无框卡片不需要隐藏的系统边框及其分数 DPI 换算。
+      ...(process.platform === 'win32' ? { thickFrame: false } : {}),
       webPreferences: {
         preload: path.join(__dirname, 'preload-card.cjs'),
         contextIsolation: true, nodeIntegration: false, sandbox: true,

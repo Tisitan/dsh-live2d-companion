@@ -545,6 +545,8 @@ app.whenReady().then(() => {
       focusable: true,           // 恒 true：setFocusable 切换在分数 DPI 下有窗口管理副作用
       backgroundColor: '#ffffff',
       hasShadow: false,          // DWM 阴影的隐形边框是分数 DPI 框架对账误差来源（overlay 窗同款配置从不自激）
+      // opaque 无框窗默认仍有 WS_THICKFRAME；去掉隐藏边框，避免分数 DPI 移动时尺寸反复换算。
+      ...(process.platform === 'win32' ? { thickFrame: false } : {}),
       roundedCorners: false,     // 减少 DWM 框架度量参与面，分数 DPI 下对账更稳（单窗案排查后保留）
       webPreferences: {
         preload: path.join(__dirname, 'preload-card.js'),
