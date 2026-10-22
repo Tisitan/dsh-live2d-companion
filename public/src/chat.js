@@ -84,12 +84,13 @@ export function initChat(ctx) {
   const memoryCandidates = panel.querySelector('#l2d-memory-candidates')
   const memoryCancel = panel.querySelector('#l2d-memory-cancel')
   const memoryCommit = panel.querySelector('#l2d-memory-commit')
-  const historyRecords = []
+  const conversations = new Map()
+  let conversation = { records: [], savedCount: 0 }
   let activeProfile = null
   let companionName = '桌宠'
   let diaryTimer = 0
   let diarySaving = false
-  let lastSavedCount = 0
+  let profileLoadToken = 0
   let memorySourceHashes = []
   let memoryProfileId = ''
   let memoryBusy = false
@@ -98,23 +99,49 @@ export function initChat(ctx) {
   let diaryMirrorDir = ''
 
   // 仅保存在当前页面内存中：关闭面板不丢，桌宠重启/页面重载即清空。
-  function appendHistory(role, text) {
-    const value = String(text ?? '').trim()
-    if (!value) return
-    historyRecords.push({ role: role === 'user' ? 'user' : 'assistant', text: value })
+  function renderHistoryLine(record) {
     emptyHistory?.remove()
     const line = document.createElement('div')
     line.className = 'l2d-chat-line'
-    line.dataset.role = role === 'user' ? 'user' : 'assistant'
+    line.dataset.role = record.role
     const who = document.createElement('span')
     who.className = 'l2d-chat-who'
-    who.textContent = role === 'user' ? '你' : companionName
+    who.textContent = record.role === 'user' ? '你' : record.name
     const body = document.createElement('div')
     body.className = 'l2d-chat-text'
-    body.textContent = value
+    body.textContent = record.text
     line.append(who, body)
     history.appendChild(line)
     history.scrollTop = history.scrollHeight
+  }
+
+  function appendHistory(role, text, target = conversation, name = companionName) {
+    const value = String(text ?? '').trim()
+    if (!value) return
+    const record = { role: role === 'user' ? 'user' : 'assistant', text: value, name }
+    target.records.push(record)
+    if (target === conversation) renderHistoryLine(record)
+  }
+
+  function applyProfile(profile) {
+    if (activeProfile?.id !== profile?.id) {
+      clearTimeout(diaryTimer)
+      memoryReview.hidden = true
+      memoryCandidates.replaceChildren()
+      memorySourceHashes = []
+      memoryProfileId = ''
+      memoryPhase = ''
+      const key = profile?.id || ''
+      if (!conversations.has(key)) conversations.set(key, { records: [], savedCount: 0 })
+      conversation = conversations.get(key)
+      history.replaceChildren()
+      conversation.records.forEach(renderHistoryLine)
+    }
+    activeProfile = profile
+    companionName = activeProfile?.name || '桌宠'
+    toggle.title = `和${companionName}聊天`
+    toggle.setAttribute('aria-label', toggle.title)
+    showDiaryConfig()
   }
 
   function showDiaryConfig(message = '') {
@@ -126,14 +153,11 @@ export function initChat(ctx) {
   }
 
   async function loadActiveProfile() {
+    const token = ++profileLoadToken
     const response = await fetch(BASE + '/companion-profiles', { cache: 'no-store' })
     const data = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(data.error || '角色档案读取失败')
-    activeProfile = data.active || null
-    companionName = activeProfile?.name || '桌宠'
-    toggle.title = `和${companionName}聊天`
-    toggle.setAttribute('aria-label', toggle.title)
-    showDiaryConfig()
+    if (token === profileLoadToken) applyProfile(data.active || null)
     return activeProfile
   }
 
@@ -148,15 +172,24 @@ export function initChat(ctx) {
   }
 
   async function saveDiary({ automatic = false } = {}) {
-    if (diarySaving || historyRecords.length === 0 || historyRecords.length === lastSavedCount) return
-    if (!activeProfile) await loadActiveProfile().catch(() => null)
-    if (!activeProfile) return
+    if (diarySaving) return
     diarySaving = true
+    try { await loadActiveProfile() } catch (error) {
+      diarySaving = false
+      showDiaryConfig(String(error?.message || error))
+      return
+    }
+    if (!activeProfile || conversation.records.length === 0 || conversation.records.length === conversation.savedCount) {
+      diarySaving = false
+      return
+    }
+    const diaryProfile = activeProfile
+    const capturedConversation = conversation
     diarySave.disabled = true
     diaryLocation.disabled = true
     profileOpen.disabled = true
-    const capturedCount = historyRecords.length
-    const captured = historyRecords.slice(-200)
+    const capturedCount = capturedConversation.records.length
+    const captured = capturedConversation.records.slice(-200)
     showDiaryConfig(automatic ? '正在自动整理日记……' : '桌宠正在整理这次聊天……')
     try {
       const ac = new AbortController()
@@ -166,28 +199,29 @@ export function initChat(ctx) {
         response = await fetch(BASE + '/diary/summarize', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ messages: captured }),
+          body: JSON.stringify({ messages: captured, profileId: diaryProfile.id }),
           signal: ac.signal,
         })
       } finally { clearTimeout(timeout) }
       const data = await response.json().catch(() => ({}))
       if (!response.ok || !data.summary) throw new Error(data.error || '日记总结失败')
+      if (activeProfile?.id !== diaryProfile.id || data.profileId !== diaryProfile.id) throw new Error('角色档案已切换，请重新保存日记')
       const saveResponse = await fetch(BASE + '/diary/save', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ summary: data.summary }),
+        body: JSON.stringify({ summary: data.summary, profileId: diaryProfile.id }),
       })
       const saved = await saveResponse.json().catch(() => ({}))
       if (!saveResponse.ok || !saved?.ok) throw new Error(saved.error || '日记保存失败')
       let mirrored = null
       if (diaryMirrorDir && BRIDGE?.saveDiary) {
-        try { mirrored = await BRIDGE.saveDiary({ summary: data.summary, profileName: activeProfile.name }) }
+        try { mirrored = await BRIDGE.saveDiary({ summary: data.summary, profileName: diaryProfile.name, profileId: diaryProfile.id }) }
         catch (error) {
-          lastSavedCount = Math.max(lastSavedCount, capturedCount)
+          capturedConversation.savedCount = Math.max(capturedConversation.savedCount, capturedCount)
           showDiaryConfig(`角色档案已保存，但指定位置写入失败：${String(error?.message || error)}`)
           return
         }
       }
-      lastSavedCount = Math.max(lastSavedCount, capturedCount)
+      capturedConversation.savedCount = Math.max(capturedConversation.savedCount, capturedCount)
       showDiaryConfig(mirrored?.path ? `已保存并另存：${mirrored.path}` : `已保存：${saved.file}`)
       if (!automatic) ctx.showBubble('日记保存好了。', 6500, 2)
     } catch (error) {
@@ -202,9 +236,16 @@ export function initChat(ctx) {
 
   function scheduleDiarySave() {
     clearTimeout(diaryTimer)
-    if (!activeProfile?.autoDiary || historyRecords.length === lastSavedCount) return
+    if (!activeProfile?.autoDiary || conversation.records.length === conversation.savedCount) return
     diaryTimer = setTimeout(() => void saveDiary({ automatic: true }), 60000)
   }
+
+  ctx.on?.('model', () => { void loadActiveProfile().catch(() => {}) })
+  ctx.on?.('profile', profile => {
+    ++profileLoadToken
+    applyProfile(profile)
+    scheduleDiarySave()
+  })
 
   void Promise.all([
     loadActiveProfile(),
@@ -428,17 +469,20 @@ export function initChat(ctx) {
   })
 
   diaryAuto.addEventListener('change', async () => {
-    if (!activeProfile) await loadActiveProfile().catch(() => null)
-    if (!activeProfile) { diaryAuto.checked = false; return }
-    const response = await fetch(BASE + '/companion-profiles', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ...activeProfile, autoDiary: diaryAuto.checked }),
-    })
-    const updated = await response.json().catch(() => ({}))
-    if (response.ok && updated.active) activeProfile = updated.active
-    showDiaryConfig()
-    if (activeProfile?.autoDiary) scheduleDiarySave()
-    else clearTimeout(diaryTimer)
+    const wanted = diaryAuto.checked
+    try {
+      const profile = await loadActiveProfile()
+      if (!profile) throw new Error('没有启用的角色档案')
+      const response = await fetch(BASE + '/companion-profiles', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: profile.id, expectedActiveId: profile.id, autoDiary: wanted }),
+      })
+      const updated = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(updated.error || '自动保存设置失败')
+      if (activeProfile?.id === profile.id) applyProfile(updated.active)
+      if (activeProfile?.autoDiary) scheduleDiarySave()
+      else clearTimeout(diaryTimer)
+    } catch (error) { showDiaryConfig(String(error?.message || error)) }
   })
 
   // 聊天入口跟随模型；打开后的聊天栏是独立浮窗，只在第一次打开时靠近模型放置。
@@ -530,6 +574,7 @@ export function initChat(ctx) {
     try {
       const result = await fetch(BASE + '/chat/status', { cache: 'no-store' })
       const data = await result.json()
+      if (data.profileId !== activeProfile?.id) await loadActiveProfile()
       companionName = data.profileName || companionName
       status.textContent = data.connected ? `${companionName}已连上 OpenCode` : '请先打开 OpenCode'
     } catch { status.textContent = '暂时看不到 OpenCode' }
@@ -566,8 +611,18 @@ export function initChat(ctx) {
     event.preventDefault()
     const message = input.value.trim()
     if (!message) return
+    if (send.disabled) return
+    send.disabled = true
+    try { await loadActiveProfile() } catch (error) {
+      send.disabled = false
+      showDiaryConfig(String(error?.message || error))
+      return
+    }
+    if (!activeProfile) { send.disabled = false; return }
+    const chatProfile = activeProfile
+    const chatConversation = conversation
     clearTimeout(diaryTimer)
-    appendHistory('user', message)
+    appendHistory('user', message, chatConversation)
     input.value = ''
     input.disabled = true
     send.disabled = true
@@ -583,25 +638,27 @@ export function initChat(ctx) {
         response = await fetch(BASE + '/chat', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ message }),
+          body: JSON.stringify({ message, profileId: chatProfile.id }),
           signal: ac.signal,
         })
       } finally { clearTimeout(timeout) }
       const data = await response.json().catch(() => ({}))
       if (!response.ok) throw Object.assign(new Error(data.error || 'chat failed'), { status: response.status })
-      ctx.enter('done')
       const holdMs = Math.max(6500, Math.min(15000, String(data.reply).length * 85))
-      appendHistory('assistant', data.reply)
+      appendHistory('assistant', data.reply, chatConversation, chatProfile.name)
+      if (chatConversation !== conversation) return
+      ctx.enter('done')
       scheduleDiarySave()
       ctx.showBubble(data.reply, holdMs, 2)
     } catch (error) {
-      ctx.enter('error')
       const text = error.status === 503
         ? 'OpenCode还没有连接......先打开OpenCode，再试一次哦。'
         : error.status === 504 || error.name === 'AbortError'
           ? '等了好久也没收到回答……请再试一次。'
           : '唔......这次没能接上OpenCode。'
-      appendHistory('assistant', text)
+      appendHistory('assistant', text, chatConversation, chatProfile.name)
+      if (chatConversation !== conversation) return
+      ctx.enter('error')
       if (error.status === 503) status.textContent = '请先打开 OpenCode'
       scheduleDiarySave()
       ctx.showBubble(text, 8500, 2)

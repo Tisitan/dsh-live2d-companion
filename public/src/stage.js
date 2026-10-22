@@ -336,8 +336,10 @@ export async function initStage(ctx) {
    * @returns {Promise<boolean>} 是否完成切换（同路径且未强制时返回 false）
    */
   ctx.switchModel = async (nextPath, force = false) => {
-    if (!nextPath || (nextPath === modelPath && !force)) return false
+    if (!nextPath) return false
+    // Selecting the displayed model also cancels any slower switch still loading.
     const token = ++switchToken
+    if (nextPath === modelPath && !force) return false
     const [nextModel, nextBinding] = await Promise.all([
       PIXI.live2d.Live2DModel.from(`${BASE}/model/${nextPath}`, { autoInteract: false }),
       loadBinding(nextPath),

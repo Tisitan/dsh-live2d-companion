@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }} / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: 22
+          - os: ubuntu-latest
+            node: 24
+          - os: windows-latest
+            node: 24
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      # The suites use only Node built-ins and mocks. No model, Cubism Core,
+      # Electron binary, DSH credentials, or provider API keys are required.
+      - name: Check entrypoint syntax
+        run: |
+          node --check index.js
+          node --check host-auth.mjs
+          node --check pet/main.js
+          node --check pet/host-auth.cjs
+          node --check pet/page-reloader.cjs
+          node --check standalone/main.cjs
+          node --check standalone/server.cjs
+      - name: Run all regression suites
+        run: npm test
+      - name: Verify published package contents
+        run: |
+          npm pack --dry-run --json > .ci-pack.json
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { readFileSync } from 'node:fs'
+          const [pack] = JSON.parse(readFileSync('.ci-pack.json', 'utf8'))
+          const paths = new Set(pack.files.map(file => file.path))
+          for (const required of ['index.js', 'host-auth.mjs', 'pet/main.js', 'pet/host-auth.cjs', 'pet/page-reloader.cjs', 'public/boot.js', 'standalone/server.cjs']) {
+            assert.ok(paths.has(required), `package is missing ${required}`)
+          }
+          for (const path of paths) {
+            assert.ok(!/(^|\/)node_modules\//.test(path), `bundled dependency directory: ${path}`)
+            assert.ok(!/^public\/(model\/|vendor\/live2dcubismcore\.min\.js$)/.test(path), `private/third-party runtime asset: ${path}`)
+          }
+          console.log(`${pack.filename}: ${paths.size} packaged files verified`)
+          NODE
+      - name: Audit Electron shell lockfile
+        working-directory: pet
+        run: npm audit --package-lock-only --audit-level=high
+      - name: Audit standalone lockfile
+        working-directory: standalone
+        run: npm audit --package-lock-only --audit-level=high

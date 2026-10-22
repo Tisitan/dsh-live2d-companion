@@ -1,5 +1,6 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, screen, shell, Tray } = require('electron')
 const fs = require('node:fs')
+const crypto = require('node:crypto')
 const path = require('node:path')
 const { createPassthrough } = require('../pet/passthrough.cjs')
 const { createStandaloneServer } = require('./server.cjs')
@@ -7,7 +8,7 @@ const { createStandaloneServer } = require('./server.cjs')
 let win = null
 let tray = null
 let standalone = null
-let diaryFileName = ''
+const diaryFileNames = new Map()
 
 // ── 游戏卫星窗多窗注册表（与 pet/main.js 同款架构）──
 // 每游戏独立尺寸表（useContentSize 语义=内容区像素），与各游戏渲染器 canvasSize 对应：
@@ -456,17 +457,21 @@ async function createWindow() {
   })
   ipcMain.handle('l2d-diary-save', async (event, entry) => {
     if (!fromPet(event)) throw new Error('forbidden')
-    const diaryDir = typeof petConfig.diaryDir === 'string' ? path.resolve(petConfig.diaryDir) : ''
+    const diaryDir = typeof petConfig.diaryDir === 'string' && petConfig.diaryDir.trim() ? path.resolve(petConfig.diaryDir) : ''
     if (!diaryDir) throw new Error('请先选择日记保存位置')
     const summary = typeof entry?.summary === 'string'
       ? entry.summary.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trim().slice(0, 12000)
       : ''
     if (!summary) throw new Error('日记内容为空')
     await fs.promises.mkdir(diaryDir, { recursive: true })
+    if (!/^[a-f0-9-]{36}$/i.test(entry?.profileId || '')) throw new Error('角色档案无效')
+    const diaryKey = `${diaryDir}:${entry.profileId}`
+    let diaryFileName = diaryFileNames.get(diaryKey)
     if (!diaryFileName) {
       const now = new Date()
       const pad = value => String(value).padStart(2, '0')
-      diaryFileName = `diary-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.md`
+      diaryFileName = `diary-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}-${entry.profileId.slice(0, 8)}-${crypto.randomUUID().slice(0, 8)}.md`
+      diaryFileNames.set(diaryKey, diaryFileName)
     }
     const target = path.join(diaryDir, diaryFileName)
     const generated = new Date().toLocaleString('zh-CN', { hour12: false })

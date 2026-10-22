@@ -76,6 +76,12 @@ function createProfileStore({ dataDir }) {
   const root = path.join(dataDir, 'profiles')
   const activeFile = path.join(root, 'active.json')
   const diaryNames = new Map()
+  let mutations = Promise.resolve()
+  function serialize(task) {
+    const pending = mutations.then(task)
+    mutations = pending.catch(() => {})
+    return pending
+  }
 
   const profileDir = id => path.join(root, id)
   const profileFile = id => path.join(profileDir(id), 'profile.json')
@@ -130,8 +136,13 @@ function createProfileStore({ dataDir }) {
     return get(id)
   }
 
+  async function deactivate() {
+    await fsp.rm(activeFile, { force: true })
+  }
+
   async function get(id = '') {
-    const targetId = validId(id) ? id : await activeId()
+    if (id && !validId(id)) return null
+    const targetId = id || await activeId()
     const meta = await readMeta(targetId)
     if (!meta) return null
     const persona = await fsp.readFile(personaFile(targetId), 'utf8').catch(() => '')
@@ -149,6 +160,9 @@ function createProfileStore({ dataDir }) {
   }
 
   async function save(input = {}) {
+    if (input.expectedActiveId && input.expectedActiveId !== await activeId()) {
+      throw new Error('角色档案已切换，请重试')
+    }
     const existing = validId(input.id) ? await readMeta(input.id) : null
     const id = existing?.id || crypto.randomUUID()
     const model = typeof input.model === 'string' && input.model.trim()
@@ -247,8 +261,8 @@ function createProfileStore({ dataDir }) {
     throw new Error('不支持的导入类型')
   }
 
-  async function saveDiary(summary) {
-    const profile = await get()
+  async function saveDiary(summary, profileId = '') {
+    const profile = await get(profileId)
     if (!profile) throw new Error('没有启用的角色档案')
     const text = cleanDocument(summary, 12000)
     if (!text) throw new Error('日记内容为空')
@@ -257,7 +271,7 @@ function createProfileStore({ dataDir }) {
     if (!file) {
       const now = new Date()
       const pad = value => String(value).padStart(2, '0')
-      file = `diary-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.md`
+      file = `diary-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}-${crypto.randomUUID().slice(0, 8)}.md`
       diaryNames.set(profile.id, file)
     }
     const generated = new Date().toLocaleString('zh-CN', { hour12: false })
@@ -353,8 +367,15 @@ function createProfileStore({ dataDir }) {
     return { ok: true, added, replaced, skipped, profileId: profile.id }
   }
 
-  return { root, list, get, save, activate, ensureForModel, importText, saveDiary, listDiaryEntries,
-    listMemoryEntries, extractionProcessed, commitMemories }
+  return { root, list, get, listDiaryEntries, listMemoryEntries, extractionProcessed,
+    save: input => serialize(() => save(input)),
+    activate: id => serialize(() => activate(id)),
+    deactivate: () => serialize(deactivate),
+    ensureForModel: model => serialize(() => ensureForModel(model)),
+    importText: (...args) => serialize(() => importText(...args)),
+    saveDiary: (...args) => serialize(() => saveDiary(...args)),
+    commitMemories: (...args) => serialize(() => commitMemories(...args)),
+  }
 }
 
 module.exports = { createProfileStore }

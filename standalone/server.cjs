@@ -39,6 +39,8 @@ function safeSegment(value, maxLength = 255) {
     && value !== '..'
     && !value.startsWith('.')
     && !/[\\/:\0]/.test(value)
+    && !/[<>"|?*\x00-\x1f]/.test(value)
+    && !/[. ]$/.test(value)
     && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(value)   // Windows 保留名（对齐 index.js）
 }
 
@@ -122,28 +124,50 @@ function isInside(root, target) {
   return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative))
 }
 
-async function serveFile(res, root, parts, extraHeaders = {}) {
+// Resolve existing ancestors too: lexical bounds alone allow symlink escapes.
+async function containedPath(root, parts) {
   const target = path.resolve(root, ...parts)
-  if (!isInside(root, target)) {
-    res.writeHead(403)
-    res.end('forbidden')
-    return false
+  if (!isInside(root, target)) throw new Error('invalid target')
+  const realRoot = await fsp.realpath(root)
+  let ancestor = target
+  for (;;) {
+    try {
+      const info = await fsp.lstat(ancestor)
+      if (info.isSymbolicLink()) throw new Error('symbolic links are not allowed')
+      const realTarget = await fsp.realpath(ancestor)
+      if (!isInside(realRoot, realTarget)) throw new Error('path escapes model directory')
+      return target
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+      const parent = path.dirname(ancestor)
+      if (parent === ancestor) throw error
+      ancestor = parent
+    }
   }
-  let info
+}
+
+async function serveFile(res, root, parts, extraHeaders = {}) {
+  let handle
   try {
-    info = await fsp.stat(target)
+    const target = await containedPath(root, parts)
+    handle = await fsp.open(target, 'r')
+    const info = await handle.stat()
+    if (!info.isFile()) { await handle.close(); return false }
+    res.writeHead(200, {
+      'content-type': MIME[path.extname(target).toLowerCase()] || 'application/octet-stream',
+      'content-length': info.size,
+      'cache-control': 'no-cache',
+      ...extraHeaders,
+    })
+    const stream = handle.createReadStream()
+    stream.on('error', () => res.destroy())
+    res.on('close', () => stream.destroy())
+    stream.pipe(res)
+    return true
   } catch {
+    await handle?.close().catch(() => {})
     return false
   }
-  if (!info.isFile()) return false
-  res.writeHead(200, {
-    'content-type': MIME[path.extname(target).toLowerCase()] || 'application/octet-stream',
-    'content-length': info.size,
-    'cache-control': 'no-cache',
-    ...extraHeaders,
-  })
-  fs.createReadStream(target).pipe(res)
-  return true
 }
 
 async function createStandaloneServer({ publicDir, dataDir }) {
@@ -171,6 +195,7 @@ async function createStandaloneServer({ publicDir, dataDir }) {
   let nextSessionNumber = 1
   let lastOpenCodeHeartbeat = 0
   let state = 'idle'
+  let closing = false
   let modelPath = ''
   /** 对局槽表：gameId → 对局条目（多窗各玩各的；与宿主 index.js 分槽同口径）。 */
   const games = new Map()
@@ -215,7 +240,10 @@ async function createStandaloneServer({ publicDir, dataDir }) {
     const parts = normalized.split('/')
     for (const root of modelRoots) {
       const target = path.resolve(root, ...parts)
-      if (isInside(root, target) && fs.existsSync(target)) return { ref: normalized, root, target }
+      try {
+        if (isInside(root, target) && isInside(fs.realpathSync(root), fs.realpathSync(target))
+          && fs.statSync(target).isFile()) return { ref: normalized, root, target }
+      } catch { }
     }
     return null
   }
@@ -323,9 +351,10 @@ async function createStandaloneServer({ publicDir, dataDir }) {
   }
 
   /** 向 OpenCode 桌宠队列提交内部任务；游戏解说与普通聊天共用传输、分会话处理。 */
-  async function requestOpenCode(message, channel = 'game', timeoutMs = 25000) {
-    if (!openCodeConnected() || chatJobs.size >= 3) return Promise.resolve('')
-    const { profile } = await profileContext()
+  async function requestOpenCode(message, channel = 'game', timeoutMs = 25000, capturedProfile = null) {
+    if (closing || !openCodeConnected() || chatJobs.size >= 3) return ''
+    const profile = capturedProfile || (await profileContext()).profile
+    if (closing || chatJobs.size >= 3) return ''
     const id = crypto.randomUUID()
     return new Promise(resolve => {
       const timer = setTimeout(() => {
@@ -438,10 +467,20 @@ async function createStandaloneServer({ publicDir, dataDir }) {
     for (const client of clients) sseSend(client, ': ka\n\n')
   }, 25000)
 
-  const server = http.createServer(async (req, res) => {
+  let origin = ''
+  const handleRequest = async (req, res) => {
+    if (closing) { json(res, 503, { error: 'companion is closing' }); return }
     res.setHeader('x-content-type-options', 'nosniff')
     res.setHeader('referrer-policy', 'no-referrer')
     res.setHeader('cross-origin-resource-policy', 'same-origin')
+
+    // Cookies are shared across ports; SameSite alone does not stop another local website.
+    if (req.headers.host !== new URL(origin).host
+      || (req.headers.origin !== undefined && req.headers.origin !== origin)
+      || req.headers['sec-fetch-site'] === 'cross-site') {
+      json(res, 403, { error: 'forbidden origin' })
+      return
+    }
 
     let url
     try {
@@ -554,6 +593,8 @@ async function createStandaloneServer({ publicDir, dataDir }) {
       try {
         const parsed = JSON.parse((await readBody(req, MAX_DIARY_BYTES)).toString('utf8') || '{}')
         if (parsed.action === 'activate') {
+          const selected = await profileStore.get(parsed.id)
+          if (!selected || !resolveModel(selected.model)) throw new Error('绑定的模型不存在')
           const active = await profileStore.activate(parsed.id)
           if (active.model && active.model !== modelPath && resolveModel(active.model)) {
             modelPath = active.model
@@ -563,10 +604,14 @@ async function createStandaloneServer({ publicDir, dataDir }) {
           json(res, 200, { active: publicProfile(active) })
           return
         }
-        const requestedModel = parsed.model || modelPath
+        const existing = parsed.id ? await profileStore.get(parsed.id) : null
+        if (parsed.expectedActiveId && parsed.expectedActiveId !== (await profileStore.get())?.id) {
+          throw new Error('角色档案已切换，请重试')
+        }
+        const requestedModel = parsed.model || existing?.model || modelPath
         if (!resolveModel(requestedModel)) throw new Error('绑定的模型不存在')
         const saved = await profileStore.save({
-          id: parsed.id, name: parsed.name, model: requestedModel,
+          id: parsed.id, expectedActiveId: parsed.expectedActiveId, name: parsed.name, model: requestedModel,
           persona: parsed.persona, memoryProvider: parsed.memoryProvider, autoDiary: parsed.autoDiary,
         })
         json(res, 200, { active: publicProfile(saved) })
@@ -592,7 +637,9 @@ async function createStandaloneServer({ publicDir, dataDir }) {
     if (pathname === '/live2d/diary/save' && method === 'POST') {
       try {
         const parsed = JSON.parse((await readBody(req, MAX_DIARY_BYTES)).toString('utf8') || '{}')
-        json(res, 200, await profileStore.saveDiary(parsed.summary))
+        const profile = await profileStore.get()
+        if (!profile || parsed.profileId !== profile.id) throw new Error('角色档案已切换，请重新保存日记')
+        json(res, 200, await profileStore.saveDiary(parsed.summary, profile.id))
       } catch (error) {
         json(res, error.message === 'body too large' ? 413 : 400, { error: error.message })
       }
@@ -631,6 +678,8 @@ async function createStandaloneServer({ publicDir, dataDir }) {
           return
         }
         const parsed = JSON.parse((await readBody(req, MAX_DIARY_BYTES)).toString('utf8') || '{}')
+        const profile = await profileStore.get()
+        if (!profile || parsed.profileId !== profile.id) throw new Error('角色档案已切换，请重新整理日记')
         const messages = Array.isArray(parsed.messages) ? parsed.messages.slice(-200) : []
         const lines = messages.map(item => {
           const role = item?.role === 'user' ? '用户' : '桌宠'
@@ -643,12 +692,13 @@ async function createStandaloneServer({ publicDir, dataDir }) {
           + `保持当前角色设定，保留确实发生的事情、用户表达的喜好或约定，以及角色当时的感受；不要虚构。\n`
           + `使用自然的 Markdown 段落，最多 600 字，不要写任务总结、系统提示或保存说明。\n\n`
           + `<conversation>\n${transcript}\n</conversation>`
-        const summary = cleanChatText(await requestOpenCode(prompt, 'diary', 45000), 6000)
+        const summary = cleanChatText(await requestOpenCode(prompt, 'diary', 45000, profile), 6000)
         if (!summary || invalidAgentText(summary)) {
           json(res, 502, { error: '桌宠没有生成可保存的日记' })
           return
         }
-        json(res, 200, { summary })
+        if ((await profileStore.get())?.id !== profile.id) throw new Error('角色档案已切换，请重新整理日记')
+        json(res, 200, { summary, profileId: profile.id })
       } catch (error) {
         json(res, error.message === 'body too large' ? 413 : 400, { error: error.message })
       }
@@ -693,7 +743,7 @@ async function createStandaloneServer({ publicDir, dataDir }) {
           + `只输出严格 JSON，不要 Markdown：{"memories":[{"category":"preference","content":"用户喜欢……","matchId":null,"reason":"简短理由"}]}\n\n`
           + `<existing-memories>\n${existingText.slice(0, 16000)}\n</existing-memories>\n\n`
           + pending.map(item => `<diary name="${cleanText(item.file)}">\n${item.content.slice(0, 600)}\n</diary>`).join('\n\n').slice(0, 30000)
-        const raw = await requestOpenCode(prompt, 'memory', 45000)
+        const raw = await requestOpenCode(prompt, 'memory', 45000, profile)
         const extracted = extractionJson(raw)
         if (!extracted) {
           json(res, 502, { error: 'OpenCode 没有返回可识别的记忆候选' })
@@ -752,13 +802,17 @@ async function createStandaloneServer({ publicDir, dataDir }) {
         const parsed = JSON.parse((await readBody(req, MAX_JSON_BYTES)).toString('utf8') || '{}')
         const message = cleanChatText(parsed.message)
         if (!message) throw new Error('message is empty')
+        const { profile, memory, memoryCandidates } = await profileContext(message)
+        if (!profile || parsed.profileId !== profile.id) throw new Error('角色档案已切换，请重新发送')
+        if (res.destroyed) return
+        if (closing) { json(res, 503, { error: 'companion is closing' }); return }
+        if (chatJobs.size >= 3) { json(res, 429, { error: 'too many chat requests' }); return }
         const id = crypto.randomUUID()
         const timer = setTimeout(() => {
           const job = removeChatJob(id)
           if (!job) return
           if (!job.browserRes.writableEnded) json(job.browserRes, 504, { error: 'OpenCode reply timed out' })
         }, 90000)
-        const { profile, memory, memoryCandidates } = await profileContext(message)
         const job = {
           id, message, memory, channel: 'chat', browserRes: res, timer, claimed: false,
           profileId: profile?.id || '', profileRevision: profile?.updatedAt || '',
@@ -959,24 +1013,27 @@ async function createStandaloneServer({ publicDir, dataDir }) {
         const parsed = JSON.parse((await readBody(req, MAX_JSON_BYTES)).toString('utf8') || '{}')
         // 删除模型目录：只删真模型目录（内含 .model3.json），当前在用则回落首个现存模型（对齐宿主 /model delete 语义）
         if (typeof parsed.delete === 'string') {
-          if (!safeSegment(parsed.delete, 128)) {
+          const deleteParts = splitSafePath(parsed.delete)
+          if (!deleteParts) {
             json(res, 400, { error: 'dir is invalid' })
             return
           }
-          const target = path.join(modelDir, parsed.delete)
+          const target = await containedPath(modelDir, deleteParts)
           if (!fs.existsSync(target)) {
             json(res, 404, { error: `model dir not found: ${parsed.delete}` })
             return
           }
-          if (!fs.readdirSync(target).some((f) => f.endsWith('.model3.json'))) {
+          if (!fs.readdirSync(target, { withFileTypes: true }).some(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.model3.json'))) {
             json(res, 400, { error: `${parsed.delete} does not look like a model dir` })
             return
           }
           await fsp.rm(target, { recursive: true, force: true })
           let reset = false
-          if (modelPath.startsWith(parsed.delete + '/')) {
+          if (modelPath.startsWith(deleteParts.join('/') + '/')) {
             const models = await collectModels()
-            modelPath = models[0]?.path || modelPath
+            modelPath = models[0]?.path || ''
+            if (modelPath) await profileStore.ensureForModel(modelPath)
+            else await profileStore.deactivate()
             await fsp.writeFile(selectionFile, JSON.stringify({ model: modelPath, updatedAt: new Date().toISOString() }, null, 2) + '\n')
             broadcast({ model: modelPath })
             reset = true
@@ -1008,20 +1065,24 @@ async function createStandaloneServer({ publicDir, dataDir }) {
         json(res, 400, { error: 'invalid model path' })
         return
       }
+      const ext = path.extname(parts.at(-1)).toLowerCase()
+      if (!['.json', '.moc3', '.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
+        json(res, 400, { error: 'unsupported model file type' })
+        return
+      }
       try {
         const body = await readBody(req, MAX_IMPORT_BYTES)
-        const target = path.resolve(modelDir, folder, ...parts)
-        if (!isInside(modelDir, target)) throw new Error('invalid target')
+        const target = await containedPath(modelDir, [folder, ...parts])
         // 静默覆盖防御：重名导入须显式 ?overwrite=1（对齐宿主语义，前端确认重传 UX 依赖此路由）
         if (url.searchParams.get('overwrite') !== '1' && fs.existsSync(target)) {
           json(res, 409, { error: `文件已存在：${folder}/${parts.join('/')}（确认覆盖请加 overwrite=1）` })
           return
         }
         await fsp.mkdir(path.dirname(target), { recursive: true })
-        await fsp.writeFile(target, body)
+        await fsp.writeFile(target, body, { flag: url.searchParams.get('overwrite') === '1' ? 'w' : 'wx' })
         json(res, 200, { imported: { model: folder, path: parts.join('/'), bytes: body.length } })
       } catch (error) {
-        json(res, error.message === 'body too large' ? 413 : 400, { error: error.message })
+        json(res, error.code === 'EEXIST' ? 409 : error.message === 'body too large' ? 413 : 400, { error: error.message })
       }
       return
     }
@@ -1029,8 +1090,9 @@ async function createStandaloneServer({ publicDir, dataDir }) {
     if (pathname === '/live2d/profile' && method === 'POST') {
       try {
         const parsed = JSON.parse((await readBody(req, MAX_JSON_BYTES)).toString('utf8') || '{}')
-        if (!safeSegment(parsed.dir, 128)) throw new Error('invalid model directory')
-        const target = path.join(modelDir, parsed.dir, 'profile.json')
+        const parts = splitSafePath(parsed.dir)
+        if (!parts) throw new Error('invalid model directory')
+        const target = await containedPath(modelDir, [...parts, 'profile.json'])
         if (parsed.reset === true) {
           await fsp.rm(target, { force: true })
           json(res, 200, { reset: true })
@@ -1080,6 +1142,12 @@ async function createStandaloneServer({ publicDir, dataDir }) {
       res.writeHead(404)
       res.end('not found')
     }
+  }
+  const server = http.createServer((req, res) => {
+    void handleRequest(req, res).catch(() => {
+      if (res.headersSent) res.destroy()
+      else json(res, 500, { error: 'request failed' })
+    })
   })
 
   await new Promise((resolve, reject) => {
@@ -1088,7 +1156,7 @@ async function createStandaloneServer({ publicDir, dataDir }) {
   })
 
   const address = server.address()
-  const origin = `http://127.0.0.1:${address.port}`
+  origin = `http://127.0.0.1:${address.port}`
   await fsp.writeFile(adapterFile, JSON.stringify({
     version: 1,
     endpoint: `${origin}/live2d/adapter`,
@@ -1096,6 +1164,7 @@ async function createStandaloneServer({ publicDir, dataDir }) {
     pid: process.pid,
     startedAt: new Date().toISOString(),
   }, null, 2) + '\n', { mode: 0o600 })
+  let closePromise
   return {
     origin,
     target: `${origin}/live2d/pet.html?token=${token}&standalone=1`,
@@ -1109,12 +1178,12 @@ async function createStandaloneServer({ publicDir, dataDir }) {
       broadcast({ state })
       return true
     },
-    close: () => new Promise(resolve => {
+    close: () => closePromise ||= new Promise(resolve => {
+      closing = true
       clearInterval(sseHeartbeat)
       // SSE 长连接会吊住 server.close 的回调永不触发：先主动收尾再关
       for (const client of clients) { try { client.end() } catch { } }
       clients.clear()
-      server.close(async () => {
       for (const timer of settleTimers.values()) clearTimeout(timer)
       for (const job of chatJobs.values()) {
         clearTimeout(job.timer)
@@ -1123,11 +1192,12 @@ async function createStandaloneServer({ publicDir, dataDir }) {
       }
       chatJobs.clear()
       chatQueue.length = 0
-      try {
-        const current = JSON.parse(await fsp.readFile(adapterFile, 'utf8'))
-        if (current.token === adapterToken) await fsp.rm(adapterFile, { force: true })
-      } catch { }
-      resolve()
+      server.close(async () => {
+        try {
+          const current = JSON.parse(await fsp.readFile(adapterFile, 'utf8'))
+          if (current.token === adapterToken) await fsp.rm(adapterFile, { force: true })
+        } catch { }
+        resolve()
       })
     }),
   }

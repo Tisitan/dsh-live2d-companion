@@ -2,6 +2,10 @@ const { app, BrowserWindow, ipcMain, screen } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
 const { createPassthrough } = require('./passthrough.cjs')
+const { createHostAuth } = require('./host-auth.cjs')
+const { createPageReloader } = require('./page-reloader.cjs')
+const AUTH_URL = process.env.L2D_AUTH_URL || ''
+delete process.env.L2D_AUTH_URL
 
 const TARGET = process.env.L2D_URL
   || ('http://127.0.0.1:3080/live2d/pet.html'
@@ -631,22 +635,34 @@ app.whenReady().then(() => {
     }
     pushCardArea()   // 死区跟随窗口移动
   })
-  win.on('closed', () => { win = null })
-
   // 加载自愈：宿主未就绪/重载失败时指数退避重试，不再干等 80 秒自杀——
   // 宿主晚于桌宠启动、宿主重启中途页面 404 等瞬态都能自己爬回来
-  let loadRetries = 0
-  const reloadPage = () => {
-    if (win === null || win.isDestroyed()) return
-    win.loadURL(TARGET).catch(() => { })
-  }
+  const hostAuth = createHostAuth({ session: win.webContents.session, target: TARGET, authUrl: AUTH_URL })
+  const pageReloader = createPageReloader({
+    isClosed: () => win === null || win.isDestroyed(),
+    async load() {
+      await hostAuth.ensureAuthenticated()
+      if (win !== null && !win.isDestroyed()) await win.loadURL(TARGET)
+    },
+    onError() {
+      // Never include the bootstrap URL or raw network error in logs.
+      console.error('[l2d-pet] host unavailable or login required; retrying')
+    },
+  })
+  const reloadPage = pageReloader.reload
+  let cursorTimer = null
+  let healthTimer = null
+  win.on('closed', () => {
+    pageReloader.dispose()
+    clearInterval(cursorTimer)
+    clearTimeout(healthTimer)
+    win = null
+  })
   win.webContents.on('did-fail-load', (_event, _code, _desc, _url, isMainFrame) => {
     if (!isMainFrame) return
-    const delay = Math.min(30000, 2000 * 2 ** loadRetries)
-    loadRetries += 1
-    setTimeout(reloadPage, delay)
+    pageReloader.schedule()
   })
-  win.webContents.on('did-finish-load', () => { loadRetries = 0; pageMisses = 0 })
+  win.webContents.on('did-finish-load', () => { pageReloader.loaded(); pageMisses = 0 })
   // 渲染进程崩溃/假死看门狗：直接退出释放单实例锁，比留僵尸透明窗卡死下次启动强
   win.webContents.on('render-process-gone', (_event, details) => {
     console.error(`[l2d-pet] render-process-gone: reason=${details.reason} exitCode=${details.exitCode}`)
@@ -656,12 +672,12 @@ app.whenReady().then(() => {
     console.error('[l2d-pet] renderer unresponsive')
     app.quit()
   })
-  win.loadURL(TARGET).catch(() => { })
+  void reloadPage()
 
   let lastMain = null
   let lastPush = null
   let diagTicks = 0
-  setInterval(() => {
+  cursorTimer = setInterval(() => {
     if (win === null || win.isDestroyed()) return
     const p = screen.getCursorScreenPoint()
     const mainMoved = lastMain !== null && (lastMain.x !== p.x || lastMain.y !== p.y)
@@ -679,7 +695,6 @@ app.whenReady().then(() => {
     win.webContents.send('l2d-cursor', { x: out.x, y: out.y, bounds: win.getBounds() })
   }, 33)
 
-  const origin = new URL(TARGET).origin
   let failures = 0
   let pageMisses = 0
   const probePage = async () => {
@@ -707,20 +722,24 @@ app.whenReady().then(() => {
   })
   // 自递归 tick 而非 setInterval：上一轮 fetch/探针未决时不叠并发（慢网络下计数不失真）
   const healthTick = async () => {
+    if (win === null || win.isDestroyed()) return
     try {
-      const r = await fetch(origin + '/live2d/state', { cache: 'no-store', signal: AbortSignal.timeout(5000) })
+      const r = await hostAuth.fetchState()
+      try { await r.body?.cancel() } catch { }
       failures = r.ok ? 0 : failures + 1
+      if (r.status === 401) void reloadPage()
     } catch {
       failures += 1
     }
+    if (win === null || win.isDestroyed()) return
     // 80 秒宽限（低配机重启 DSH 可能超过 40 秒）：先自愈重载页面；
     // 持续 120 秒仍不通认定宿主已死才退出（宿主下次启动会重新 spawn）
     if (failures >= 10) reloadPage()
     if (failures >= 15) app.quit()
     await probePage()
-    setTimeout(() => { void healthTick() }, 8000)
+    if (win !== null && !win.isDestroyed()) healthTimer = setTimeout(() => { void healthTick() }, 8000)
   }
-  setTimeout(() => { void healthTick() }, 8000)
+  healthTimer = setTimeout(() => { void healthTick() }, 8000)
 })
 
 app.on('window-all-closed', () => app.quit())
