@@ -85,8 +85,6 @@ export const Live2DCompanion = async ({ client } = {}) => {
   const gameTurnStateId = 'companion-game-turn'
   let chatSessionId = ''
   let gameSessionId = ''
-  let diarySessionId = ''
-  let memoryExtractSessionId = ''
   let lastChatMemory = ''
   let activeProfileKey = ''
   const internalSessionIds = new Set()
@@ -152,6 +150,8 @@ export const Live2DCompanion = async ({ client } = {}) => {
     const gameChannel = job.channel === 'game'
     const diaryChannel = job.channel === 'diary'
     const memoryChannel = job.channel === 'memory'
+    const temporaryChannel = diaryChannel || memoryChannel
+    let temporarySessionId = ''
     let gameTurnActive = gameChannel
     if (gameChannel) await send({ sessionId: gameTurnStateId, state: 'thinking', hidden: true })
     const finishGameTurn = async () => {
@@ -166,11 +166,9 @@ export const Live2DCompanion = async ({ client } = {}) => {
         activeProfileKey = profileKey
         chatSessionId = ''
         gameSessionId = ''
-        diarySessionId = ''
-        memoryExtractSessionId = ''
         lastChatMemory = ''
       }
-      let targetSession = gameChannel ? gameSessionId : diaryChannel ? diarySessionId : memoryChannel ? memoryExtractSessionId : chatSessionId
+      let targetSession = temporaryChannel ? '' : gameChannel ? gameSessionId : chatSessionId
       let createdSession = false
       if (!targetSession) {
         const created = await client.session.create({
@@ -180,9 +178,8 @@ export const Live2DCompanion = async ({ client } = {}) => {
         if (!targetSession) throw new Error('could not create companion session')
         createdSession = true
         trackInternalSession(targetSession)
-        if (gameChannel) gameSessionId = targetSession
-        else if (diaryChannel) diarySessionId = targetSession
-        else if (memoryChannel) memoryExtractSessionId = targetSession
+        if (temporaryChannel) temporarySessionId = targetSession
+        else if (gameChannel) gameSessionId = targetSession
         else chatSessionId = targetSession
         // session.created 可能早于 create() 返回；此时它会被普通事件桥误登记成任务。
         // ID 到手后主动移除竞态残留，后续事件由下方内部会话判断直接忽略。
@@ -215,15 +212,16 @@ export const Live2DCompanion = async ({ client } = {}) => {
       const message = error instanceof Error ? error.message : String(error)
       if (/session|not found|404/i.test(message)) {
         if (gameChannel) gameSessionId = ''
-        else if (diaryChannel) diarySessionId = ''
-        else if (memoryChannel) memoryExtractSessionId = ''
-        else chatSessionId = ''
+        else if (!temporaryChannel) chatSessionId = ''
         if (!gameChannel && !diaryChannel && !memoryChannel) lastChatMemory = ''
       }
       await finishGameTurn()
       try { await sendChatReply(job.id, { error: compactText(message, 'OpenCode回答失败了。') }) } catch { }
     } finally {
       await finishGameTurn()
+      if (temporarySessionId && typeof client?.session?.delete === 'function') {
+        try { await client.session.delete({ path: { id: temporarySessionId } }) } catch { }
+      }
     }
   }
 
