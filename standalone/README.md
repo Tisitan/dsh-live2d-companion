@@ -11,7 +11,7 @@ The standalone source does not distribute Live2D models, `live2dcubismcore.min.j
 1. Install Node.js 22.12 or later (required by Electron 43.8.3).
 2. Obtain `live2dcubismcore.min.js` from Live2D's official distribution and place it in `public/vendor/`.
 3. Run `standalone/setup.cmd`, then `standalone/start.cmd`.
-4. On first launch, copy a complete Cubism 4/5 model folder into the model directory shown by the app.
+4. On first launch, if no model is present, the app shows its model directory and exits. Copy a complete Cubism 4/5 model folder there, then run `standalone/start.cmd` again.
 
 `setup.cmd` installs dependencies and then downloads the Electron runtime binary. Electron 42 and later no longer download that binary during `npm install`, so if the download fails on a restricted network, set `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/` in the same Command Prompt and run `setup.cmd` again.
 
@@ -19,7 +19,7 @@ The local server binds to a random `127.0.0.1` port. Mutating browser routes use
 
 ## Codex and OpenCode
 
-With the standalone pet running, launch `连接Codex和OpenCode.cmd`, then restart Codex and OpenCode. The installer adds lifecycle hooks, the local OpenCode plugin, and a minimal chat-only `live2d-companion` agent. The agent denies tool permissions. Customize its local prompt for the character you use; repeated installs preserve that customized prompt. Advanced users can select another agent with the `L2D_COMPANION_AGENT` environment variable before starting OpenCode.
+With the standalone pet running, launch `连接Codex和OpenCode.cmd`, then restart Codex and OpenCode. On first use, follow the installer's instructions to trust the new Codex hooks in `/hooks`. The installer adds lifecycle hooks, the local OpenCode plugin, and a minimal chat-only `live2d-companion` agent. The agent denies tool permissions. Customize its local prompt for the character you use; repeated installs preserve that customized prompt. Advanced users can select another agent with the `L2D_COMPANION_AGENT` environment variable before starting OpenCode.
 
 The chat button is enabled only for `?standalone=1`, so existing DSH widget and pet behavior is unchanged.
 
@@ -33,7 +33,7 @@ Profiles can optionally enable **OpenCode semantic reranking (experimental)**. T
 
 Game commentary, diary summaries, and ordinary chat use separate internal OpenCode sessions. Internal game turns can drive the main thinking state without appearing as extra numbered task lamps.
 
-Codex and OpenCode provide status and chat connections but do not host the DSH web widget; standalone therefore stays in desktop-pet mode.
+Codex provides status events; OpenCode additionally provides chat, diary/memory summaries and game commentary. Neither connection hosts the DSH web widget, so standalone stays in desktop-pet mode. Games use the local AI; DSH's model-controlled move mode is not available in standalone.
 
 ## Troubleshooting
 
