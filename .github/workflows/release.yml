@@ -81,7 +81,7 @@ jobs:
           assert.equal(`v${pack.version}`, process.env.RELEASE_TAG)
           assert.equal(pack.filename, `dsh-live2d-companion-${pack.version}.tgz`)
           const files = new Set(pack.files.map(file => file.path))
-          for (const file of ['index.js', 'host-auth.mjs', 'pet/main.js', 'pet/host-auth.cjs', 'pet/page-reloader.cjs', 'standalone/server.cjs']) assert.ok(files.has(file))
+          for (const file of ['index.js', 'host-auth.mjs', 'pet/main.js', 'pet/host-auth.cjs', 'pet/page-reloader.cjs', 'pet/exit-reasons.cjs', 'standalone/server.cjs']) assert.ok(files.has(file))
           for (const file of files) {
             assert.ok(!/(^|\/)node_modules\//.test(file), file)
             assert.ok(!/^public\/(model\/|vendor\/live2dcubismcore\.min\.js$)/.test(file), file)

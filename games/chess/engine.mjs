@@ -46,12 +46,22 @@ export function createChess() {
       s += p ? PIECE_CHARS[p.c][p.t] : '.'
     }
     s += (castling.wk ? 'K' : '') + (castling.wq ? 'Q' : '') + (castling.bk ? 'k' : '') + (castling.bq ? 'q' : '')
-    // FIDE 细节：ep 格仅在过路兵吃子真实可行时才区分局面（横向邻格有敌兵才算）
+    // FIDE 9.2.3：只有合法的过路兵吃子才区分局面。邻兵可能被钉住，
+    // 吃掉过路兵还可能打开横向车线；最多试走两枚候选，不生成整份走法。
     let epReal = false
     if (ep) {
+      const color = turn
       const pawnRow = turn === 'w' ? ep.y + 1 : ep.y - 1
-      epReal = [ep.x - 1, ep.x + 1].some((px) =>
-        inBoard(px, pawnRow) && board[pawnRow][px]?.c === turn && board[pawnRow][px]?.t === 'p')
+      for (const px of [ep.x - 1, ep.x + 1]) {
+        if (!inBoard(px, pawnRow) || board[pawnRow][px]?.c !== color || board[pawnRow][px]?.t !== 'p') continue
+        const move = { from: { x: px, y: pawnRow }, to: { ...ep }, ep: true, capture: true }
+        const undo = apply(move)
+        try {
+          if (!inCheck(color)) { epReal = true; break }
+        } finally {
+          unapply(move, undo)
+        }
+      }
     }
     s += epReal ? squareName(ep.x, ep.y) : '-'
     return s
@@ -225,7 +235,7 @@ export function createChess() {
     })
   }
 
-  /** 子力不足判和：王对王 / 王+单轻子对王 / 王象对王象（同色格象）。 */
+  /** 子力不足判和：王对王 / 王+单轻子对王 / 除王外全是同色格象。 */
   function insufficientMaterial() {
     const pieces = []
     for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
@@ -234,12 +244,11 @@ export function createChess() {
     }
     if (pieces.length === 0) return true
     if (pieces.length === 1 && (pieces[0].t === 'b' || pieces[0].t === 'n')) return true
-    // 双方各一象且同色格=死局（同一方的双子不算——那是真实子力）。
+    // 升变可产生同方多象；只要所有象都在同色格，仍无法形成合法将杀局面。
     // 注意 K+N vs K+N 不算：FIDE 下该子力存在合法将杀局面（配合杀），自动判和是规则错判
-    if (pieces.length === 2 && pieces[0].c !== pieces[1].c) {
-      if (pieces.every((p) => p.t === 'b')) {
-        return ((pieces[0].x + pieces[0].y) % 2) === ((pieces[1].x + pieces[1].y) % 2)
-      }
+    if (pieces.every((p) => p.t === 'b')) {
+      const color = (pieces[0].x + pieces[0].y) % 2
+      return pieces.every((p) => (p.x + p.y) % 2 === color)
     }
     return false
   }

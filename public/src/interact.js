@@ -234,10 +234,13 @@ export function initInteract(ctx) {
       const wokeFromSleep = ctx.getState() === 'sleeping'
       ctx.pokeActivity?.()
       drag = { x: e.clientX, y: e.clientY, rect: box.getBoundingClientRect(), moved: false, wokeFromSleep }
+      dragging = true
+      draggingAt = Date.now()
       box.setPointerCapture(e.pointerId)
     })
     box.addEventListener('pointermove', (e) => {
       if (!drag) return
+      draggingAt = Date.now()
       const dx = e.clientX - drag.x
       const dy = e.clientY - drag.y
       if (!drag.moved && Math.hypot(dx, dy) > 6) {
@@ -267,6 +270,7 @@ export function initInteract(ctx) {
         else if (!tryPat(e.clientX, e.clientY)) clickReact()
       }
       drag = null
+      dragging = false
       ctx.evalIgnore()   // 收尾补判：盒子位移后矩形集（模型包围盒）立即上报
     }
     box.addEventListener('pointerup', (e) => endDrag(e))
