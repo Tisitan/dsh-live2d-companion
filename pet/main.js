@@ -4,6 +4,7 @@ const path = require('node:path')
 const { createPassthrough } = require('./passthrough.cjs')
 const { createHostAuth } = require('./host-auth.cjs')
 const { createPageReloader } = require('./page-reloader.cjs')
+const { USER_QUIT_EXIT_CODE } = require('./exit-reasons.cjs')
 const AUTH_URL = process.env.L2D_AUTH_URL || ''
 delete process.env.L2D_AUTH_URL
 
@@ -37,6 +38,7 @@ app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 app.commandLine.appendSwitch('enable-unsafe-swiftshader')
 
 let win = null
+let userRequestedQuit = false
 
 // 仅接受桌宠页面自身发来的 IPC
 function fromPet(event) {
@@ -60,11 +62,16 @@ if (!gotLock) {
   // relaunch 类退场（软渲染切换/手动重启）走 app.exit(0) 不经 will-quit：凭据由接管的新实例覆写，
   // 偶发残留指向死进程时由宿主的 stale 探活判定自愈
   app.on('will-quit', () => {
-    if (L2D_PIDFILE === '') return
-    try {
-      const cur = JSON.parse(fs.readFileSync(L2D_PIDFILE, 'utf8'))
-      if (cur?.pid === process.pid) fs.rmSync(L2D_PIDFILE, { force: true })
-    } catch { }
+    if (L2D_PIDFILE !== '') {
+      try {
+        const cur = JSON.parse(fs.readFileSync(L2D_PIDFILE, 'utf8'))
+        if (cur?.pid === process.pid) fs.rmSync(L2D_PIDFILE, { force: true })
+      } catch { }
+    }
+    // Windows have already closed and owned credentials have been removed.
+    // Explicitly tell the host that the user requested this exit; app.quit()
+    // alone returns the same code as a watchdog-triggered recovery exit.
+    if (userRequestedQuit) app.exit(USER_QUIT_EXIT_CODE)
   })
 app.on('second-instance', () => {
   if (win === null || win.isDestroyed()) return
@@ -447,7 +454,9 @@ app.whenReady().then(() => {
     extProbeTimer = setInterval(probeCursor, 500)
   }
   ipcMain.on('l2d-quit', (event) => {
-    if (fromPet(event)) app.quit()
+    if (!fromPet(event)) return
+    userRequestedQuit = true
+    app.quit()
   })
   // 手动重启：与软渲染切换同一条「放锁→relaunch→exit」路径
   ipcMain.on('l2d-restart', (event) => {

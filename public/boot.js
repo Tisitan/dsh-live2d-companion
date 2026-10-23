@@ -135,8 +135,9 @@ async function main() {
       closeModelPanel: panel.closePanel,
       openModelViewer: panel.openViewer,
       importModels: panel.importModels,
-      get modelList() { return panel.modelList },
     }),
+    // getter 不能放入对象展开：spread 会在启动时求值，冻结初始空列表。
+    get modelList() { return panel?.modelList ?? [] },
     get state() { return ctx.getState() },
     get binding() { return ctx.binding },
     get model() { return ctx.model },

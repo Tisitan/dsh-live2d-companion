@@ -7,6 +7,7 @@ import { homedir } from 'node:os'
 import { registerGame, getGame, listGames, defaultQuipKey } from './games/registry.mjs'
 import { findLivePet, readPidRecord } from './pet-lifecycle.mjs'
 import { createAuthenticatedRegistrar } from './host-auth.mjs'
+import { USER_QUIT_EXIT_CODE } from './pet/exit-reasons.cjs'
 import gomokuGame from './games/gomoku/index.mjs'
 import chessGame from './games/chess/index.mjs'
 
@@ -55,6 +56,8 @@ let petKillTimer = null
 let petExitHookArmed = false
 /** 桌宠意外退场的退避重拉定时器：dispose 时清除（卸载语义绝不诈尸）。 */
 let petRespawnTimer = null
+/** The current mount owns recovery, even when it adopts an older child handle. */
+let requestPetRespawn = null
 /** 重拉滑窗（1 小时最多 3 次）：崩溃循环保护，撞顶即放弃等人工/remount。 */
 const petRespawnHistory = []
 /** 带病死亡连续计数：上一实例「穿透未证实即死亡」（启动期捕获失守信号）累计 2 次暂停重拉。 */
@@ -1488,7 +1491,10 @@ export function apply(ctx, config) {
           if (managedPetPid === child.pid) managedPetPid = null
           // 秒退出也不再无痕：单实例锁弹回/模型崩溃等留下的 code 在这里可见
           ctx.logger.info(`live2d pet exited (pid ${child.pid}, code ${code})`)
-          if (unexpected) schedulePetRespawn()
+          if (unexpected && code === USER_QUIT_EXIT_CODE) {
+            requestPetRespawn = null
+            if (petRespawnTimer !== null) { clearTimeout(petRespawnTimer); petRespawnTimer = null }
+          } else if (unexpected) requestPetRespawn?.()
         })
         petChild = child
         managedPetPid = child.pid
@@ -1500,8 +1506,10 @@ export function apply(ctx, config) {
       // 凭据探活仍活=已被别路拉起（remount/收养），不重复 spawn
       const schedulePetRespawn = () => {
         if (petRespawnTimer !== null) return
+        const gen = petGen
         petRespawnTimer = setTimeout(() => {
           petRespawnTimer = null
+          if (gen !== petGen || requestPetRespawn !== schedulePetRespawn) return
           const cutoff = Date.now() - 3600000
           while (petRespawnHistory.length > 0 && petRespawnHistory[0] < cutoff) petRespawnHistory.shift()
           if (petRespawnHistory.length >= 3) {
@@ -1511,6 +1519,7 @@ export function apply(ctx, config) {
           // spawn 决策前先留档凭据（findLivePet 探活会清理陈旧凭据，之后读不到）
           const lastRec = readPidRecord(PET_PID_FILE)
           void findLivePet({ pidFile: PET_PID_FILE, expectedExe: exe }).then((found) => {
+            if (gen !== petGen || requestPetRespawn !== schedulePetRespawn) return
             if (found.status === 'alive') {
               if (managedPetPid === null) managedPetPid = found.pid
               ctx.logger.info(`live2d pet respawn skipped: live instance adopted (pid ${found.pid})`)
@@ -1556,14 +1565,22 @@ export function apply(ctx, config) {
       }
       ctx.effect(() => {
         const gen = ++petGen
+        requestPetRespawn = schedulePetRespawn
         if (petKillTimer !== null) { clearTimeout(petKillTimer); petKillTimer = null }
+        const dispose = () => {
+          if (gen !== petGen) return
+          ++petGen
+          requestPetRespawn = null
+          if (petRespawnTimer !== null) { clearTimeout(petRespawnTimer); petRespawnTimer = null }
+          schedulePetKill(managedPetPid)
+        }
         // 收养优先级 1：同进程句柄还活着——重挂载（配置热更/端口重试）秒级续用。
         // 杀旧生新的窗口里新进程会被单实例锁弹回秒退，桌宠永远回不来（实测血案）
         if (petChild !== null && petChild.exitCode === null && !petChild.killed) {
           const adopted = petChild   // 闭包固化：处置器触发时模块变量可能已空（桌宠中途自退）
           managedPetPid = adopted.pid
           ctx.logger.info(`live2d pet adopted in-process (pid ${adopted.pid})`)
-          return () => schedulePetKill(adopted.pid)
+          return dispose
         }
         // 收养优先级 2：跨宿主重启的存活实例凭 PID 文件认领（孤儿桌宠占锁场景的根治）。
         // 异步决策以 gen 为令牌：dispose 令其过期，过期者按履约语义自行处置结果
@@ -1591,11 +1608,7 @@ export function apply(ctx, config) {
           lastPetSpawnAt = now
           spawnPet()
         }).catch(() => { })
-        return () => {
-          ++petGen   // 未决的异步决策立即过期；届时自行履约（在场即处置）
-          if (petRespawnTimer !== null) { clearTimeout(petRespawnTimer); petRespawnTimer = null }
-          schedulePetKill(managedPetPid)
-        }
+        return dispose
       })
     } else {
       ctx.logger.warn(`live2d pet enabled but electron not found at ${exe}`)

@@ -47,6 +47,13 @@ export function initState(ctx) {
   ctx.busy = () => BUSY_STATES.includes(state)
   ctx.stateExpr = () => registry[state]?.expr ?? 'default'
   ctx.registerState = (name, def) => { registry[name] = { ...registry[name], ...def } }
+  // 完成通知独立于主灯：并行任务结束时，其他任务仍可保持 working/waiting。
+  ctx.notifyCompletion = (taskNumber) => {
+    const text = quip(registry.done?.pool ?? 'done')
+    if (!text) return false
+    const prefix = Number.isInteger(taskNumber) ? `任务${taskNumber} · ` : ''
+    return ctx.showBubble(prefix + text, cfg.rotation.doneHoldMs, 2)
+  }
   // 用户活动戳：互动重置睡眠计时；睡梦中被摸/点/拖会唤醒回 idle（enter 自带惊喜脸衔接）
   ctx.pokeActivity = () => {
     idleSince = Date.now()
@@ -57,7 +64,7 @@ export function initState(ctx) {
    * 切换到指定状态；同名调用为 no-op。
    * @param {string} next 目标状态（须在注册表中定义）
    */
-  ctx.enter = (next) => {
+  ctx.enter = (next, { completion = true } = {}) => {
     if (next === state) return
     if (!registry[next]) return   // 未知状态名（如宿主下发了新 coarse 值）不入场，灯与行为不脱节
     const prev = state
@@ -98,10 +105,14 @@ export function initState(ctx) {
       if (!PREVIEW && next === 'error' && Math.random() < 0.4 && ctx.binding.motion.glitch) ctx.playMotion('glitch')
       else ctx.playMotion(def.motion)
     }
-    if (def.rotate) {
-      // 优先级：完成/报错必须穿透对局解说等低级气泡；其余轮播最低级
-      const poolPriority = def.pool === 'done' || def.pool === 'error' ? 2 : 0
+    // 首句与轮播分开；done 是单句通知，不应靠 rotate 才能播出。
+    const poolPriority = def.pool === 'done' || def.pool === 'error' ? 2 : 0
+    if (next === 'done') {
+      if (completion) ctx.notifyCompletion()
+    } else if (def.pool) {
       ctx.showBubble(quip(def.pool), cfg.rotation.holdMs, poolPriority)
+    }
+    if (def.rotate) {
       // intervalMs 在 enter 时快照：quips 热重载改了节奏后，下次进入状态才生效（设计如此，勿改成每轮换读）
       rotateTimer = setInterval(() => {
         if (document.hidden) return

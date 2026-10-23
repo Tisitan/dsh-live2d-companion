@@ -13,7 +13,7 @@ async function setup(t, overrides = {}) {
   t.after(() => rm(dir, { recursive: true, force: true }))
   const root = join(dir, 'plugin')
   await mkdir(join(root, 'public', 'model'), { recursive: true })
-  for (const file of ['package.json', 'index.js', 'host-auth.mjs', 'pet-lifecycle.mjs', 'games', 'public/quips.json', 'public/boot.js']) {
+  for (const file of ['package.json', 'index.js', 'host-auth.mjs', 'pet-lifecycle.mjs', 'pet/exit-reasons.cjs', 'games', 'public/quips.json', 'public/boot.js']) {
     await cp(new URL(file, import.meta.url), join(root, file), { recursive: true })
   }
   const plugin = await import(pathToFileURL(join(root, 'index.js')))

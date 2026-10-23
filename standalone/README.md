@@ -23,13 +23,13 @@ With the standalone pet running, launch `连接Codex和OpenCode.cmd`, then resta
 
 The chat button is enabled only for `?standalone=1`, so existing DSH widget and pet behavior is unchanged.
 
-Standalone chat keeps a scrollable history for the current app launch. Each imported model receives a character profile, and one model can have multiple profiles. Open the model panel's **角色** tab to name the character, paste or import a Markdown/TXT persona, import existing diary or memory files, and enable optional one-minute auto-save.
+Standalone chat keeps a scrollable history for the current app launch. Each imported model receives a character profile, and one model can have multiple profiles. Open the model panel's **角色** tab to name the character, paste or import a Markdown/TXT persona, import existing diary or memory files, and enable optional auto-save after one minute without another chat reply. Each reply restarts that idle timer; this is not a periodic save during continuous conversation.
 
 Profiles live under Electron's user-data directory rather than inside the model folder. Each profile owns its own `persona.md`, indexed `memories/`, and `diaries/` directory, so switching models or profiles does not mix identities or memories. New memories are stored separately, assigned a coarse category, and de-duplicated by a normalized content hash. Existing `memory.md` files remain readable as legacy memory. Manual and automatic diary summaries update one `diary-*.md` file per app launch; imported diary files remain separate.
 
 The built-in local memory provider removes common query words, weights longer matches, ranks small chunks against the newest user message, and sends at most four related results (up to 1,200 characters) to OpenCode. Recalled text is explicitly treated as untrusted reference data and is placed before the newest message. The provider boundary is intentionally independent from the OpenCode/Codex adapters so a future plugin or MCP memory backend can be added without making this repository character-specific.
 
-Profiles can optionally enable **OpenCode semantic reranking (experimental)**. The bundled OpenCode companion plugin asks the selected OpenCode model to choose up to four items from a bounded local candidate set, then injects only those items into chat. This costs one additional model request when candidates exist. Invalid output, timeouts, disconnection, or plugin errors fall back to the deterministic local result; no third-party memory service is required.
+Profiles can optionally enable **OpenCode semantic reranking (experimental)**. The bundled OpenCode companion plugin asks the selected OpenCode model to choose up to four items from a bounded local candidate set, then injects only those items into chat. This costs one additional model request when candidates exist. Invalid output, timeouts, disconnection, or plugin errors fall back to the deterministic local result; no third-party memory service is required. Session creation has a five-second deadline and reranking has an eight-second deadline. Cleanup runs separately with bounded requests, so a stalled cleanup cannot delay the fallback.
 
 Game commentary, diary summaries, and ordinary chat use separate internal OpenCode sessions. Internal game turns can drive the main thinking state without appearing as extra numbered task lamps.
 
@@ -39,4 +39,4 @@ Codex and OpenCode provide status and chat connections but do not host the DSH w
 
 - `测试气泡.cmd` checks the authenticated local adapter path.
 - The model panel can enable CPU rendering when a Windows GPU/driver combination flashes while moving a transparent window.
-- Keep OpenCode running for chat. Long generations maintain a separate heartbeat while later messages wait in the local queue.
+- Keep OpenCode running for chat. Long generations maintain a separate heartbeat while later messages wait in the local queue. Chat generation has a 60-second deadline (diary/memory: 30 seconds; game commentary: 45 seconds). A failed or timed-out turn retires its session and attempts to abort it; subsequent jobs use a new session, and late results are ignored. These are adapter deadlines, separate from the local server's request timeout.

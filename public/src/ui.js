@@ -53,7 +53,7 @@ export function initUI(ctx) {
   Object.assign(bubble.style, {
     position: 'absolute', padding: '6px 14px', borderRadius: '14px',
     background: 'rgba(255,255,255,.95)', color: '#334', font: '13px/1.5 sans-serif',
-    whiteSpace: 'normal', width: 'max-content', maxWidth: 'min(300px, calc(100vw - 16px))',
+    whiteSpace: 'normal', width: 'max-content', maxWidth: `min(${PET ? 300 : BASE_W - 16}px, calc(100vw - 16px))`,
     minWidth: '56px', maxHeight: '180px', boxSizing: 'border-box', textAlign: 'center',
     overflowWrap: 'anywhere', wordBreak: 'break-word', overflow: 'hidden',
     pointerEvents: 'none', opacity: '0',
@@ -75,8 +75,22 @@ export function initUI(ctx) {
     const bw = Math.min(bubble.offsetWidth, Math.max(1, w - 16))
     const bh = Math.min(bubble.offsetHeight, Math.max(1, h - 16))
     const half = bw / 2 + 8
-    bubble.style.left = Math.min(Math.max(x, half), Math.max(half, w - half)) + 'px'
-    bubble.style.top = Math.min(Math.max(y, bh + 8), h - 8) + 'px'
+    const left = Math.min(Math.max(x, half), Math.max(half, w - half))
+    let top = Math.min(Math.max(y, bh + 8), h - 8)
+    if (!PET) {
+      // 小挂件里的多任务灯和头顶气泡可能争用同一块空间。若横纵都相交，
+      // 把气泡放到灯组下方；最多 8 灯 + 折叠行，仍给长台词保留完整高度。
+      const blockers = [lamp, ...(sessBox.children.length ? [sessBox] : [])].map(el => ({
+        x: parseFloat(el.style.left) || 0, y: parseFloat(el.style.top) || 0,
+        w: el.offsetWidth, h: el.offsetHeight,
+      }))
+      if (blockers.some(r => left - bw / 2 < r.x + r.w + 8 && left + bw / 2 > r.x - 8
+        && top - bh < r.y + r.h + 8 && top > r.y - 8)) {
+        top = Math.min(h - 8, Math.max(top, ...blockers.map(r => r.y + r.h + 8 + bh)))
+      }
+    }
+    bubble.style.left = left + 'px'
+    bubble.style.top = top + 'px'
   }
 
   /**
@@ -107,6 +121,11 @@ export function initUI(ctx) {
   }
   ctx.showBubble = showBubble
   ctx.getLastBubbleAt = () => lastBubbleAt
+  function refreshBubblePosition() {
+    if (PET || bubble.style.opacity !== '1' || !ctx.model) return
+    const b = ctx.model.getBounds()
+    placeBubble(b.x + b.width / 2, b.y + b.height * 0.08)
+  }
 
   // ── 状态灯：左上角迷你胶囊（灯珠 + 小字），pointerEvents:none 不抢交互 ──
   const lampStyle = document.createElement('style')
@@ -194,7 +213,7 @@ export function initUI(ctx) {
    */
   ctx.setSessions = (list) => {
     sessBox.replaceChildren()
-    if (!Array.isArray(list) || list.length <= 1) return
+    if (!Array.isArray(list) || list.length <= 1) { refreshBubblePosition(); return }
     const shown = list.slice(0, 8)
     for (const s of shown) {
       const L = STATE_LAMP[s.state] ?? STATE_LAMP.idle
@@ -220,5 +239,7 @@ export function initUI(ctx) {
       more.textContent = `+${list.length - shown.length} 个任务`
       sessBox.appendChild(more)
     }
+    // raw 完成先到、sessions 后到的同帧也必须重新避让新出现的任务灯。
+    refreshBubblePosition()
   }
 }

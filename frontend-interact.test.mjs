@@ -45,3 +45,45 @@ for (const ending of ['pointerup', 'pointercancel', 'blur']) {
     assert.equal(model.y, 140)
   })
 }
+
+for (const pet of [false, true]) {
+  for (const ending of ['pointerup', 'pointercancel', 'blur', 'watchdog']) {
+    test(`${pet ? 'desktop' : 'widget'} drag blocks wheel scaling until ${ending} releases it`, () => {
+      let now = 1000
+      const intervals = [], timers = [], savedScales = []
+      const box = Object.assign(eventTarget(), { style: {}, getBoundingClientRect: () => ({ left: 100, top: 100 }) })
+      const window = Object.assign(eventTarget(), { innerWidth: 1280, innerHeight: 900 })
+      const model = { x: 100, y: 100, getBounds() { return { x: this.x, y: this.y, width: 100, height: 200 } } }
+      const ctx = { box, model, modelBounds: () => model.getBounds(), targetScale: 1,
+        app: { view: { getBoundingClientRect: () => ({ left: 0, top: 0 }) } },
+        getState: () => 'idle', stateExpr: () => 'neutral', setExpr() {}, showBubble() {} }
+      const sandbox = { window, PET: pet, BRIDGE: pet ? { pushRects() {} } : null, BASE_W: 300, BASE_H: 400,
+        store: { getPinned: () => false, setPos() {}, setPetPos() {}, setScale: n => savedScales.push(n) },
+        document: { querySelectorAll: () => [] }, quip: () => '', console: { error() {} },
+        Date: class extends Date { static now() { return now } }, Math,
+        requestAnimationFrame() {}, setInterval: (fn, ms) => intervals.push({ fn, ms }),
+        setTimeout: fn => { timers.push(fn); return timers.length }, clearTimeout() {} }
+      vm.runInNewContext(source + '\nglobalThis.init = initInteract', sandbox)
+      sandbox.init(ctx)
+      box.dispatch('pointerdown', { clientX: 100, clientY: 100, screenX: 100, screenY: 100, pointerId: 1 })
+      box.dispatch('wheel', { deltaY: -100, ctrlKey: true, preventDefault() {} })
+      assert.equal(ctx.targetScale, 1, 'even the pending drag before its first move locks scale')
+      box.dispatch('pointermove', { clientX: 130, clientY: 140, screenX: 130, screenY: 140, pointerId: 1 })
+      box.dispatch('wheel', { deltaY: -100, ctrlKey: true, preventDefault() {} })
+      assert.equal(ctx.targetScale, 1)
+      assert.equal(savedScales.length, 0)
+      if (ending === 'watchdog') {
+        now += 31000
+        intervals.find(t => t.ms === 5000).fn()
+      } else (ending === 'blur' ? window : box).dispatch(ending)
+      if (pet) {
+        box.dispatch('wheel', { deltaY: -100, ctrlKey: false, preventDefault() {} })
+        assert.equal(ctx.targetScale, 1, 'desktop still requires Ctrl after drag release')
+      }
+      box.dispatch('wheel', { deltaY: -100, ctrlKey: pet, preventDefault() {} })
+      assert.ok(ctx.targetScale > 1)
+      timers.at(-1)()
+      assert.deepEqual(savedScales, [ctx.targetScale])
+    })
+  }
+}

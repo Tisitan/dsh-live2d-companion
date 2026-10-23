@@ -35,8 +35,10 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           package-manager-cache: false
-      # The suites use only Node built-ins and mocks. No model, Cubism Core,
-      # Electron binary, DSH credentials, or provider API keys are required.
+      # Exercise the official SDK transport against a local fixture only.
+      # No model, Cubism Core, DSH credentials, or provider API keys are required.
+      - name: Install pinned OpenCode SDK for transport contract
+        run: npm install --prefix "$RUNNER_TEMP/l2d-opencode-sdk" --no-save --package-lock=false --ignore-scripts @opencode-ai/sdk@1.19.4
       - name: Check entrypoint syntax
         run: |
           node --check index.js
@@ -47,6 +49,8 @@ jobs:
           node --check standalone/main.cjs
           node --check standalone/server.cjs
       - name: Run all regression suites
+        env:
+          L2D_OPENCODE_SDK_CLIENT: ${{ runner.temp }}/l2d-opencode-sdk/node_modules/@opencode-ai/sdk/dist/client.js
         run: npm test
       - name: Verify published package contents
         run: |
@@ -56,7 +60,7 @@ jobs:
           import { readFileSync } from 'node:fs'
           const [pack] = JSON.parse(readFileSync('.ci-pack.json', 'utf8'))
           const paths = new Set(pack.files.map(file => file.path))
-          for (const required of ['index.js', 'host-auth.mjs', 'pet/main.js', 'pet/host-auth.cjs', 'pet/page-reloader.cjs', 'public/boot.js', 'standalone/server.cjs']) {
+          for (const required of ['index.js', 'host-auth.mjs', 'pet/main.js', 'pet/host-auth.cjs', 'pet/page-reloader.cjs', 'pet/exit-reasons.cjs', 'public/boot.js', 'standalone/server.cjs']) {
             assert.ok(paths.has(required), `package is missing ${required}`)
           }
           for (const path of paths) {
@@ -111,3 +115,6 @@ jobs:
       - name: Verify actual game card layout and scaled board input
         if: matrix.scale == '1'
         run: node pet/node_modules/electron/cli.js tests/card-layout-smoke.cjs
+      - name: Verify native user quit stays stopped beyond recovery interval
+        if: matrix.scale == '1'
+        run: node tests/pet-user-quit-smoke.cjs

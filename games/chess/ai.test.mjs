@@ -2,6 +2,7 @@
 // 运行：node games/chess/ai.test.mjs
 import { createChess } from './engine.mjs'
 import { createChessAI } from './ai.mjs'
+import { fromFen, play, stateOf } from './fixture.test-utils.mjs'
 
 let passed = 0, failed = 0
 function assert(cond, label) {
@@ -72,6 +73,28 @@ async function main() {
     const legal = m && e.legalMoves().some((lm) => lm.from.x === m.from.x && lm.from.y === m.from.y
       && lm.to.x === m.to.x && lm.to.y === m.to.y)
     assert(!!legal, '超时保底手仍合法')
+  }
+
+  // En-passant fixtures exercise the same search apply/undo path as ordinary
+  // positions. Search must leave repetition bookkeeping intact as well as the
+  // visible board, even when the budget interrupts a branch.
+  for (const [fen, epLegal] of [
+    ['1n2k3/8/8/r4pPK/8/8/8/1N6 w - f6 0 1', false],
+    ['1n2k3/8/8/5pPK/8/8/8/1N6 w - f6 0 1', true],
+  ]) {
+    const e = fromFen(fen)
+    const before = stateOf(e)
+    const start = performance.now()
+    const move = await createChessAI('hard', 50).pickMove(e)
+    const elapsed = performance.now() - start
+    assert(elapsed < 5000, `ep search: bounded 50ms search returns (observed ${Math.round(elapsed)}ms; CI tolerance 5s)`)
+    assert(stateOf(e) === before, `ep search (${epLegal ? 'legal' : 'pinned'}): board/counters/ep/lastMove unchanged`)
+    assert(!!move && e.legalMoves().some(m => m.from.x === move.from.x && m.from.y === move.from.y
+      && m.to.x === move.to.x && m.to.y === move.to.y), 'ep search: returned move remains legal')
+    const cycle = ['b1c3', 'b8c6', 'c3b1', 'c6b8']
+    play(e, ...cycle, ...cycle)
+    assert(epLegal ? !e.status().over : e.status().reason === 'repetition',
+      'ep search: speculative branches do not add repetition occurrences')
   }
 
   console.log(`\nchess ai: ${passed} passed, ${failed} failed`)
